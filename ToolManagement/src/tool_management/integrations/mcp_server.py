@@ -505,24 +505,29 @@ class MCPServer:
 
         # Route meta-tools to appropriate endpoints
         if tool_name == "search_tools":
-            # Call semantic search endpoint
+            # Search tools from persistent store
             try:
                 client = get_http_client()
                 query = tool_args.get("query", "")
-                limit = tool_args.get("limit", 5)
-                min_score = tool_args.get("min_score", 0.5)
+                limit = tool_args.get("limit", 20)
+                # Use the tools list endpoint and filter client-side
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/admin/search-tools-semantic?query={query}&limit={limit}&min_similarity={min_score}",
+                    f"{API_BASE_URL}/api/v1/tools/?limit={limit}",
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    results = response.json()
+                    data = response.json()
+                    tools = data.get("tools", [])
+                    # Filter by query if provided
+                    if query:
+                        query_lower = query.lower()
+                        tools = [t for t in tools if query_lower in t.get("name", "").lower() or query_lower in t.get("description", "").lower()]
                     return {
                         "content": [
                             {
                                 "type": "text",
-                                "text": json_module.dumps(results, indent=2)
+                                "text": json_module.dumps({"tools": tools, "count": len(tools)}, indent=2)
                             }
                         ],
                         "isError": False
@@ -533,7 +538,7 @@ class MCPServer:
                             {
                                 "type": "text",
                                 "text": json_module.dumps({
-                                    "error": f"Semantic search failed with status {response.status_code}",
+                                    "error": f"Tool search failed with status {response.status_code}",
                                     "details": response.text
                                 }, indent=2)
                             }
@@ -554,25 +559,44 @@ class MCPServer:
                 }
 
         elif tool_name == "get_tool":
-            # Get specific tool details
+            # Get specific tool details - accept "name" or "tool_name"
             try:
+                target_name = tool_args.get("name") or tool_args.get("tool_name")
                 client = get_http_client()
+                # Use the list endpoint and filter to find the tool
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/{tool_args.get('tool_name')}",
+                    f"{API_BASE_URL}/api/v1/tools/?limit=100",
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    tool_info = response.json()
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(tool_info, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
+                    data = response.json()
+                    tools = data.get("tools", [])
+                    # Find matching tool by name or tool_id
+                    matching = [t for t in tools if t.get("name") == target_name or t.get("tool_id") == target_name]
+                    if matching:
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json_module.dumps(matching[0], indent=2)
+                                }
+                            ],
+                            "isError": False
+                        }
+                    else:
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json_module.dumps({
+                                        "error": f"Tool not found: {target_name}",
+                                        "available_tools": [t.get("name") for t in tools[:10]]
+                                    }, indent=2)
+                                }
+                            ],
+                            "isError": True
+                        }
                 else:
                     return {
                         "content": [
@@ -600,16 +624,18 @@ class MCPServer:
                 }
 
         elif tool_name == "execute_tool":
-            # Execute actual tool via gateway
+            # Execute actual tool via persistent tools API
             try:
+                # Accept either "tool" or "tool_name" parameter
+                target_tool = tool_args.get("tool") or tool_args.get("tool_name")
                 client = get_http_client()
                 response = await client.post(
-                    f"{API_BASE_URL}/api/v1/gateway/execute",
+                    f"{API_BASE_URL}/api/v1/tools/execute",
                     json={
-                        "tool_name": tool_args.get("tool_name"),
+                        "tool": target_tool,
                         "arguments": tool_args.get("arguments", {})
                     },
-                    timeout=30.0
+                    timeout=60.0
                 )
 
                 if response.status_code == 200:

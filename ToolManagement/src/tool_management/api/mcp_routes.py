@@ -461,6 +461,10 @@ async def mcp_pipeline_execute(request: Request):
         arguments = step.get("arguments", {})
         backend_id = step.get("backend")
 
+        # Auto-parse namespaced tool names: "backend-id:tool-name"
+        if not backend_id and ":" in tool_name:
+            backend_id, tool_name = tool_name.split(":", 1)
+
         # Substitute $prev references
         if prev_result:
             arguments = substitute_vars(arguments, prev_result)
