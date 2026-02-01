@@ -1,7 +1,7 @@
 """
-OpenRouter Embedding Service - Semantic Tool Discovery
+Jina Embedding Service - Semantic Tool Discovery
 
-Uses OpenRouter's embedding API to enable semantic search over tool schemas.
+Uses Jina AI's embedding API to enable semantic search over tool schemas.
 Supports millions of tools through intelligent context management.
 """
 from __future__ import annotations
@@ -19,18 +19,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EmbeddingConfig:
-    """Configuration for OpenRouter embeddings"""
+    """Configuration for Jina embeddings"""
     api_key: str
-    model: str = "openai/text-embedding-3-small"  # Fast, cheap, good quality
-    base_url: str = "https://openrouter.ai/api/v1"
+    model: str = "jina-embeddings-v3"  # Latest Jina model, 1024 dims
+    base_url: str = "https://api.jina.ai/v1"
     batch_size: int = 100  # Process up to 100 texts per request
     max_retries: int = 3
     timeout: float = 30.0
 
 
-class OpenRouterEmbeddings:
+class JinaEmbeddings:
     """
-    OpenRouter embedding service for semantic tool discovery.
+    Jina AI embedding service for semantic tool discovery.
 
     Embeds tool schemas (name, description, input/output schemas)
     for semantic search and retrieval.
@@ -38,9 +38,9 @@ class OpenRouterEmbeddings:
 
     def __init__(self, config: Optional[EmbeddingConfig] = None):
         if config is None:
-            api_key = os.getenv("OPENROUTER_API_KEY")
+            api_key = os.getenv("JINA_API_KEY")
             if not api_key:
-                raise ValueError("OPENROUTER_API_KEY environment variable not set")
+                raise ValueError("JINA_API_KEY environment variable not set")
             config = EmbeddingConfig(api_key=api_key)
 
         self.config = config
@@ -95,7 +95,7 @@ class OpenRouterEmbeddings:
         return all_embeddings
 
     async def _call_api(self, texts: List[str]) -> List[np.ndarray]:
-        """Call OpenRouter embeddings API"""
+        """Call Jina embeddings API"""
         for attempt in range(self.config.max_retries):
             try:
                 response = await self.client.post(
@@ -208,13 +208,13 @@ class OpenRouterEmbeddings:
 
     def get_embedding_dim(self) -> int:
         """Get embedding dimension for the configured model"""
-        # OpenAI text-embedding-3-small: 1536 dimensions
-        if "text-embedding-3-small" in self.config.model:
-            return 1536
-        elif "text-embedding-3-large" in self.config.model:
-            return 3072
+        # Jina embedding dimensions
+        if "jina-embeddings-v3" in self.config.model:
+            return 1024
+        elif "jina-embeddings-v2" in self.config.model:
+            return 768
         else:
-            return 1536  # Default
+            return 1024  # Default for Jina v3
 
     async def close(self):
         """Close the HTTP client"""
@@ -222,17 +222,21 @@ class OpenRouterEmbeddings:
 
 
 # Global embedding service
-_embedding_service: Optional[OpenRouterEmbeddings] = None
+_embedding_service: Optional[JinaEmbeddings] = None
 
 
-def get_embedding_service() -> OpenRouterEmbeddings:
-    """Get or create the global OpenRouter embedding service"""
+def get_embedding_service() -> JinaEmbeddings:
+    """Get or create the global Jina embedding service"""
     global _embedding_service
 
     if _embedding_service is None:
-        _embedding_service = OpenRouterEmbeddings()
+        _embedding_service = JinaEmbeddings()
 
     return _embedding_service
+
+
+# Backward compatibility alias
+OpenRouterEmbeddings = JinaEmbeddings
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

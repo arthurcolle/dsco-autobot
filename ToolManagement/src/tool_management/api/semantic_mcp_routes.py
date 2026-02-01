@@ -400,3 +400,20 @@ async def search_tools(
         "results": results,
         "count": len(results)
     }
+
+
+@router.post("/reindex")
+async def reindex_tools():
+    """
+    Manually trigger re-indexing of all tools with embeddings.
+
+    This fetches tools from all backends and generates embeddings.
+    """
+    await initialize_semantic_index()
+    tool_store = get_tool_store()
+    stats = await tool_store.get_stats()
+    return {
+        "status": "reindexed",
+        "total_tools": stats["total_tools"],
+        "backends": stats["backends"]
+    }

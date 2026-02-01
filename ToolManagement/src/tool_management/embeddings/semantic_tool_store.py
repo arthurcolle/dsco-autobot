@@ -9,6 +9,7 @@ Uses embeddings and vector search to:
 """
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Set
@@ -22,6 +23,14 @@ from pathlib import Path
 from .openrouter_embeddings import get_embedding_service, cosine_similarity
 
 logger = logging.getLogger(__name__)
+
+# Use DATA_DIR from environment (set to /data on Modal volume)
+DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    DATA_DIR = Path("/tmp/semantic_tool_data")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -78,9 +87,12 @@ class SemanticToolStore:
     4. Using semantic search for tool discovery
     """
 
-    def __init__(self, db_path: str = "data/tool_embeddings.db", max_context_tools: int = 50):
+    def __init__(self, db_path: Optional[str] = None, max_context_tools: int = 50):
+        if db_path is None:
+            db_path = str(DATA_DIR / "tool_embeddings.db")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"SemanticToolStore using database at {self.db_path}")
 
         self.embedding_service = get_embedding_service()
         self.context = ContextWindow(max_tools=max_context_tools)

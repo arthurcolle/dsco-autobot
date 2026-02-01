@@ -30,6 +30,7 @@ from .api.url_queue_routes import router as url_queue_router
 from .api.auth_routes import router as auth_router
 from .api.swarm_routes import router as swarm_router
 from .api.tools_api import router as tools_api_router
+from .api.advanced_search_routes import router as advanced_search_router
 from .registry import get_registry, get_service_registry
 from .persistence import get_tool_store
 from .queue import get_task_queue, MCPBackend
@@ -139,23 +140,32 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start native MCPs: {e}")
 
-        # Initialize semantic tool index
-        try:
-            from .api.semantic_mcp_routes import initialize_semantic_index
-            logger.info("Initializing semantic tool index...")
-            await initialize_semantic_index()
-            logger.info("Semantic tool index initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize semantic index: {e}")
+    # Initialize semantic tool index (always run, not just for native MCPs)
+    try:
+        from .api.semantic_mcp_routes import initialize_semantic_index
+        logger.info("Initializing semantic tool index...")
+        await initialize_semantic_index()
+        logger.info("Semantic tool index initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize semantic index: {e}")
 
-        # Auto-sync tools from all backends
-        try:
-            from .api.mcp_routes import refresh_mcp_tools
-            logger.info("Syncing tools from backends...")
-            await refresh_mcp_tools()
-            logger.info("Tool sync complete")
-        except Exception as e:
-            logger.error(f"Failed to sync tools: {e}")
+    # Initialize advanced tool index with multi-faceted embeddings
+    try:
+        from .api.advanced_search_routes import reindex_all
+        logger.info("Initializing advanced tool index...")
+        await reindex_all()
+        logger.info("Advanced tool index initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize advanced index: {e}")
+
+    # Auto-sync tools from all backends
+    try:
+        from .api.mcp_routes import refresh_mcp_tools
+        logger.info("Syncing tools from backends...")
+        await refresh_mcp_tools()
+        logger.info("Tool sync complete")
+    except Exception as e:
+        logger.error(f"Failed to sync tools: {e}")
 
     yield
 
@@ -446,6 +456,9 @@ def create_app() -> FastAPI:
 
     # Include swarm routes (/api/v1/swarm for agent swarm economy)
     app.include_router(swarm_router, prefix="/api/v1")
+
+    # Include advanced search routes (/api/v1/discover for multi-faceted tool discovery)
+    app.include_router(advanced_search_router)
 
     return app
 
