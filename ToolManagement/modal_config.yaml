@@ -1,0 +1,70 @@
+name: tools
+import_path: fastapi_app:app  # module:attr (attr may be an app or a factory)
+
+image:
+  base: debian_slim          # debian_slim is recommended; other bases optional
+  pip:
+    - fastapi[standard]
+    - uvicorn
+    - pyyaml                 # needed to read this YAML at build time
+    - httpx                  # for async HTTP requests
+    - pydantic              # for data validation
+    - redis                  # for caching and rate limiting
+    - neo4j                  # for graph database
+    - prometheus-client      # for metrics
+    - psutil                 # for system metrics
+    - celery                 # for background tasks
+    - websockets            # for WebSocket support
+    - yfinance              # for financial data
+  apt: []                    # e.g., [curl, git]
+
+function:
+  concurrency: 100           # @modal.concurrent(max_inputs=...)
+  timeout: 300               # 5 minutes timeout for tool execution
+  cpu: 2                     # vCPU
+  memory: 2048               # MiB
+  gpu: null                  # e.g., "t4" or null
+  keep_warm: 1               # containers to keep warm
+
+env:
+  APP_NAME: Tool Management API
+  APP_VERSION: "0.1.0"
+  ENV: production
+  DEBUG: "0"
+  CORS_ORIGINS: "*"
+  LOG_LEVEL: INFO
+
+  # Neo4j Configuration
+  NEO4J_URI: "neo4j://bolt.n4j.distributed.systems:7687"
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ""  # To be set via secrets
+
+  # Redis Configuration
+  REDIS_HOST: localhost
+  REDIS_PORT: "6379"
+
+  # Tool Management Service
+  TOOL_MANAGEMENT_API_URL: "https://tools-test.brainchain.cloud"
+  SERVICE_URL: "https://tools.brainchain.cloud"
+
+  # Embeddings API
+  EMBED_API_URL: "https://arthurcolle--embeddings.modal.run"
+
+secrets:
+  - name: distributed-systems
+  # Create this secret in Modal with:
+  # - NEO4J_PASSWORD
+  # - AUTH_TOKEN (if using bearer auth)
+
+volumes: []
+  # - name: tool-data
+  #   mount_path: /data
+  #   create_if_missing: true
+
+domain:
+  custom_domain: null        # optional; set via Modal dashboard/CLI when deploying
+  label: tool-management     # subdomain label for Modal URLs
+
+auth:
+  enabled: true
+  bearer_env_var: AUTH_TOKEN # if enabled, expects this env var to contain token

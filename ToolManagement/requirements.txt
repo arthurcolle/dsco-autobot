@@ -1,0 +1,57 @@
+# Core Web Framework
+fastapi[standard]==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# HTTP Client
+httpx==0.27.2
+
+# Database
+neo4j==5.25.0
+redis==5.2.0
+
+# Monitoring & Metrics
+prometheus-client==0.21.0
+psutil==6.1.0
+
+# Background Tasks
+celery==5.4.0
+
+# WebSocket Support
+websockets==13.1
+
+# Data Processing
+yfinance==0.2.48
+
+# Configuration
+pyyaml==6.0.2
+
+# CORS & Middleware
+python-multipart==0.0.12
+
+# Logging
+structlog==24.4.0
+
+# Testing (optional, for development)
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+
+# Modal deployment
+modal==0.68.0
+
+# GraphQL
+strawberry-graphql[fastapi]==0.243.1
+
+# Vector/Embeddings
+numpy>=1.24.0
+
+# MCP Protocol (optional)
+fastapi-mcp>=0.1.0
+
+# Temporal (durable execution)
+temporalio==1.7.1
+
+# Async utilities
+aiofiles==24.1.0
