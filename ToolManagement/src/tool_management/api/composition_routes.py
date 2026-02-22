@@ -1159,7 +1159,7 @@ async def replay_composition_execution(
 
     replay_trace_id = _resolve_trace_id(request.trace_id)
     replay_parent = request.parent_execution_id or execution_id
-    replay_execution_id = str(uuid4()) if request.fork else str(uuid4())
+    replay_execution_id = str(uuid4())
 
     if workflow_kind == "composition":
         _ensure_workflow_registry_loaded()
