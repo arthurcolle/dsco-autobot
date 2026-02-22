@@ -382,3 +382,61 @@ def test_side_effect_journal_lineage_and_storage_stats(tmp_path):
         )
     removed = store.cleanup_old_workflow_side_effects(max_age_seconds=120)
     assert removed == 1
+
+
+def test_payload_governance_truncates_large_artifacts_and_side_effects(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKFLOW_ARTIFACT_MAX_PAYLOAD_BYTES", "128")
+    monkeypatch.setenv("WORKFLOW_SIDE_EFFECT_MAX_PAYLOAD_BYTES", "128")
+
+    store = ExecutionStore(db_path=str(tmp_path / "payload_governance.db"))
+    execution_id = "exec_payload_limits"
+    oversized_payload = {"blob": "x" * 5000}
+
+    store.upsert_workflow_execution(
+        execution_id=execution_id,
+        workflow_id="wf_payload_limits",
+        workflow_name="payload_limits",
+        workflow_kind="composition",
+        workflow_type="sequential",
+        status="running",
+        inputs={},
+        metadata={},
+    )
+
+    artifact = store.append_workflow_artifact(
+        execution_id=execution_id,
+        step_key="s1",
+        artifact_type="output",
+        payload=oversized_payload,
+        source="unit_test",
+        metadata={},
+    )
+    assert artifact is not None
+    assert artifact["truncated"] is True
+    assert artifact["original_size_bytes"] > artifact["payload_size_bytes"]
+
+    side_effect = store.append_workflow_side_effect(
+        execution_id=execution_id,
+        step_key="s1",
+        tool_name="store_belief",
+        side_effect_key="fx_large",
+        status="completed",
+        request_data=oversized_payload,
+        response_data=oversized_payload,
+        trace_id="tr_payload_limits",
+        session_id="sess_payload_limits",
+    )
+    assert side_effect["request_truncated"] is True
+    assert side_effect["response_truncated"] is True
+
+    run = store.get_workflow_execution(
+        execution_id,
+        include_steps=False,
+        include_artifacts=True,
+        include_side_effects=True,
+    )
+    assert run is not None
+    assert run["artifacts"][0]["payload"]["_truncated"] is True
+    assert run["artifacts"][0]["metadata"]["truncated"] is True
+    assert run["side_effects"][0]["request"]["_truncated"] is True
+    assert run["side_effects"][0]["response"]["_truncated"] is True

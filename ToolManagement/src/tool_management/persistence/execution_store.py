@@ -631,6 +631,50 @@ class ExecutionStore:
         except Exception:
             return default
 
+    @staticmethod
+    def _int_env(name: str, default: int, minimum: int = 1) -> int:
+        raw = os.getenv(name, str(default)).strip()
+        try:
+            value = int(raw)
+        except Exception:
+            value = default
+        return max(minimum, value)
+
+    @classmethod
+    def _compact_payload_for_storage(
+        cls,
+        payload: Any,
+        *,
+        max_bytes: int,
+    ) -> Dict[str, Any]:
+        raw_json = json.dumps(payload, default=str) if payload is not None else "null"
+        raw_bytes = len(raw_json.encode("utf-8"))
+        raw_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+        if raw_bytes <= max_bytes:
+            return {
+                "json": raw_json,
+                "original_size_bytes": raw_bytes,
+                "stored_size_bytes": raw_bytes,
+                "content_hash": raw_hash,
+                "truncated": False,
+            }
+
+        envelope = {
+            "_truncated": True,
+            "original_size_bytes": raw_bytes,
+            "original_sha256": raw_hash,
+            "preview": raw_json[:max_bytes],
+        }
+        compact_json = json.dumps(envelope, default=str)
+        compact_bytes = len(compact_json.encode("utf-8"))
+        return {
+            "json": compact_json,
+            "original_size_bytes": raw_bytes,
+            "stored_size_bytes": compact_bytes,
+            "content_hash": raw_hash,
+            "truncated": True,
+        }
+
     def upsert_workflow_definition(
         self,
         *,
@@ -928,11 +972,31 @@ class ExecutionStore:
         source: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        payload_json = json.dumps(payload, default=str) if payload is not None else "null"
-        payload_size = len(payload_json.encode("utf-8"))
-        content_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        allowed_types = {
+            part.strip()
+            for part in os.getenv("WORKFLOW_ARTIFACT_TYPES", "input,output,error").split(",")
+            if part.strip()
+        }
+        if allowed_types and artifact_type not in allowed_types:
+            return None
+
+        max_bytes = self._int_env("WORKFLOW_ARTIFACT_MAX_PAYLOAD_BYTES", 262_144, minimum=256)
+        compact_payload = self._compact_payload_for_storage(payload, max_bytes=max_bytes)
+        payload_json = compact_payload["json"]
+        payload_size = int(compact_payload["stored_size_bytes"])
+        content_hash = str(compact_payload["content_hash"])
         created_at = time.time()
-        metadata_json = json.dumps(metadata or {}, default=str)
+        artifact_metadata = dict(metadata or {})
+        if compact_payload["truncated"]:
+            artifact_metadata.update(
+                {
+                    "truncated": True,
+                    "original_size_bytes": int(compact_payload["original_size_bytes"]),
+                    "stored_size_bytes": payload_size,
+                    "max_payload_bytes": max_bytes,
+                }
+            )
+        metadata_json = json.dumps(artifact_metadata, default=str)
 
         with self._lock:
             with self._conn() as conn:
@@ -968,7 +1032,9 @@ class ExecutionStore:
             "payload_size_bytes": payload_size,
             "source": source,
             "created_at": created_at,
-            "metadata": metadata or {},
+            "metadata": artifact_metadata,
+            "truncated": bool(compact_payload["truncated"]),
+            "original_size_bytes": int(compact_payload["original_size_bytes"]),
         }
 
     def append_workflow_side_effect(
@@ -990,12 +1056,13 @@ class ExecutionStore:
         replay_of_execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         created_at = time.time()
-        request_json = json.dumps(request_data, default=str) if request_data is not None else None
-        response_json = json.dumps(response_data, default=str) if response_data is not None else None
+        max_bytes = self._int_env("WORKFLOW_SIDE_EFFECT_MAX_PAYLOAD_BYTES", 131_072, minimum=256)
+        compact_request = self._compact_payload_for_storage(request_data, max_bytes=max_bytes)
+        compact_response = self._compact_payload_for_storage(response_data, max_bytes=max_bytes)
+        request_json = compact_request["json"] if request_data is not None else None
+        response_json = compact_response["json"] if response_data is not None else None
         if not request_hash and request_data is not None:
-            request_hash = hashlib.sha256(
-                json.dumps(request_data, default=str, sort_keys=True).encode("utf-8")
-            ).hexdigest()
+            request_hash = str(compact_request["content_hash"])
 
         with self._lock:
             with self._conn() as conn:
@@ -1042,6 +1109,10 @@ class ExecutionStore:
             "replay_policy": replay_policy,
             "replay_of_execution_id": replay_of_execution_id,
             "created_at": created_at,
+            "request_truncated": bool(compact_request["truncated"]),
+            "response_truncated": bool(compact_response["truncated"]),
+            "request_original_size_bytes": int(compact_request["original_size_bytes"]),
+            "response_original_size_bytes": int(compact_response["original_size_bytes"]),
         }
 
     def list_workflow_side_effects(
