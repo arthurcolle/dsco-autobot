@@ -28,6 +28,13 @@ from .warrants import (
     get_warrant_store,
     set_warrant_store,
 )
+from .wallet_owner import (
+    build_swarm_owner_message,
+    verify_electrum_signature,
+    require_swarm_owner_mutation,
+    clear_swarm_owner_nonce_cache,
+    is_swarm_owner_enforcement_enabled,
+)
 
 __all__ = [
     "KeyPair",
@@ -43,4 +50,9 @@ __all__ = [
     "MaxSize",
     "get_warrant_store",
     "set_warrant_store",
+    "build_swarm_owner_message",
+    "verify_electrum_signature",
+    "require_swarm_owner_mutation",
+    "clear_swarm_owner_nonce_cache",
+    "is_swarm_owner_enforcement_enabled",
 ]

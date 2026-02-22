@@ -12,9 +12,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
 from pydantic import BaseModel, Field
 
+from ..auth.wallet_owner import require_swarm_owner_mutation, is_swarm_owner_enforcement_enabled
 from ..swarm.persistence import get_swarm_db
 from ..swarm.swarm_mcp_bridge import get_swarm_mcp_bridge
 from ..swarm.mcp_task_types import MCPTaskType, is_mcp_task_type, MCP_BACKEND_CAPABILITIES
@@ -22,7 +23,11 @@ from ..swarm.agent_capabilities import AgentMCPProfile, create_specialized_profi
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/swarm", tags=["swarm"])
+router = APIRouter(
+    prefix="/swarm",
+    tags=["swarm"],
+    dependencies=[Depends(require_swarm_owner_mutation)],
+)
 
 
 # =============================================================================
@@ -130,6 +135,16 @@ async def swarm_root():
         "version": "3.0.0",
         "persistence": "DuckDB",
         "features": ["MCP Integration", "Skill Learning", "Event Coordination"],
+        "owner_lock": {
+            "enabled": bool(is_swarm_owner_enforcement_enabled()),
+            "mode": "electrum_signed_mutations",
+            "required_headers": [
+                "x-swarm-owner-address",
+                "x-swarm-owner-signature",
+                "x-swarm-owner-timestamp",
+                "x-swarm-owner-nonce",
+            ],
+        },
         "endpoints": {
             # Core endpoints
             "list_swarms": "GET /api/v1/swarm/list",
