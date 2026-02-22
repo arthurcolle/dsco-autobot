@@ -583,20 +583,72 @@ async def _embed_and_graph_sync(backend_id: str, tools: List[Dict], backend_url:
 
 
 @router.get("/backends")
-async def list_backends():
-    """List all registered backends."""
+async def list_backends(
+    hours: int = Query(default=24, ge=1, le=720),
+):
+    """List all registered backends with rich latency/error and circuit-breaker metadata."""
     store = get_tool_store()
-    return store.list_backends()
+    breaker = get_backend_circuit_breaker()
+    metrics_by_backend = store.get_backend_latency_metrics(hours=hours)
+    circuits = breaker.get_all_states()
+
+    enriched: List[Dict[str, Any]] = []
+    for backend in store.list_backends():
+        backend_id = backend.get("backend_id")
+        enriched.append(
+            {
+                **backend,
+                "metrics": metrics_by_backend.get(
+                    backend_id,
+                    {
+                        "window_hours": hours,
+                        "calls": 0,
+                        "successes": 0,
+                        "failures": 0,
+                        "error_rate": 0.0,
+                        "avg_latency_ms": 0.0,
+                        "p50_latency_ms": 0.0,
+                        "p95_latency_ms": 0.0,
+                        "p99_latency_ms": 0.0,
+                        "last_call_at": None,
+                    },
+                ),
+                "circuit_breaker": circuits.get(backend_id, {"status": "closed"}),
+            }
+        )
+    return enriched
 
 
 @router.get("/backends/{backend_id}")
-async def get_backend(backend_id: str):
-    """Get a specific backend."""
+async def get_backend(
+    backend_id: str,
+    hours: int = Query(default=24, ge=1, le=720),
+):
+    """Get one backend enriched with latency/error metrics and circuit-breaker state."""
     store = get_tool_store()
     backend = store.get_backend(backend_id)
     if not backend:
         raise HTTPException(status_code=404, detail=f"Backend not found: {backend_id}")
-    return backend
+    breaker = get_backend_circuit_breaker()
+    return {
+        **backend,
+        "metrics": store.get_backend_latency_metrics(hours=hours).get(
+            backend_id,
+            {
+                "window_hours": hours,
+                "calls": 0,
+                "successes": 0,
+                "failures": 0,
+                "error_rate": 0.0,
+                "avg_latency_ms": 0.0,
+                "p50_latency_ms": 0.0,
+                "p95_latency_ms": 0.0,
+                "p99_latency_ms": 0.0,
+                "last_call_at": None,
+            },
+        ),
+        "circuit_breaker": breaker.get_state(backend_id),
+    }
 
 
 @router.get("/backends/{backend_id}/tools")
@@ -642,6 +694,68 @@ async def get_popular(limit: int = 10):
     """Get most-used tools by call count."""
     store = get_tool_store()
     return {"tools": store.get_popular_tools(limit=limit)}
+
+
+@router.get("/stats/backends")
+async def get_backend_metrics(
+    hours: int = Query(default=24, ge=1, le=720),
+):
+    """Get backend-level latency/error metrics and circuit-breaker state."""
+    store = get_tool_store()
+    breaker = get_backend_circuit_breaker()
+    metrics = store.get_backend_latency_metrics(hours=hours)
+    states = breaker.get_all_states()
+    enriched = {
+        backend_id: {
+            **payload,
+            "circuit_breaker": states.get(backend_id, {"status": "closed"}),
+        }
+        for backend_id, payload in metrics.items()
+    }
+    return {
+        "window_hours": hours,
+        "count": len(enriched),
+        "backends": enriched,
+    }
+
+
+@router.get("/analytics/overview")
+async def get_analytics_overview(
+    hours: int = Query(default=24, ge=1, le=720),
+    bucket_minutes: int = Query(default=60, ge=1, le=1440),
+    chain_limit: int = Query(default=20, ge=1, le=200),
+):
+    """Get a rich cross-surface analytics snapshot for MCP and general clients."""
+    store = get_tool_store()
+    execution_store = get_execution_store()
+
+    response: Dict[str, Any] = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "window_hours": hours,
+        "bucket_minutes": bucket_minutes,
+        "registry": store.get_stats(),
+        "backend_metrics": store.get_backend_latency_metrics(hours=hours),
+        "usage_timeseries": store.get_tool_usage_timeseries(
+            hours=hours,
+            bucket_minutes=bucket_minutes,
+            limit=5000,
+        ),
+        "failure_modes": store.get_failure_modes(hours=hours, limit=50),
+        "dependencies": store.list_tool_dependencies(limit=100),
+    }
+
+    try:
+        response["execution_analytics"] = execution_store.get_usage_stats(hours=hours)
+        response["workflow_analytics"] = execution_store.get_workflow_analytics(hours=hours)
+        response["chain_analytics"] = execution_store.get_workflow_chain_analytics(
+            hours=hours,
+            limit=chain_limit,
+            min_chain_length=2,
+        )
+    except Exception as exc:
+        response["execution_analytics_error"] = str(exc)
+
+    return response
 
 
 @router.post("/query")

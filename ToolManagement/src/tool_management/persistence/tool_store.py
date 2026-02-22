@@ -997,6 +997,48 @@ class ToolStore:
             ],
         }
 
+    def get_backend_latency_metrics(self, *, hours: int = 24) -> Dict[str, Dict[str, Any]]:
+        """Get backend-level reliability/latency metrics from durable call history."""
+        since_ts = self._since_timestamp(hours)
+        with self._get_conn(read_only=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    backend_id,
+                    COUNT(*) AS calls,
+                    SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
+                    AVG(latency_ms) AS avg_latency_ms,
+                    quantile_cont(latency_ms, 0.50) AS p50_latency_ms,
+                    quantile_cont(latency_ms, 0.95) AS p95_latency_ms,
+                    quantile_cont(latency_ms, 0.99) AS p99_latency_ms,
+                    MAX(created_at) AS last_call_at
+                FROM tool_call_history
+                WHERE created_at >= ?
+                GROUP BY backend_id
+                ORDER BY calls DESC
+                """,
+                [since_ts],
+            ).fetchall()
+
+        metrics: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            calls = int(row[1] or 0)
+            failures = int(row[3] or 0)
+            metrics[row[0]] = {
+                "window_hours": max(1, int(hours)),
+                "calls": calls,
+                "successes": int(row[2] or 0),
+                "failures": failures,
+                "error_rate": (float(failures) / calls) if calls else 0.0,
+                "avg_latency_ms": float(row[4] or 0.0),
+                "p50_latency_ms": float(row[5] or 0.0),
+                "p95_latency_ms": float(row[6] or 0.0),
+                "p99_latency_ms": float(row[7] or 0.0),
+                "last_call_at": str(row[8]) if row[8] else None,
+            }
+        return metrics
+
     def upsert_tool_dependency(
         self,
         *,

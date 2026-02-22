@@ -155,3 +155,25 @@ def test_upsert_and_list_tool_dependencies(tmp_path, monkeypatch):
     assert edge["target_tool_id"] == "distributed-search-mcp:read"
     assert edge["call_count"] == 5
     assert edge["confidence"] >= 0.9
+
+
+def test_backend_latency_metrics(tmp_path, monkeypatch):
+    store = _fresh_store(tmp_path, monkeypatch)
+    _register_baseline_tools(store)
+
+    store.record_call("distributed-search-mcp:search", 100.0, True, execution_mode="sync")
+    store.record_call("distributed-search-mcp:read", 200.0, True, execution_mode="job")
+    store.record_call(
+        "distributed-memory-mcp:store_belief",
+        320.0,
+        False,
+        execution_mode="sync",
+        error_code="HTTP_500",
+        error_message="failed",
+    )
+
+    metrics = store.get_backend_latency_metrics(hours=24)
+    assert "distributed-search-mcp" in metrics
+    assert "distributed-memory-mcp" in metrics
+    assert metrics["distributed-search-mcp"]["calls"] == 2
+    assert metrics["distributed-memory-mcp"]["failures"] == 1

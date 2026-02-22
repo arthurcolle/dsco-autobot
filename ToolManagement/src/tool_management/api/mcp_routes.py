@@ -283,7 +283,7 @@ async def mcp_health():
         "registry_tools": len(registry),
         "backend_tools": total_backend_tools,
         "total_tools": len(registry) + total_backend_tools,
-        "meta_tools": 20,  # Includes discovery, execution, batch, job-control, and rich analytics/export meta-tools.
+        "meta_tools": 22,  # Includes discovery, execution, batch, job-control, analytics, backend health, and export meta-tools.
         "active_sessions": len(mcp_server.sessions),
         "backends": healthy_backends
     }
@@ -567,6 +567,15 @@ async def mcp_capabilities():
         "capabilities": {
             "tools": {"listChanged": True},
             "resources": {"subscribe": True, "listChanged": True},
-            "prompts": {"listChanged": True}
+            "prompts": {"listChanged": True},
+            "analytics": {
+                "usage": True,
+                "toolMetrics": True,
+                "dependencyGraph": True,
+                "backendHealth": True,
+            },
+            "catalog": {
+                "exportFormats": ["mcp", "openapi", "schemas"],
+            },
         }
     }

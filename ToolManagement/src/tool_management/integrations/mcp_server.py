@@ -725,6 +725,32 @@ class MCPServer:
                 }
             },
             {
+                "name": "get_backend_health",
+                "description": "Get backend-level latency/error metrics and circuit-breaker state for operational routing.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {
+                            "type": "integer",
+                            "description": "Lookback window in hours",
+                            "default": 24
+                        }
+                    }
+                }
+            },
+            {
+                "name": "get_analytics_overview",
+                "description": "Get a rich analytics snapshot that combines registry, tool, backend, job, workflow, and chain intelligence.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "bucket_minutes": {"type": "integer", "default": 60},
+                        "chain_limit": {"type": "integer", "default": 20}
+                    }
+                }
+            },
+            {
                 "name": "get_tool_metrics",
                 "description": "Get per-tool latency percentiles, reliability, and most recent error from durable call history.",
                 "inputSchema": {
@@ -1780,6 +1806,67 @@ class MCPServer:
                     "isError": True
                 }
 
+        elif tool_name == "get_backend_health":
+            try:
+                client = get_http_client()
+                hours = int(tool_args.get("hours", 24))
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/stats/backends",
+                    params={"hours": hours},
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_backend_health failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_backend_health failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_analytics_overview":
+            try:
+                client = get_http_client()
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/analytics/overview",
+                    params={
+                        "hours": int(tool_args.get("hours", 24)),
+                        "bucket_minutes": int(tool_args.get("bucket_minutes", 60)),
+                        "chain_limit": int(tool_args.get("chain_limit", 20)),
+                    },
+                    timeout=20.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_analytics_overview failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_analytics_overview failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
         elif tool_name == "get_tool_metrics":
             try:
                 client = get_http_client()
@@ -1981,6 +2068,8 @@ class MCPServer:
                             "get_job_status",
                             "cancel_job",
                             "get_usage_stats",
+                            "get_backend_health",
+                            "get_analytics_overview",
                             "get_tool_metrics",
                             "get_tool_usage_timeseries",
                             "get_tool_dependencies",
