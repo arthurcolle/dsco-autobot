@@ -20,6 +20,7 @@ from ..registry import get_registry
 from ..queue import get_task_queue
 from ..integrations.mcp_server import MCPServer, MCPRequest, MCPResponse, MCPNotification
 from ..oauth import require_bearer, make_401_response
+from ..persistence import get_tool_store
 
 # Output guard for enforcing size limits and URL capture
 try:
@@ -294,6 +295,24 @@ async def mcp_aggregated_tools():
     """Get all tools aggregated from all backends"""
     queue = get_task_queue()
     registry = get_registry()
+    store = get_tool_store()
+    persisted_rows, _ = store.query_tools(
+        limit=5000,
+        offset=0,
+        columns=[
+            "tool_id",
+            "name",
+            "backend_id",
+            "call_count",
+            "error_count",
+            "avg_latency_ms",
+            "category",
+            "tags",
+            "description",
+        ],
+    )
+    persisted_by_name = {row.get("name"): row for row in persisted_rows if row.get("name")}
+    persisted_by_tool_id = {row.get("tool_id"): row for row in persisted_rows if row.get("tool_id")}
 
     all_tools = []
 
@@ -301,6 +320,20 @@ async def mcp_aggregated_tools():
     registry_tools = registry.to_mcp_tools()
     for tool in registry_tools:
         tool["source"] = "registry"
+        name = tool.get("name")
+        persisted = persisted_by_name.get(name, {})
+        calls = int(persisted.get("call_count", 0) or 0)
+        errors = int(persisted.get("error_count", 0) or 0)
+        tool["observability"] = {
+            "tool_id": persisted.get("tool_id"),
+            "backend_id": persisted.get("backend_id"),
+            "call_count": calls,
+            "error_count": errors,
+            "error_rate": (float(errors) / calls) if calls else 0.0,
+            "avg_latency_ms": float(persisted.get("avg_latency_ms", 0.0) or 0.0),
+            "category": persisted.get("category"),
+            "tags": persisted.get("tags", []),
+        }
         all_tools.append(tool)
 
     # Backend tools
@@ -313,6 +346,24 @@ async def mcp_aggregated_tools():
                 for tool in tools:
                     tool["source"] = backend.id
                     tool["backend_url"] = backend.url
+                    name = tool.get("name")
+                    persisted = persisted_by_name.get(name)
+                    if not persisted:
+                        tool_id = f"{backend.id}:{name}" if name else None
+                        persisted = persisted_by_tool_id.get(tool_id) if tool_id else None
+                    if persisted:
+                        calls = int(persisted.get("call_count", 0) or 0)
+                        errors = int(persisted.get("error_count", 0) or 0)
+                        tool["observability"] = {
+                            "tool_id": persisted.get("tool_id"),
+                            "backend_id": persisted.get("backend_id"),
+                            "call_count": calls,
+                            "error_count": errors,
+                            "error_rate": (float(errors) / calls) if calls else 0.0,
+                            "avg_latency_ms": float(persisted.get("avg_latency_ms", 0.0) or 0.0),
+                            "category": persisted.get("category"),
+                            "tags": persisted.get("tags", []),
+                        }
                     all_tools.append(tool)
             except Exception as e:
                 logger.warning(f"Failed to fetch tools from {backend.id}: {e}")
@@ -324,6 +375,62 @@ async def mcp_aggregated_tools():
             "registry": len(registry_tools),
             **{b.id: 0 for b in backends if b.metadata.get("native", False)}
         }
+    }
+
+
+@router.get("/catalog")
+async def mcp_catalog(
+    hours: int = 24,
+    limit: int = 500,
+):
+    """
+    Rich MCP catalog payload for clients that need immediate routing/intelligence hints.
+    """
+    store = get_tool_store()
+    rows, total = store.query_tools(
+        limit=max(1, min(int(limit), 5000)),
+        offset=0,
+        sort_by="call_count",
+        sort_order="desc",
+    )
+    backend_metrics = store.get_backend_latency_metrics(hours=max(1, int(hours)))
+    dependencies = store.list_tool_dependencies(limit=500)
+
+    dependency_index: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in dependencies:
+        source_id = edge.get("source_tool_id")
+        if not source_id:
+            continue
+        dependency_index.setdefault(source_id, []).append(edge)
+
+    tools_payload: List[Dict[str, Any]] = []
+    for row in rows:
+        calls = int(row.get("call_count", 0) or 0)
+        errors = int(row.get("error_count", 0) or 0)
+        tools_payload.append(
+            {
+                "tool_id": row.get("tool_id"),
+                "name": row.get("name"),
+                "backend_id": row.get("backend_id"),
+                "description": row.get("description"),
+                "category": row.get("category"),
+                "tags": row.get("tags", []),
+                "stats": {
+                    "call_count": calls,
+                    "error_count": errors,
+                    "error_rate": (float(errors) / calls) if calls else 0.0,
+                    "avg_latency_ms": float(row.get("avg_latency_ms", 0.0) or 0.0),
+                },
+                "dependencies": dependency_index.get(row.get("tool_id"), []),
+            }
+        )
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "count": len(tools_payload),
+        "total": int(total),
+        "tools": tools_payload,
+        "backend_metrics": backend_metrics,
     }
 
 
