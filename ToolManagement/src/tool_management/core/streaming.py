@@ -1074,6 +1074,7 @@ def create_tool_executor_for_jobs():
         progress_callback: Callable = None,
     ) -> Any:
         from ..persistence import get_tool_store
+        from .circuit_breaker import get_backend_circuit_breaker
 
         # Pop internal meta-keys (no longer used for timeout, kept for compat)
         inputs.pop("_timeout", None)
@@ -1086,34 +1087,49 @@ def create_tool_executor_for_jobs():
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+        breaker = get_backend_circuit_breaker()
+        allowed, state = breaker.allow_request(backend_id)
+        if not allowed:
+            retry_after = state.get("retry_after_seconds")
+            retry_suffix = f" retry_after={retry_after}s" if retry_after is not None else ""
+            raise RuntimeError(
+                f"CIRCUIT_OPEN: backend {backend_id} temporarily unavailable.{retry_suffix}"
+            )
 
         if progress_callback:
             await progress_callback(progress=30, message="invoking_backend")
 
-        response = await _shared_client.post(
-            f"{backend_url}/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": str(_uuid4()),
-                "method": "tools/call",
-                "params": {
-                    "name": resolved_name,
-                    "arguments": inputs,
+        try:
+            response = await _shared_client.post(
+                f"{backend_url}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": str(_uuid4()),
+                    "method": "tools/call",
+                    "params": {
+                        "name": resolved_name,
+                        "arguments": inputs,
+                    },
                 },
-            },
-        )
+            )
+        except Exception as exc:
+            breaker.record_failure(backend_id, error=str(exc))
+            raise
 
         if progress_callback:
             await progress_callback(progress=80, message="processing_backend_response")
 
         if response.status_code != 200:
+            breaker.record_failure(backend_id, error=f"http {response.status_code}")
             raise RuntimeError(f"Backend {backend_id} returned HTTP {response.status_code}: {response.text[:300]}")
 
         data = response.json()
         if "error" in data and data["error"]:
+            breaker.record_failure(backend_id, error=str(data["error"]))
             raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
 
         result = data.get("result")
+        breaker.record_success(backend_id)
 
         # Apply output guard if available
         try:

@@ -737,6 +737,7 @@ def create_app() -> FastAPI:
         warm_pool_state = getattr(app.state, "warm_pool_state", {"enabled": False})
         cleanup_state = getattr(app.state, "cleanup_state", {"enabled": False})
         durable_jobs = {"enabled": False}
+        circuit_breakers = {}
         try:
             from .core.streaming import get_streaming_executor
             executor = get_streaming_executor()
@@ -749,6 +750,11 @@ def create_app() -> FastAPI:
                 }
         except Exception:
             pass
+        try:
+            from .core.circuit_breaker import get_backend_circuit_breaker
+            circuit_breakers = get_backend_circuit_breaker().get_all_states()
+        except Exception:
+            pass
         return {
             "status": "healthy",
             "tool_count": stats.get("tool_count", 0),
@@ -757,6 +763,7 @@ def create_app() -> FastAPI:
             "warm_pool": warm_pool_state,
             "cleanup": cleanup_state,
             "durable_jobs": durable_jobs,
+            "circuit_breakers": circuit_breakers,
         }
 
     # Include retrieval routes FIRST (specific paths before wildcards)

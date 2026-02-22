@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 import httpx
 
 from ..persistence import get_tool_store, RegisteredTool
+from ..core.circuit_breaker import get_backend_circuit_breaker
 
 # Output guard for enforcing size limits and URL capture
 try:
@@ -139,11 +140,27 @@ class AnnounceRequest(BaseModel):
 async def execute_tool(call: ToolCall) -> ToolResult:
     """Execute a single tool call."""
     store = get_tool_store()
+    breaker = get_backend_circuit_breaker()
     start = time.time()
+    backend_id: Optional[str] = None
 
     try:
         # Resolve the tool to backend
         backend_id, backend_url, tool_name = store.resolve_tool(call.tool)
+        allowed, circuit_state = breaker.allow_request(backend_id)
+        if not allowed:
+            retry_after = circuit_state.get("retry_after_seconds")
+            retry_suffix = f" retry_after={retry_after}s" if retry_after is not None else ""
+            return ToolResult(
+                tool=call.tool,
+                backend=backend_id,
+                success=False,
+                error=(
+                    f"CIRCUIT_OPEN: backend={backend_id} is temporarily unavailable "
+                    f"(status={circuit_state.get('status')}).{retry_suffix}"
+                ),
+                latency_ms=(time.time() - start) * 1000,
+            )
         tool_id = f"{backend_id}:{tool_name}"
         request_hash = None
         use_idempotency = bool(call.idempotency_key) and _is_write_tool(call.tool, tool_name)
@@ -207,6 +224,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
 
             if "error" in data:
                 store.record_call(f"{backend_id}:{tool_name}", latency_ms, False)
+                breaker.record_failure(backend_id, error=str(data.get("error")))
                 return ToolResult(
                     tool=call.tool,
                     backend=backend_id,
@@ -216,6 +234,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 )
 
             store.record_call(f"{backend_id}:{tool_name}", latency_ms, True)
+            breaker.record_success(backend_id)
 
             result_data = data.get("result")
 
@@ -245,6 +264,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             )
         else:
             store.record_call(f"{backend_id}:{tool_name}", latency_ms, False)
+            breaker.record_failure(backend_id, error=f"http {response.status_code}")
             return ToolResult(
                 tool=call.tool,
                 backend=backend_id,
@@ -262,6 +282,8 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             latency_ms=(time.time() - start) * 1000
         )
     except httpx.TimeoutException:
+        if backend_id:
+            breaker.record_failure(backend_id, error=f"timeout after {call.timeout}s")
         return ToolResult(
             tool=call.tool,
             success=False,
@@ -269,6 +291,8 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             latency_ms=(time.time() - start) * 1000
         )
     except Exception as e:
+        if backend_id:
+            breaker.record_failure(backend_id, error=str(e))
         logger.exception(f"Tool execution error: {call.tool}")
         return ToolResult(
             tool=call.tool,
