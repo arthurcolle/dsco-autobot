@@ -1015,7 +1015,6 @@ POST /sessions
     image=image,
     secrets=[Secret.from_name(NEO4J_SECRET_NAME)],
     timeout=600,
-    allow_concurrent_inputs=100
 )
 @asgi_app()
 def app():

@@ -20,6 +20,7 @@ image = (
         "uvicorn[standard]==0.32.0",
         "pydantic==2.9.2",
         "httpx==0.27.2",
+        "requests>=2.28.0",  # needed by native/__init__.py -> publish_mcp -> substack_client
     )
     .add_local_dir(SRC_DIR, remote_path="/root/src")
     .add_local_dir(NATIVE_DIR, remote_path="/root/native")
@@ -29,9 +30,13 @@ image = (
 @app.function(
     image=image,
     timeout=300,
-    min_containers=1,  # Keep at least 1 instance running always
+    min_containers=1,
+    max_containers=10,
+    buffer_containers=2,
+
+    scaledown_window=60,
 )
-@modal.concurrent(max_inputs=50)
+@modal.concurrent(max_inputs=20, target_inputs=5)
 @modal.asgi_app()
 def web():
     """Serve the Distributed Search MCP."""

@@ -122,7 +122,7 @@ class GraphManagementClient:
 
     # ==================== Core Graph Operations ====================
 
-    async def execute_query(self, query: str, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def execute_query(self, query: str, parameters: Dict[str, Any] = None, strategy: str = "all") -> Dict[str, Any]:
         """Execute a Cypher query against the graph."""
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -130,19 +130,20 @@ class GraphManagementClient:
                 headers=self.headers,
                 json={
                     "query": query,
-                    "parameters": parameters or {}
+                    "parameters": parameters or {},
+                    "strategy": strategy,
                 }
             )
             response.raise_for_status()
             return response.json()
 
-    async def execute_transaction(self, statements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def execute_transaction(self, statements: List[Dict[str, Any]], strategy: str = "all") -> Dict[str, Any]:
         """Execute multiple statements in a transaction."""
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.base_url}/v1/tx",
                 headers=self.headers,
-                json={"statements": statements}
+                json={"statements": statements, "strategy": strategy}
             )
             response.raise_for_status()
             return response.json()

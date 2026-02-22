@@ -55,6 +55,14 @@ except ImportError:
     URL_QUEUE_AVAILABLE = False
     logger.info("URL queue not available - running in standalone mode")
 
+# Output guard for enforcing size limits and URL capture
+try:
+    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
+    logger.info("Output guard not available - running without output limits")
+
 
 # =============================================================================
 # MODELS
@@ -177,6 +185,16 @@ class DistributedSearchMCP:
                         "type": "integer",
                         "description": "Number of results (1-20)",
                         "default": 10
+                    },
+                    "max_output_chars": {
+                        "type": "integer",
+                        "description": "Maximum output size in characters. Truncates if exceeded.",
+                        "default": 32000
+                    },
+                    "max_links": {
+                        "type": "integer",
+                        "description": "Maximum URLs in output. Extra URLs are captured for background processing.",
+                        "default": 50
                     }
                 },
                 "required": ["query"]
@@ -199,6 +217,11 @@ class DistributedSearchMCP:
                         "type": "boolean",
                         "description": "Include image descriptions",
                         "default": False
+                    },
+                    "max_output_chars": {
+                        "type": "integer",
+                        "description": "Maximum output size in characters. Truncates if exceeded.",
+                        "default": 32000
                     }
                 },
                 "required": ["url"]
@@ -321,9 +344,8 @@ class DistributedSearchMCP:
             logger.error(f"✗ {self.SERVICE_NAME} failed to connect: {e}")
             raise
 
-        # Register with central registry if configured
-        if self.registry_url:
-            await self._register_with_registry()
+        # Announce to Tool Management
+        await self._announce_to_registry()
 
     async def stop(self):
         """Stop the MCP server."""
@@ -337,37 +359,32 @@ class DistributedSearchMCP:
         self._state.connected_at = None
         logger.info(f"✓ {self.SERVICE_NAME} stopped")
 
-    async def _register_with_registry(self):
-        """Register this server with the central registry."""
-        if not self.registry_url:
-            return
-
+    async def _announce_to_registry(self):
+        """Announce this server and its tools to Tool Management."""
+        registry_url = self.registry_url or os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+        service_url = os.getenv("SERVICE_URL", f"http://localhost:{self.port}")
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
-                    f"{self.registry_url}/api/v1/services",
+                    f"{registry_url}/api/v1/tools/announce",
                     json={
-                        "service_id": self.SERVICE_ID,
+                        "backend_id": self.SERVICE_ID,
                         "name": self.SERVICE_NAME,
-                        "base_url": f"http://localhost:{self.port}",
-                        "service_type": "mcp",
-                        "version": self.VERSION,
-                        "tool_names": list(self._tools.keys()),
-                        "capabilities": {
-                            "tool_execution": True,
-                            "tool_discovery": True,
-                            "streaming": True,
-                            "mcp_protocol": True,
-                        }
+                        "url": service_url,
+                        "health_endpoint": "/health",
+                        "mcp_endpoint": "/mcp",
+                        "capabilities": list(self._tools.keys()),
+                        "tools": self.tools,
                     },
-                    timeout=10.0
+                    timeout=15.0,
                 )
-                if response.status_code in (200, 201):
-                    logger.info(f"✓ Registered with registry at {self.registry_url}")
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Announced {result.get('registered', 0)} tools to {registry_url}")
                 else:
-                    logger.warning(f"Registry registration returned {response.status_code}")
+                    logger.warning(f"Announce returned {response.status_code}: {response.text[:200]}")
         except Exception as e:
-            logger.warning(f"Could not register with registry: {e}")
+            logger.warning(f"Could not announce to registry: {e}")
 
     # =========================================================================
     # MCP PROTOCOL HANDLERS
@@ -412,7 +429,7 @@ class DistributedSearchMCP:
 
         result = await tool.handler(arguments)
 
-        return {
+        mcp_result = {
             "content": [
                 {
                     "type": "text",
@@ -420,6 +437,27 @@ class DistributedSearchMCP:
                 }
             ]
         }
+
+        # Apply output guard: enforce size limits, cap links, capture URLs
+        if OUTPUT_GUARD_AVAILABLE:
+            # Allow per-call overrides from tool arguments
+            per_call_config = None
+            max_chars = arguments.get("max_output_chars")
+            max_links = arguments.get("max_links")
+            if max_chars or max_links:
+                per_call_config = OutputGuardConfig(
+                    max_output_chars=max_chars or 32_000,
+                    max_links=max_links or 50,
+                )
+
+            mcp_result = guard_mcp_content(
+                mcp_result,
+                tool_name=tool_name,
+                config=per_call_config,
+                source_context={"server": self.SERVICE_ID},
+            )
+
+        return mcp_result
 
     async def handle_mcp_request(self, request: MCPRequest) -> MCPResponse:
         """Route MCP request to appropriate handler."""
@@ -576,10 +614,12 @@ class DistributedSearchMCP:
 
             if response.status_code == 200:
                 data = response.json()
+                # Jina Reader wraps response in a "data" field
+                inner = data.get("data", {}) if isinstance(data.get("data"), dict) else data
                 return {
                     "url": url,
-                    "title": data.get("title", ""),
-                    "content": data.get("content", ""),
+                    "title": inner.get("title", ""),
+                    "content": inner.get("content", ""),
                     "success": True
                 }
             else:
@@ -597,9 +637,9 @@ class DistributedSearchMCP:
 
     async def _execute_verify(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Fact-check a statement."""
-        statement = args.get("statement")
+        statement = args.get("statement") or args.get("claim")
         if not statement:
-            raise ValueError("statement is required")
+            raise ValueError("statement (or claim) is required")
 
         # Search for evidence
         search_result = await self._execute_search({
@@ -779,41 +819,30 @@ async def lifespan(app: FastAPI):
 
     await _server.start()
 
-    # Register tools with central registry
-    registry_url = os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
-    service_url = os.getenv("SERVICE_URL", f"http://localhost:{os.getenv('PORT', '4001')}")
+    # Background heartbeat: re-announce to registry every 60s
+    _heartbeat_task = None
 
-    try:
-        from tool_management.client import ToolManagementClient
+    async def _heartbeat_loop():
+        await asyncio.sleep(30)  # First heartbeat after 30s
+        while True:
+            try:
+                await _server._announce_to_registry()
+                logger.debug("Heartbeat: re-announced to registry")
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+            await asyncio.sleep(60)
 
-        client = ToolManagementClient(
-            registry_url=registry_url,
-            provider_id=DistributedSearchMCP.SERVICE_ID,
-            provider_url=service_url,
-            namespace="search",
-        )
-
-        # Register each tool
-        for tool in _server.tools:
-            client._tools[tool["name"]] = type("RegisteredTool", (), {
-                "name": tool["name"],
-                "description": tool["description"],
-                "input_schema": tool["inputSchema"],
-                "handler": lambda **kw: None,  # Execution happens via /execute endpoint
-                "output_schema": None,
-                "namespace": "search",
-                "tags": ["search", "jina"],
-            })()
-
-        await client.register_all()
-        logger.info(f"Registered {len(_server.tools)} tools with {registry_url}")
-
-    except ImportError:
-        logger.info("Tool management client not available, skipping global registration")
-    except Exception as e:
-        logger.warning(f"Could not register with central registry: {e}")
+    _heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     yield
+
+    if _heartbeat_task:
+        _heartbeat_task.cancel()
+        try:
+            await _heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
     await _server.stop()
 
 
@@ -891,6 +920,7 @@ async def execute_tool(request: ToolCallRequest):
     return {"result": result}
 
 
+@app.get("/mcp/sse")
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     """Server-Sent Events endpoint for MCP streaming."""
@@ -918,6 +948,19 @@ async def sse_endpoint(request: Request):
             "Connection": "keep-alive",
         }
     )
+
+
+@app.post("/mcp/sse")
+@app.post("/sse")
+async def sse_post_endpoint(request: Request):
+    """Handle MCP JSON-RPC POST requests via SSE URL (mcp-remote pattern)."""
+    if not _server:
+        raise HTTPException(503, "Server not initialized")
+
+    body = await request.json()
+    mcp_request = MCPRequest(**body)
+    response = await _server.handle_mcp_request(mcp_request)
+    return response.model_dump(exclude_none=True)
 
 
 # =============================================================================

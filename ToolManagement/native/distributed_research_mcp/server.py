@@ -47,6 +47,14 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Output guard for enforcing size limits and URL capture
+try:
+    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
+    logger.info("Output guard not available - running without output limits")
+
 
 # =============================================================================
 # MODELS
@@ -150,6 +158,13 @@ class DistributedResearchMCP:
     # Parallel AI endpoints (optional - degrades gracefully)
     PARALLEL_API_URL = "https://api.parallel.ai"
 
+    # Model mapping by processor tier
+    MODEL_MAP = {
+        ProcessorType.LITE: "claude-haiku-4-5-20251001",
+        ProcessorType.TURBO: "claude-sonnet-4-5-20250929",
+        ProcessorType.PREMIUM: "claude-opus-4-6",
+    }
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -157,6 +172,8 @@ class DistributedResearchMCP:
         registry_url: Optional[str] = None,
     ):
         self.api_key = api_key or os.getenv("PARALLEL_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.jina_api_key = os.getenv("JINA_API_KEY")
         self.port = port
         self.registry_url = registry_url or os.getenv("REGISTRY_URL")
 
@@ -170,6 +187,83 @@ class DistributedResearchMCP:
 
         # Register native tools
         self._register_tools()
+
+    # =========================================================================
+    # LLM + JINA HELPERS
+    # =========================================================================
+
+    async def _call_llm(
+        self,
+        prompt: str,
+        system: str = "You are a helpful research assistant.",
+        max_tokens: int = 4096,
+        processor: ProcessorType = ProcessorType.LITE,
+    ) -> Optional[str]:
+        """Call Anthropic API. Returns response text or None if unavailable."""
+        if not self.anthropic_api_key:
+            return None
+
+        model = self.MODEL_MAP.get(processor, self.MODEL_MAP[ProcessorType.LITE])
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": self.anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "max_tokens": max_tokens,
+                        "system": system,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get("content", [])
+                    return content[0]["text"] if content else None
+                else:
+                    logger.warning(f"LLM call failed ({resp.status_code}): {resp.text[:200]}")
+                    return None
+        except Exception as e:
+            logger.error(f"LLM call error: {e}")
+            return None
+
+    async def _jina_read(self, url: str) -> Optional[str]:
+        """Fetch URL content via Jina Reader API."""
+        headers = {}
+        if self.jina_api_key:
+            headers["Authorization"] = f"Bearer {self.jina_api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(f"https://r.jina.ai/{url}", headers=headers)
+                if resp.status_code == 200:
+                    return resp.text
+                return None
+        except Exception as e:
+            logger.error(f"Jina read error for {url}: {e}")
+            return None
+
+    async def _jina_search(self, query: str, num_results: int = 5) -> List[Dict[str, Any]]:
+        """Search via Jina Search API."""
+        headers = {"Accept": "application/json"}
+        if self.jina_api_key:
+            headers["Authorization"] = f"Bearer {self.jina_api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"https://s.jina.ai/{query}",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("data", [])[:num_results]
+                return []
+        except Exception as e:
+            logger.error(f"Jina search error: {e}")
+            return []
 
     def _register_tools(self):
         """Register all native MCP tools."""
@@ -432,9 +526,8 @@ class DistributedResearchMCP:
             logger.error(f"✗ {self.SERVICE_NAME} failed to connect: {e}")
             raise
 
-        # Register with central registry if configured
-        if self.registry_url:
-            await self._register_with_registry()
+        # Announce to Tool Management
+        await self._announce_to_registry()
 
     async def stop(self):
         """Stop the MCP server."""
@@ -448,38 +541,32 @@ class DistributedResearchMCP:
         self._state.connected_at = None
         logger.info(f"✓ {self.SERVICE_NAME} stopped")
 
-    async def _register_with_registry(self):
-        """Register this server with the central registry."""
-        if not self.registry_url:
-            return
-
+    async def _announce_to_registry(self):
+        """Announce this server and its tools to Tool Management."""
+        registry_url = self.registry_url or os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+        service_url = os.getenv("SERVICE_URL", f"http://localhost:{self.port}")
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
-                    f"{self.registry_url}/api/v1/services",
+                    f"{registry_url}/api/v1/tools/announce",
                     json={
-                        "service_id": self.SERVICE_ID,
+                        "backend_id": self.SERVICE_ID,
                         "name": self.SERVICE_NAME,
-                        "base_url": f"http://localhost:{self.port}",
-                        "service_type": "mcp",
-                        "version": self.VERSION,
-                        "tool_names": list(self._tools.keys()),
-                        "capabilities": {
-                            "tool_execution": True,
-                            "tool_discovery": True,
-                            "task_management": True,
-                            "parallel_execution": True,
-                            "mcp_protocol": True,
-                        }
+                        "url": service_url,
+                        "health_endpoint": "/health",
+                        "mcp_endpoint": "/mcp",
+                        "capabilities": list(self._tools.keys()),
+                        "tools": self.tools,
                     },
-                    timeout=10.0
+                    timeout=15.0,
                 )
-                if response.status_code in (200, 201):
-                    logger.info(f"✓ Registered with registry at {self.registry_url}")
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Announced {result.get('registered', 0)} tools to {registry_url}")
                 else:
-                    logger.warning(f"Registry registration returned {response.status_code}")
+                    logger.warning(f"Announce returned {response.status_code}: {response.text[:200]}")
         except Exception as e:
-            logger.warning(f"Could not register with registry: {e}")
+            logger.warning(f"Could not announce to registry: {e}")
 
     # =========================================================================
     # MCP PROTOCOL HANDLERS
@@ -524,7 +611,7 @@ class DistributedResearchMCP:
 
         result = await tool.handler(arguments)
 
-        return {
+        mcp_result = {
             "content": [
                 {
                     "type": "text",
@@ -532,6 +619,16 @@ class DistributedResearchMCP:
                 }
             ]
         }
+
+        # Apply output guard: enforce size limits, cap links, capture URLs
+        if OUTPUT_GUARD_AVAILABLE:
+            mcp_result = guard_mcp_content(
+                mcp_result,
+                tool_name=tool_name,
+                source_context={"server": self.SERVICE_ID},
+            )
+
+        return mcp_result
 
     async def handle_mcp_request(self, request: MCPRequest) -> MCPResponse:
         """Route MCP request to appropriate handler."""
@@ -570,7 +667,7 @@ class DistributedResearchMCP:
     # =========================================================================
 
     async def _execute_deep_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute deep research on a topic."""
+        """Execute deep research on a topic using Jina search + LLM synthesis."""
         objective = args.get("objective")
         if not objective:
             raise ValueError("objective is required")
@@ -578,39 +675,77 @@ class DistributedResearchMCP:
         depth = args.get("depth", "standard")
         max_sources = args.get("max_sources", 10)
 
-        # Native implementation - multi-step research
         # 1. Generate search queries
         queries = self._generate_research_queries(objective, depth)
 
-        # 2. Execute searches (simulated native search)
-        findings = []
-        for query in queries[:max_sources]:
-            finding = {
-                "query": query,
-                "note": f"Native search result for: {query}",
-                "relevant": True
-            }
-            findings.append(finding)
+        # 2. Execute real searches via Jina in parallel (capped at 5 concurrent)
+        sem = asyncio.Semaphore(5)
 
-        # 3. Create task to track this research
+        async def _search_one(query: str) -> List[Dict[str, Any]]:
+            async with sem:
+                jina_results = await self._jina_search(query, num_results=3)
+                if jina_results:
+                    return [
+                        {
+                            "query": query,
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                            "description": r.get("description", r.get("content", ""))[:500],
+                            "relevant": True,
+                        }
+                        for r in jina_results
+                    ]
+                return [{"query": query, "note": f"Native search result for: {query}", "relevant": True}]
+
+        search_tasks = [_search_one(q) for q in queries[:max_sources]]
+        search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        findings = []
+        for res in search_results:
+            if isinstance(res, Exception):
+                logger.warning(f"Search task failed: {res}")
+                continue
+            findings.extend(res)
+
+        # 3. Synthesize findings with LLM if available
+        synthesis = None
+        processor = ProcessorType.TURBO if depth == "thorough" else ProcessorType.LITE
+        if findings:
+            findings_text = "\n".join(
+                f"- {f.get('title', f.get('query', ''))}: {f.get('description', f.get('note', ''))}"
+                for f in findings[:20]
+            )
+            llm_result = await self._call_llm(
+                prompt=f"Research objective: {objective}\n\nFindings:\n{findings_text}\n\nProvide a comprehensive synthesis of these findings.",
+                system="You are a research analyst. Synthesize the provided findings into a clear, structured summary.",
+                processor=processor,
+            )
+            if llm_result:
+                synthesis = llm_result
+
+        # 4. Create task to track this research
         task = Task(
             id=str(uuid.uuid4()),
-            processor=ProcessorType.TURBO if depth == "thorough" else ProcessorType.LITE,
+            processor=processor,
             input=objective,
             status=TaskStatus.COMPLETED,
-            result={"findings": findings},
+            result={"findings": findings, "synthesis": synthesis},
             completed_at=datetime.now(timezone.utc)
         )
         self._tasks[task.id] = task
 
-        return {
+        result = {
             "objective": objective,
             "depth": depth,
             "queries_generated": len(queries),
             "findings": findings,
             "task_id": task.id,
-            "success": True
+            "success": True,
         }
+        if synthesis:
+            result["synthesis"] = synthesis
+
+        return result
 
     def _generate_research_queries(self, objective: str, depth: str) -> List[str]:
         """Generate diverse research queries from an objective."""
@@ -634,7 +769,7 @@ class DistributedResearchMCP:
         return base_queries
 
     async def _execute_run_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute an autonomous task."""
+        """Execute an autonomous task using LLM when available."""
         input_text = args.get("input")
         if not input_text:
             raise ValueError("input is required")
@@ -652,18 +787,36 @@ class DistributedResearchMCP:
         )
         self._tasks[task.id] = task
 
-        # Simulate task execution (native processing)
         try:
-            await asyncio.sleep(0.5)  # Simulate processing time
+            start_time = time.time()
 
-            # Native task result
+            # Try real LLM processing
+            system_prompt = "You are a helpful assistant. Complete the following task."
+            if output_schema:
+                system_prompt += f"\n\nReturn your response as JSON matching this schema: {json.dumps(output_schema)}"
+
+            llm_output = await self._call_llm(
+                prompt=input_text,
+                system=system_prompt,
+                processor=processor,
+            )
+
+            processing_time_ms = (time.time() - start_time) * 1000
+
+            if llm_output:
+                output = llm_output
+            else:
+                # Fallback to stub behavior
+                output = f"Processed result for: {input_text[:100]}..."
+
             result = {
                 "input": input_text,
                 "processor": processor.value,
-                "output": f"Processed result for: {input_text[:100]}...",
+                "output": output,
                 "metadata": {
                     "tokens_used": len(input_text.split()) * 2,
-                    "processing_time_ms": 500
+                    "processing_time_ms": round(processing_time_ms),
+                    "llm_used": llm_output is not None,
                 }
             }
 
@@ -692,7 +845,7 @@ class DistributedResearchMCP:
             }
 
     async def _execute_extract_data(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract structured data from URL."""
+        """Extract structured data from URL using Jina reader + LLM."""
         url = args.get("url")
         if not url:
             raise ValueError("url is required")
@@ -700,20 +853,46 @@ class DistributedResearchMCP:
         schema = args.get("schema", {})
         instructions = args.get("instructions", "")
 
-        # Native extraction (simulated)
+        # Fetch page content via Jina Reader
+        page_content = await self._jina_read(url)
+
+        extracted = {
+            "title": f"Content from {url}",
+            "data": {},
+            "schema_used": bool(schema),
+        }
+
+        if page_content:
+            # Use LLM to extract structured data
+            prompt = f"Extract structured data from the following web page content.\n\nURL: {url}\n"
+            if schema:
+                prompt += f"\nExtract data matching this schema: {json.dumps(schema)}\n"
+            if instructions:
+                prompt += f"\nAdditional instructions: {instructions}\n"
+            prompt += f"\nPage content:\n{page_content[:8000]}\n\nReturn the extracted data as JSON."
+
+            llm_result = await self._call_llm(
+                prompt=prompt,
+                system="You are a data extraction specialist. Extract structured data from web content and return it as clean JSON.",
+                processor=ProcessorType.LITE,
+            )
+
+            if llm_result:
+                # Try to parse as JSON
+                try:
+                    extracted["data"] = json.loads(llm_result)
+                except json.JSONDecodeError:
+                    extracted["data"] = {"raw_extraction": llm_result}
+                extracted["llm_used"] = True
+            else:
+                extracted["page_content_length"] = len(page_content)
+
         task = Task(
             id=str(uuid.uuid4()),
             processor=ProcessorType.LITE,
             input=f"Extract from {url}",
             status=TaskStatus.COMPLETED,
-            result={
-                "url": url,
-                "extracted": {
-                    "title": f"Content from {url}",
-                    "data": {},
-                    "schema_used": bool(schema)
-                }
-            },
+            result={"url": url, "extracted": extracted},
             completed_at=datetime.now(timezone.utc)
         )
         self._tasks[task.id] = task
@@ -721,8 +900,8 @@ class DistributedResearchMCP:
         return {
             "url": url,
             "task_id": task.id,
-            "extracted": task.result["extracted"],
-            "success": True
+            "extracted": extracted,
+            "success": True,
         }
 
     async def _execute_create_task_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -872,7 +1051,7 @@ class DistributedResearchMCP:
         }
 
     async def _execute_synthesize(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Synthesize information from multiple sources."""
+        """Synthesize information from multiple sources using Jina + LLM."""
         sources = args.get("sources", [])
         if not sources:
             raise ValueError("sources list is required")
@@ -880,7 +1059,43 @@ class DistributedResearchMCP:
         objective = args.get("objective", "")
         format_type = args.get("format", "summary")
 
-        # Native synthesis
+        # Fetch content from URL sources, keep text sources as-is
+        source_contents = []
+        for source in sources:
+            if source.startswith("http://") or source.startswith("https://"):
+                content = await self._jina_read(source)
+                if content:
+                    source_contents.append(f"[Source: {source}]\n{content[:4000]}")
+                else:
+                    source_contents.append(f"[Source: {source}]\n(Could not fetch)")
+            else:
+                source_contents.append(source)
+
+        combined = "\n\n---\n\n".join(source_contents)
+
+        # Try LLM synthesis
+        format_instructions = {
+            "summary": "Provide a concise summary.",
+            "bullets": "Provide key points as a bulleted list.",
+            "report": "Provide a structured report with sections.",
+            "analysis": "Provide a critical analysis comparing the sources.",
+        }
+
+        prompt = f"Synthesize the following {len(sources)} sources"
+        if objective:
+            prompt += f", focusing on: {objective}"
+        prompt += f"\n\nFormat: {format_instructions.get(format_type, format_type)}\n\nSources:\n{combined[:12000]}"
+
+        synthesis = await self._call_llm(
+            prompt=prompt,
+            system="You are a research synthesist. Combine information from multiple sources into a coherent output.",
+            processor=ProcessorType.TURBO,
+        )
+
+        if not synthesis:
+            # Fallback stub
+            synthesis = f"Synthesized content from {len(sources)} sources" + (f" focusing on: {objective}" if objective else "")
+
         task = Task(
             id=str(uuid.uuid4()),
             processor=ProcessorType.TURBO,
@@ -889,7 +1104,7 @@ class DistributedResearchMCP:
             result={
                 "sources_count": len(sources),
                 "format": format_type,
-                "synthesis": f"Synthesized content from {len(sources)} sources" + (f" focusing on: {objective}" if objective else ""),
+                "synthesis": synthesis,
             },
             completed_at=datetime.now(timezone.utc)
         )
@@ -899,8 +1114,8 @@ class DistributedResearchMCP:
             "task_id": task.id,
             "sources_processed": len(sources),
             "format": format_type,
-            "synthesis": task.result["synthesis"],
-            "success": True
+            "synthesis": synthesis,
+            "success": True,
         }
 
     async def _execute_connectivity_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -987,40 +1202,30 @@ async def lifespan(app: FastAPI):
 
     await _server.start()
 
-    # Register tools with central registry
-    registry_url = os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
-    service_url = os.getenv("SERVICE_URL", f"http://localhost:{os.getenv('PORT', '4002')}")
+    # Background heartbeat: re-announce to registry every 60s
+    _heartbeat_task = None
 
-    try:
-        from tool_management.client import ToolManagementClient
+    async def _heartbeat_loop():
+        await asyncio.sleep(30)
+        while True:
+            try:
+                await _server._announce_to_registry()
+                logger.debug("Heartbeat: re-announced to registry")
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+            await asyncio.sleep(60)
 
-        client = ToolManagementClient(
-            registry_url=registry_url,
-            provider_id=DistributedResearchMCP.SERVICE_ID,
-            provider_url=service_url,
-            namespace="research",
-        )
-
-        for tool in _server.tools:
-            client._tools[tool["name"]] = type("RegisteredTool", (), {
-                "name": tool["name"],
-                "description": tool["description"],
-                "input_schema": tool["inputSchema"],
-                "handler": lambda **kw: None,
-                "output_schema": None,
-                "namespace": "research",
-                "tags": ["research", "parallel"],
-            })()
-
-        await client.register_all()
-        logger.info(f"Registered {len(_server.tools)} tools with {registry_url}")
-
-    except ImportError:
-        logger.info("Tool management client not available, skipping global registration")
-    except Exception as e:
-        logger.warning(f"Could not register with central registry: {e}")
+    _heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     yield
+
+    if _heartbeat_task:
+        _heartbeat_task.cancel()
+        try:
+            await _heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
     await _server.stop()
 
 
@@ -1120,6 +1325,7 @@ async def get_task(task_id: str):
     return result
 
 
+@app.get("/mcp/sse")
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     """Server-Sent Events endpoint for MCP streaming."""
@@ -1144,6 +1350,19 @@ async def sse_endpoint(request: Request):
             "Connection": "keep-alive",
         }
     )
+
+
+@app.post("/mcp/sse")
+@app.post("/sse")
+async def sse_post_endpoint(request: Request):
+    """Handle MCP JSON-RPC POST requests via SSE URL (mcp-remote pattern)."""
+    if not _server:
+        raise HTTPException(503, "Server not initialized")
+
+    body = await request.json()
+    mcp_request = MCPRequest(**body)
+    response = await _server.handle_mcp_request(mcp_request)
+    return response.model_dump(exclude_none=True)
 
 
 # =============================================================================

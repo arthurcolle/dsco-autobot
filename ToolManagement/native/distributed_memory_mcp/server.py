@@ -55,6 +55,21 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from internal_client import get_internal_client, InternalMCPClient
 
+# Semantic belief store with embeddings
+try:
+    from tool_management.embeddings import SemanticBeliefStore, get_belief_store
+    SEMANTIC_BELIEFS_AVAILABLE = True
+except ImportError:
+    SEMANTIC_BELIEFS_AVAILABLE = False
+    SemanticBeliefStore = None  # type: ignore
+
+# Output guard for enforcing size limits and URL capture
+try:
+    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -936,6 +951,11 @@ class DistributedMemoryMCP:
                         "type": "object",
                         "description": "Current context for skill application"
                     },
+                    "execute": {
+                        "type": "boolean",
+                        "description": "Whether to actually execute the skill's pattern steps via cross-MCP calls",
+                        "default": False
+                    },
                     "record_result": {
                         "type": "boolean",
                         "description": "Whether to record execution result",
@@ -986,6 +1006,10 @@ class DistributedMemoryMCP:
                         "type": "string",
                         "enum": ["working", "episodic", "semantic", "procedural"],
                         "description": "Memory tier to forget from"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Single item ID to forget (alternative to item_ids)"
                     },
                     "item_ids": {
                         "type": "array",
@@ -1072,6 +1096,49 @@ class DistributedMemoryMCP:
                 "type": "object",
                 "properties": {}
             }
+        },
+        {
+            "name": "semantic_search_beliefs",
+            "description": "Search beliefs using semantic embeddings. Finds conceptually similar facts even without exact word matches. Uses Jina v3 embeddings for high-quality semantic understanding.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query to search for related beliefs"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results",
+                        "default": 10
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "description": "Minimum cosine similarity threshold (0-1)",
+                        "default": 0.3
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "find_related_beliefs",
+            "description": "Find all beliefs related to an entity, both exact matches and semantically similar.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Entity to find related beliefs for"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results per category",
+                        "default": 20
+                    }
+                },
+                "required": ["entity"]
+            }
         }
     ]
 
@@ -1083,8 +1150,17 @@ class DistributedMemoryMCP:
         # Initialize memory stores
         self.working = WorkingMemory(capacity=100)
         self.episodic = EpisodicMemory(max_episodes=10000)
-        self.semantic = SemanticMemory()
+        self.semantic = SemanticMemory()  # In-memory for backward compat
         self.procedural = ProceduralMemory()
+
+        # Semantic belief store with embeddings (persistent)
+        self._semantic_belief_store: Optional[SemanticBeliefStore] = None
+        if SEMANTIC_BELIEFS_AVAILABLE:
+            try:
+                self._semantic_belief_store = get_belief_store()
+                logger.info("SemanticBeliefStore initialized with persistence and embeddings")
+            except Exception as e:
+                logger.warning(f"Failed to initialize SemanticBeliefStore: {e}")
 
         # Internal MCP client for cross-MCP calls (embeddings, etc.)
         self._mcp_client: Optional[InternalMCPClient] = None
@@ -1157,6 +1233,68 @@ class DistributedMemoryMCP:
             version=self.VERSION,
         )
 
+        @app.on_event("startup")
+        async def seed_memory():
+            """Seed working memory with a boot episode."""
+            self.episodic.record(
+                event_type="system_boot",
+                content={"message": "Memory MCP server started", "version": self.VERSION},
+                importance=0.3,
+            )
+            self.working.add(
+                content=f"Memory MCP v{self.VERSION} started",
+                importance=0.3,
+                tags=["system", "boot"],
+            )
+            logger.info("Seeded working memory with boot episode")
+
+        @app.on_event("startup")
+        async def announce():
+            """Announce this server and its tools to Tool Management, then heartbeat every 60s."""
+            import httpx
+            import asyncio
+
+            registry_url = os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+            service_url = os.getenv("SERVICE_URL", "https://arthurcolle--distributed-memory-mcp-web.modal.run")
+
+            async def _do_announce():
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.post(
+                        f"{registry_url}/api/v1/tools/announce",
+                        json={
+                            "backend_id": self.SERVICE_ID,
+                            "name": self.SERVICE_NAME,
+                            "url": service_url,
+                            "capabilities": [t["name"] for t in self.TOOLS],
+                            "tools": self.TOOLS,
+                        },
+                        timeout=15.0,
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        logger.info(f"Announced {result.get('registered', 0)} memory tools to {registry_url}")
+                    else:
+                        logger.warning(f"Announce returned {response.status_code}: {response.text[:200]}")
+
+            # Initial announce
+            try:
+                await _do_announce()
+            except Exception as e:
+                logger.warning(f"Could not announce to registry: {e}")
+
+            # Background heartbeat loop
+            async def _heartbeat_loop():
+                await asyncio.sleep(30)
+                while True:
+                    try:
+                        await _do_announce()
+                        logger.debug("Heartbeat: re-announced to registry")
+                    except Exception as e:
+                        logger.warning(f"Heartbeat failed: {e}")
+                    await asyncio.sleep(60)
+
+            asyncio.create_task(_heartbeat_loop())
+
         @app.get("/")
         async def root():
             return {
@@ -1180,6 +1318,36 @@ class DistributedMemoryMCP:
         async def list_tools():
             return {"tools": self.TOOLS}
 
+        @app.get("/mcp/sse")
+        @app.get("/sse")
+        async def sse_endpoint(request: Request):
+            """Server-Sent Events endpoint for MCP streaming."""
+            from fastapi.responses import StreamingResponse
+            import asyncio
+
+            async def event_generator():
+                session_id = str(uuid.uuid4())
+                yield f"data: {json.dumps({'type': 'connected', 'session_id': session_id})}\n\n"
+
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                    await asyncio.sleep(30)
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+
+        @app.post("/mcp/sse")
+        @app.post("/sse")
+        async def sse_post_endpoint(request: Request):
+            """Handle MCP JSON-RPC POST requests via SSE URL."""
+            body = await request.json()
+            return await self._handle_mcp_request(body)
+
         return app
 
     async def _handle_mcp_request(self, body: Dict[str, Any]) -> JSONResponse:
@@ -1201,7 +1369,7 @@ class DistributedMemoryMCP:
                     },
                 }
             elif method == "tools/list":
-                result = {"tools": self.TOOLS}
+                result = {"tools": [t for t in self.TOOLS if not t["name"].startswith("_")]}
             elif method == "tools/call":
                 tool_name = params.get("name")
                 arguments = params.get("arguments", {})
@@ -1244,13 +1412,25 @@ class DistributedMemoryMCP:
             "semantic_search": self._tool_semantic_search,
             "get_memory_stats": self._tool_get_memory_stats,
             "_connectivity_test": self._tool_connectivity_test,
+            "semantic_search_beliefs": self._tool_semantic_search_beliefs,
+            "find_related_beliefs": self._tool_find_related_beliefs,
         }
 
         handler = handlers.get(tool_name)
         if not handler:
             return {"content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}], "isError": True}
 
-        return await handler(arguments)
+        result = await handler(arguments)
+
+        # Apply output guard: enforce size limits, cap links, capture URLs
+        if OUTPUT_GUARD_AVAILABLE:
+            result = guard_mcp_content(
+                result,
+                tool_name=tool_name,
+                source_context={"server": self.SERVICE_ID},
+            )
+
+        return result
 
     # =========================================================================
     # TOOL IMPLEMENTATIONS
@@ -1350,6 +1530,14 @@ class DistributedMemoryMCP:
         for item in working_items[:3]:
             item.touch()
 
+        # Inject top episodic results into working memory so it's not always empty
+        for ep_entry in results.get("episodic", [])[:3]:
+            self.working.add(
+                content=ep_entry.get("content", ""),
+                importance=0.5,
+                tags=["expanded_context", ep_entry.get("type", "episode")],
+            )
+
         return {
             "content": [{
                 "type": "text",
@@ -1363,9 +1551,21 @@ class DistributedMemoryMCP:
 
     async def _tool_record_episode(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Record an episode to episodic memory."""
+        event_type = args.get("event_type")
+        if not event_type:
+            return {
+                "content": [{"type": "text", "text": json.dumps({"error": "event_type is required"})}],
+                "isError": True,
+            }
+        content = args.get("content")
+        if content is None:
+            return {
+                "content": [{"type": "text", "text": json.dumps({"error": "content is required"})}],
+                "isError": True,
+            }
         episode_id = self.episodic.record(
-            event_type=args["event_type"],
-            content=args["content"],
+            event_type=event_type,
+            content=content,
             context=args.get("context"),
             participants=args.get("participants"),
             outcome=args.get("outcome"),
@@ -1447,7 +1647,8 @@ class DistributedMemoryMCP:
         }
 
     async def _tool_store_belief(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Store a belief in semantic memory."""
+        """Store a belief in semantic memory (both in-memory and persistent with embeddings)."""
+        # Store in in-memory semantic memory for backward compatibility
         belief_id = self.semantic.store(
             subject=args["subject"],
             predicate=args["predicate"],
@@ -1456,6 +1657,21 @@ class DistributedMemoryMCP:
             source=args.get("source"),
         )
 
+        # Also store in persistent semantic belief store with embeddings
+        persistent_stored = False
+        if self._semantic_belief_store:
+            try:
+                await self._semantic_belief_store.store(
+                    subject=args["subject"],
+                    predicate=args["predicate"],
+                    obj=args["object"],
+                    confidence=args.get("confidence", 1.0),
+                    source=args.get("source"),
+                )
+                persistent_stored = True
+            except Exception as e:
+                logger.warning(f"Failed to store belief in persistent store: {e}")
+
         return {
             "content": [{
                 "type": "text",
@@ -1463,7 +1679,9 @@ class DistributedMemoryMCP:
                     "stored": True,
                     "belief_id": belief_id,
                     "triple": f"{args['subject']} {args['predicate']} {args['object']}",
-                    "total_beliefs": len(self.semantic._beliefs)
+                    "total_beliefs": len(self.semantic._beliefs),
+                    "persistent": persistent_stored,
+                    "embeddings_enabled": persistent_stored,
                 }, indent=2)
             }]
         }
@@ -1509,6 +1727,139 @@ class DistributedMemoryMCP:
             }]
         }
 
+    async def _tool_semantic_search_beliefs(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Search beliefs using semantic embeddings."""
+        query = args["query"]
+        limit = args.get("limit", 10)
+        min_similarity = args.get("min_similarity", 0.3)
+
+        if not self._semantic_belief_store:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "Semantic belief store not available",
+                        "message": "SemanticBeliefStore is not initialized. Falling back to exact match query.",
+                        "fallback_available": True,
+                    }, indent=2)
+                }],
+                "isError": True,
+            }
+
+        try:
+            results = await self._semantic_belief_store.semantic_search(
+                query=query,
+                limit=limit,
+                min_similarity=min_similarity,
+            )
+
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "query": query,
+                        "count": len(results),
+                        "embeddings_used": True,
+                        "results": [
+                            {
+                                "belief": {
+                                    "id": belief.id,
+                                    "subject": belief.subject,
+                                    "predicate": belief.predicate,
+                                    "object": belief.object,
+                                    "confidence": belief.confidence,
+                                    "source": belief.source,
+                                },
+                                "triple": f"{belief.subject} {belief.predicate} {belief.object}",
+                                "similarity": similarity,
+                            }
+                            for belief, similarity in results
+                        ]
+                    }, indent=2)
+                }]
+            }
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": str(e),
+                        "message": "Semantic search failed",
+                    }, indent=2)
+                }],
+                "isError": True,
+            }
+
+    async def _tool_find_related_beliefs(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Find beliefs related to an entity (exact + semantic)."""
+        entity = args["entity"]
+        limit = args.get("limit", 20)
+
+        if not self._semantic_belief_store:
+            # Fallback to in-memory semantic memory
+            related = self.semantic.get_related(entity, limit=limit)
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "entity": entity,
+                        "persistent_store": False,
+                        "exact_matches": {
+                            "as_subject": [
+                                {
+                                    "id": b.id,
+                                    "triple": f"{b.subject} {b.predicate} {b.object}",
+                                    "confidence": b.confidence,
+                                }
+                                for b in related["as_subject"]
+                            ],
+                            "as_object": [
+                                {
+                                    "id": b.id,
+                                    "triple": f"{b.subject} {b.predicate} {b.object}",
+                                    "confidence": b.confidence,
+                                }
+                                for b in related["as_object"]
+                            ],
+                        },
+                        "semantic_matches": [],
+                    }, indent=2)
+                }]
+            }
+
+        try:
+            results = await self._semantic_belief_store.find_related(
+                entity=entity,
+                limit=limit,
+            )
+
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "entity": entity,
+                        "persistent_store": True,
+                        "exact_matches": results["exact"],
+                        "semantic_matches": results["semantic"],
+                    }, indent=2)
+                }]
+            }
+
+        except Exception as e:
+            logger.error(f"Find related failed: {e}")
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": str(e),
+                        "message": "Find related beliefs failed",
+                    }, indent=2)
+                }],
+                "isError": True,
+            }
+
     async def _tool_learn_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Learn a new skill."""
         skill_id = self.procedural.learn(
@@ -1533,7 +1884,7 @@ class DistributedMemoryMCP:
         }
 
     async def _tool_apply_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply/retrieve a skill."""
+        """Apply/retrieve a skill, optionally executing its pattern steps."""
         skill = None
 
         if args.get("skill_id"):
@@ -1558,19 +1909,69 @@ class DistributedMemoryMCP:
                 args.get("execution_time", 0.0)
             )
 
+        # Execute skill pattern steps if requested
+        execution_results = None
+        if args.get("execute"):
+            steps = skill.pattern.get("steps", [])
+            if steps:
+                execution_results = []
+                start_time = time.time()
+                prev_output = args.get("context", {})
+                success = True
+                try:
+                    client = await self._ensure_mcp_client()
+                    for i, step in enumerate(steps):
+                        step_tool = step.get("tool", "")
+                        step_args = step.get("arguments", {})
+                        # Inject previous step output as context
+                        if prev_output and isinstance(step_args, dict):
+                            step_args["_prev_output"] = prev_output
+                        step_result = await client.call_tool(
+                            tool_name=step_tool,
+                            arguments=step_args,
+                        )
+                        step_entry = {
+                            "step": i,
+                            "tool": step_tool,
+                            "success": not step_result.get("isError", False),
+                        }
+                        execution_results.append(step_entry)
+                        if step_result.get("isError"):
+                            success = False
+                            break
+                        # Parse output for next step
+                        content = step_result.get("content", [])
+                        if content and isinstance(content, list):
+                            text_content = content[0].get("text", "{}")
+                            try:
+                                prev_output = json.loads(text_content)
+                            except (json.JSONDecodeError, TypeError):
+                                prev_output = {"raw": text_content}
+                except Exception as e:
+                    success = False
+                    execution_results.append({"error": str(e)})
+
+                exec_time = time.time() - start_time
+                self.procedural.record_execution(skill.id, success, exec_time)
+
+        result_data = {
+            "skill_id": skill.id,
+            "name": skill.name,
+            "description": skill.description,
+            "pattern": skill.pattern,
+            "preconditions": skill.preconditions,
+            "postconditions": skill.postconditions,
+            "success_rate": skill.success_count / max(1, skill.success_count + skill.failure_count),
+            "avg_execution_time": skill.avg_execution_time,
+        }
+        if execution_results is not None:
+            result_data["executed"] = True
+            result_data["execution_results"] = execution_results
+
         return {
             "content": [{
                 "type": "text",
-                "text": json.dumps({
-                    "skill_id": skill.id,
-                    "name": skill.name,
-                    "description": skill.description,
-                    "pattern": skill.pattern,
-                    "preconditions": skill.preconditions,
-                    "postconditions": skill.postconditions,
-                    "success_rate": skill.success_count / max(1, skill.success_count + skill.failure_count),
-                    "avg_execution_time": skill.avg_execution_time,
-                }, indent=2)
+                "text": json.dumps(result_data, indent=2)
             }]
         }
 
@@ -1620,9 +2021,17 @@ class DistributedMemoryMCP:
         tier = args["tier"]
         forgotten = 0
 
+        # Normalize: accept both "id" (singular) and "item_ids" (list)
+        item_ids = args.get("item_ids", [])
+        if args.get("id"):
+            item_ids = [args["id"]] + item_ids
+
+        older_than = args.get("older_than")
+        cutoff_time = (time.time() - older_than) if older_than else None
+
         if tier == "working":
-            if args.get("item_ids"):
-                for item_id in args["item_ids"]:
+            if item_ids:
+                for item_id in item_ids:
                     if item_id in self.working._items:
                         del self.working._items[item_id]
                         self.working._focus_items.discard(item_id)
@@ -1636,12 +2045,42 @@ class DistributedMemoryMCP:
                     del self.working._items[item_id]
                     self.working._focus_items.discard(item_id)
                     forgotten += 1
+            elif cutoff_time:
+                to_remove = [
+                    item_id for item_id, item in self.working._items.items()
+                    if item.created_at < cutoff_time
+                ]
+                for item_id in to_remove:
+                    del self.working._items[item_id]
+                    self.working._focus_items.discard(item_id)
+                    forgotten += 1
+
+        elif tier == "episodic":
+            if item_ids:
+                for ep_id in item_ids:
+                    ep = self.episodic._get_by_id(ep_id)
+                    if ep:
+                        self.episodic._episodes.remove(ep)
+                        forgotten += 1
+            elif cutoff_time:
+                to_remove = [ep for ep in self.episodic._episodes if ep.timestamp < cutoff_time]
+                for ep in to_remove:
+                    self.episodic._episodes.remove(ep)
+                    forgotten += 1
 
         elif tier == "semantic":
-            if args.get("item_ids"):
-                for belief_id in args["item_ids"]:
-                    self.semantic.invalidate(belief_id, "explicit_forget")
-                    forgotten += 1
+            if item_ids:
+                for belief_id in item_ids:
+                    if belief_id in self.semantic._beliefs:
+                        self.semantic.invalidate(belief_id, "explicit_forget")
+                        forgotten += 1
+
+        elif tier == "procedural":
+            if item_ids:
+                for skill_id in item_ids:
+                    if skill_id in self.procedural._skills:
+                        del self.procedural._skills[skill_id]
+                        forgotten += 1
 
         return {
             "content": [{
@@ -1654,7 +2093,7 @@ class DistributedMemoryMCP:
         }
 
     async def _tool_search_all(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Unified search across all tiers."""
+        """Unified search across all tiers with normalized relevance scores."""
         query = args["query"]
         tiers = args.get("tiers", ["working", "episodic", "semantic", "procedural"])
         limit = args.get("limit_per_tier", 5)
@@ -1663,13 +2102,20 @@ class DistributedMemoryMCP:
 
         if "working" in tiers:
             items = self.working.search(query, limit=limit)
+            max_activation = max((i.get_activation() for i in items), default=1.0) or 1.0
             results["working"] = [
-                {"id": i.id, "content": str(i.content)[:200], "activation": i.get_activation()}
+                {
+                    "id": i.id,
+                    "content": str(i.content)[:200],
+                    "activation": i.get_activation(),
+                    "relevance": i.get_activation() / max_activation,
+                }
                 for i in items
             ]
 
         if "episodic" in tiers:
             episodes = []
+            ep_scores = {}
             # Try embeddings first
             await self._ensure_mcp_client()
             if self._embeddings_available:
@@ -1677,12 +2123,18 @@ class DistributedMemoryMCP:
                 if query_embedding:
                     ep_results = self.episodic.recall_by_embedding(query_embedding, limit=limit)
                     episodes = [ep for ep, _ in ep_results]
+                    ep_scores = {ep.id: score for ep, score in ep_results}
 
             if not episodes:
                 episodes = self.episodic.recall_by_similarity_text(query, limit=limit)
 
             results["episodic"] = [
-                {"id": e.id, "type": e.event_type, "content": str(e.content)[:200]}
+                {
+                    "id": e.id,
+                    "type": e.event_type,
+                    "content": str(e.content)[:200],
+                    "relevance": ep_scores.get(e.id, e.importance),
+                }
                 for e in episodes
             ]
 
@@ -1699,14 +2151,24 @@ class DistributedMemoryMCP:
                     seen.add(b.id)
                     unique_beliefs.append(b)
             results["semantic"] = [
-                {"id": b.id, "triple": f"{b.subject} {b.predicate} {b.object}", "confidence": b.confidence}
+                {
+                    "id": b.id,
+                    "triple": f"{b.subject} {b.predicate} {b.object}",
+                    "confidence": b.confidence,
+                    "relevance": b.confidence,
+                }
                 for b in unique_beliefs[:limit]
             ]
 
         if "procedural" in tiers:
             skills = self.procedural.find_applicable({}, tags=query.split())
             results["procedural"] = [
-                {"id": s.id, "name": s.name, "description": s.description[:100]}
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "description": s.description[:100],
+                    "relevance": s.success_count / max(1, s.success_count + s.failure_count),
+                }
                 for s in skills[:limit]
             ]
 
@@ -1830,6 +2292,19 @@ class DistributedMemoryMCP:
             },
         }
 
+        # Add persistent belief store stats if available
+        if self._semantic_belief_store:
+            stats["semantic_belief_store"] = {
+                "available": True,
+                "persistent": True,
+                **self._semantic_belief_store.stats(),
+            }
+        else:
+            stats["semantic_belief_store"] = {
+                "available": False,
+                "persistent": False,
+            }
+
         # Add MCP client metrics if available
         if self._mcp_client:
             stats["cross_mcp_metrics"] = self._mcp_client.get_metrics()
@@ -1862,6 +2337,10 @@ class DistributedMemoryMCP:
                         "embeddings_available": self._embeddings_available,
                         "embedding_source": "distributed-search-mcp" if self._embeddings_available else None,
                         "client_initialized": self._mcp_client is not None,
+                    },
+                    "semantic_belief_store": {
+                        "available": self._semantic_belief_store is not None,
+                        "persistent": self._semantic_belief_store is not None,
                     }
                 }, indent=2)
             }]

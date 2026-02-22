@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, AsyncGenerator
+from typing import Any, Callable, Dict, List, Optional, Union, AsyncGenerator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -41,8 +41,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+try:
+    from .substack_client import SubstackClient, SubstackDocument, MarkdownToSubstack
+except ImportError:
+    from substack_client import SubstackClient, SubstackDocument, MarkdownToSubstack
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Output guard for enforcing size limits and URL capture
+try:
+    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
+    logger.info("Output guard not available - running without output limits")
 
 
 # =============================================================================
@@ -109,7 +122,7 @@ class Webhook:
 @dataclass
 class Event:
     id: str
-    type: EventType
+    type: Union[EventType, str]
     data: Dict[str, Any]
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source: str = "native-mcp"
@@ -177,6 +190,10 @@ class DistributedPublishMCP:
         self._events: deque[Event] = deque(maxlen=1000)  # Last 1000 events
         self._message_queue: Dict[str, deque[QueuedMessage]] = {}  # channel -> messages
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}  # channel -> subscriber queues
+
+        # Substack integration
+        self._substack_client: Optional[SubstackClient] = None
+        self._live_session: Optional[Dict[str, Any]] = None
 
         # Register native tools
         self._register_tools()
@@ -430,6 +447,173 @@ class DistributedPublishMCP:
             handler=self._execute_connectivity_test
         )
 
+        # =====================================================================
+        # SUBSTACK TOOLS — only registered when credentials are configured
+        # =====================================================================
+
+        if not (os.getenv("SUBSTACK_SID") and os.getenv("SUBSTACK_PUBLICATION")):
+            logger.info("Substack tools not registered (SUBSTACK_SID / SUBSTACK_PUBLICATION not set)")
+            return
+
+        self._tools["substack_create_draft"] = MCPTool(
+            name="substack_create_draft",
+            description="Create a new Substack draft post from markdown content.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Post title"},
+                    "subtitle": {"type": "string", "description": "Post subtitle"},
+                    "body": {"type": "string", "description": "Markdown content for the post body"},
+                    "audience": {
+                        "type": "string",
+                        "enum": ["everyone", "only_paid", "founding"],
+                        "default": "everyone",
+                        "description": "Who can read this post"
+                    }
+                },
+                "required": ["title"]
+            },
+            handler=self._execute_substack_create_draft
+        )
+
+        self._tools["substack_update_draft"] = MCPTool(
+            name="substack_update_draft",
+            description="Update an existing Substack draft's title, subtitle, or body content.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "integer", "description": "Draft ID to update"},
+                    "title": {"type": "string", "description": "New title"},
+                    "subtitle": {"type": "string", "description": "New subtitle"},
+                    "body": {"type": "string", "description": "New markdown content (replaces existing)"}
+                },
+                "required": ["draft_id"]
+            },
+            handler=self._execute_substack_update_draft
+        )
+
+        self._tools["substack_append_to_draft"] = MCPTool(
+            name="substack_append_to_draft",
+            description="Append markdown content to an existing Substack draft (for live blogging or incremental writing).",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "integer", "description": "Draft ID"},
+                    "content": {"type": "string", "description": "Markdown content to append"},
+                    "section_title": {"type": "string", "description": "Optional section header"},
+                    "add_timestamp": {"type": "boolean", "default": True, "description": "Add timestamp"}
+                },
+                "required": ["draft_id", "content"]
+            },
+            handler=self._execute_substack_append_to_draft
+        )
+
+        self._tools["substack_add_code_block"] = MCPTool(
+            name="substack_add_code_block",
+            description="Add a syntax-highlighted code block to a Substack draft.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "integer"},
+                    "code": {"type": "string", "description": "Code content"},
+                    "language": {"type": "string", "description": "Programming language"},
+                    "filename": {"type": "string", "description": "Optional filename label"},
+                    "caption": {"type": "string", "description": "Optional caption/explanation"}
+                },
+                "required": ["draft_id", "code"]
+            },
+            handler=self._execute_substack_add_code_block
+        )
+
+        self._tools["substack_add_image"] = MCPTool(
+            name="substack_add_image",
+            description="Add an image to a Substack draft with optional caption and alt text.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "integer"},
+                    "url": {"type": "string", "description": "Image URL"},
+                    "caption": {"type": "string", "description": "Image caption"},
+                    "alt": {"type": "string", "description": "Alt text for accessibility"}
+                },
+                "required": ["draft_id", "url"]
+            },
+            handler=self._execute_substack_add_image
+        )
+
+        self._tools["substack_publish"] = MCPTool(
+            name="substack_publish",
+            description="Publish a Substack draft, optionally emailing subscribers.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "integer", "description": "Draft ID to publish"},
+                    "send_email": {"type": "boolean", "default": False, "description": "Email to subscribers"}
+                },
+                "required": ["draft_id"]
+            },
+            handler=self._execute_substack_publish
+        )
+
+        self._tools["substack_post_note"] = MCPTool(
+            name="substack_post_note",
+            description="Post a short note on Substack (like a tweet), with optional link attachment.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Note content"},
+                    "link_url": {"type": "string", "description": "Optional link to attach"}
+                },
+                "required": ["text"]
+            },
+            handler=self._execute_substack_post_note
+        )
+
+        self._tools["substack_get_drafts"] = MCPTool(
+            name="substack_get_drafts",
+            description="List all Substack draft posts.",
+            input_schema={"type": "object", "properties": {}},
+            handler=self._execute_substack_get_drafts
+        )
+
+        self._tools["substack_get_posts"] = MCPTool(
+            name="substack_get_posts",
+            description="List published Substack posts.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 10, "description": "Max posts to return"}
+                }
+            },
+            handler=self._execute_substack_get_posts
+        )
+
+        self._tools["substack_live_blog_start"] = MCPTool(
+            name="substack_live_blog_start",
+            description="Start a live blogging session on Substack — creates a draft and tracks updates.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Live blog title"},
+                    "subtitle": {"type": "string", "description": "Subtitle"}
+                },
+                "required": ["title"]
+            },
+            handler=self._execute_substack_live_blog_start
+        )
+
+        self._tools["substack_live_blog_end"] = MCPTool(
+            name="substack_live_blog_end",
+            description="End the current live blogging session, optionally publishing the post.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "publish": {"type": "boolean", "default": False, "description": "Publish on end"}
+                }
+            },
+            handler=self._execute_substack_live_blog_end
+        )
+
     async def start(self):
         """Start the MCP server."""
         logger.info(f"Starting {self.SERVICE_NAME}...")
@@ -454,8 +638,25 @@ class DistributedPublishMCP:
             logger.error(f"✗ {self.SERVICE_NAME} failed to connect: {e}")
             raise
 
-        if self.registry_url:
-            await self._register_with_registry()
+        # Initialize Substack client if credentials available
+        substack_sid = os.getenv("SUBSTACK_SID", "")
+        substack_pub = os.getenv("SUBSTACK_PUBLICATION", "")
+        if substack_sid and substack_pub:
+            try:
+                self._substack_client = SubstackClient(substack_sid, substack_pub)
+                if self._substack_client.test_connection():
+                    logger.info(f"Substack connected: {substack_pub}")
+                else:
+                    logger.warning("Substack connection test failed — tools will return errors")
+                    self._substack_client = None
+            except Exception as e:
+                logger.warning(f"Substack init failed: {e}")
+                self._substack_client = None
+        else:
+            logger.info("No SUBSTACK_SID/SUBSTACK_PUBLICATION — Substack tools disabled")
+
+        # Announce to Tool Management
+        await self._announce_to_registry()
 
     async def stop(self):
         """Stop the MCP server."""
@@ -469,39 +670,32 @@ class DistributedPublishMCP:
         self._state.connected_at = None
         logger.info(f"✓ {self.SERVICE_NAME} stopped")
 
-    async def _register_with_registry(self):
-        """Register with central registry."""
-        if not self.registry_url:
-            return
-
+    async def _announce_to_registry(self):
+        """Announce this server and its tools to Tool Management."""
+        registry_url = self.registry_url or os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+        service_url = os.getenv("SERVICE_URL", f"http://localhost:{self.port}")
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
-                    f"{self.registry_url}/api/v1/services",
+                    f"{registry_url}/api/v1/tools/announce",
                     json={
-                        "service_id": self.SERVICE_ID,
+                        "backend_id": self.SERVICE_ID,
                         "name": self.SERVICE_NAME,
-                        "base_url": f"http://localhost:{self.port}",
-                        "service_type": "mcp",
-                        "version": self.VERSION,
-                        "tool_names": list(self._tools.keys()),
-                        "capabilities": {
-                            "tool_execution": True,
-                            "tool_discovery": True,
-                            "webhooks": True,
-                            "event_streaming": True,
-                            "message_queue": True,
-                            "mcp_protocol": True,
-                        }
+                        "url": service_url,
+                        "health_endpoint": "/health",
+                        "mcp_endpoint": "/mcp",
+                        "capabilities": list(self._tools.keys()),
+                        "tools": self.tools,
                     },
-                    timeout=10.0
+                    timeout=15.0,
                 )
-                if response.status_code in (200, 201):
-                    logger.info(f"✓ Registered with registry at {self.registry_url}")
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Announced {result.get('registered', 0)} tools to {registry_url}")
                 else:
-                    logger.warning(f"Registry registration returned {response.status_code}")
+                    logger.warning(f"Announce returned {response.status_code}: {response.text[:200]}")
         except Exception as e:
-            logger.warning(f"Could not register with registry: {e}")
+            logger.warning(f"Could not announce to registry: {e}")
 
     # =========================================================================
     # MCP PROTOCOL HANDLERS
@@ -541,7 +735,7 @@ class DistributedPublishMCP:
 
         result = await tool.handler(arguments)
 
-        return {
+        mcp_result = {
             "content": [
                 {
                     "type": "text",
@@ -549,6 +743,16 @@ class DistributedPublishMCP:
                 }
             ]
         }
+
+        # Apply output guard: enforce size limits, cap links, capture URLs
+        if OUTPUT_GUARD_AVAILABLE:
+            mcp_result = guard_mcp_content(
+                mcp_result,
+                tool_name=tool_name,
+                source_context={"server": self.SERVICE_ID},
+            )
+
+        return mcp_result
 
     async def handle_mcp_request(self, request: MCPRequest) -> MCPResponse:
         try:
@@ -684,13 +888,19 @@ class DistributedPublishMCP:
         return {"webhook_id": webhook_id, "deleted": False, "success": False}
 
     async def _execute_publish_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        event_type = args.get("type")
+        event_type = args.get("type", "system")
         data = args.get("data", {})
         source = args.get("source", "api")
 
+        # Accept known enum values directly; for custom types, store as-is
+        try:
+            resolved_type: Union[EventType, str] = EventType(event_type) if event_type in [e.value for e in EventType] else event_type
+        except (ValueError, KeyError):
+            resolved_type = event_type
+
         event = Event(
             id=str(uuid.uuid4()),
-            type=EventType(event_type) if event_type in [e.value for e in EventType] else EventType.SYSTEM,
+            type=resolved_type,
             data=data,
             source=source
         )
@@ -726,7 +936,7 @@ class DistributedPublishMCP:
 
         events = list(self._events)
         if event_type:
-            events = [e for e in events if e.type.value == event_type]
+            events = [e for e in events if (e.type.value if isinstance(e.type, EventType) else e.type) == event_type]
 
         events = events[-limit:]  # Most recent
 
@@ -734,7 +944,7 @@ class DistributedPublishMCP:
             "events": [
                 {
                     "id": e.id,
-                    "type": e.type.value,
+                    "type": e.type.value if isinstance(e.type, EventType) else e.type,
                     "data": e.data,
                     "source": e.source,
                     "timestamp": e.timestamp.isoformat()
@@ -820,6 +1030,14 @@ class DistributedPublishMCP:
         if not title or not body:
             raise ValueError("title and body are required")
 
+        notification_payload = {
+            "notification": {
+                "title": title,
+                "body": body,
+                "priority": priority
+            }
+        }
+
         # Record notification event
         event = Event(
             id=str(uuid.uuid4()),
@@ -833,19 +1051,48 @@ class DistributedPublishMCP:
         )
         self._events.append(event)
 
-        # Send to webhook targets
+        # When no targets specified, queue to default "notifications" channel
+        if not targets:
+            await self._execute_queue_message({
+                "channel": "notifications",
+                "payload": notification_payload
+            })
+            return {
+                "notification_id": event.id,
+                "title": title,
+                "sent_to": ["notifications"],
+                "queued": True,
+                "priority": priority,
+                "timestamp": event.timestamp.isoformat(),
+                "success": True
+            }
+
+        # Send to targets
         sent_to = []
         for target in targets:
             if target in self._webhooks:
+                # Webhook target
                 await self._execute_trigger_webhook({
                     "webhook_id": target,
-                    "payload": {
-                        "notification": {
-                            "title": title,
-                            "body": body,
-                            "priority": priority
-                        }
-                    }
+                    "payload": notification_payload
+                })
+                sent_to.append(target)
+            elif target.startswith("http://") or target.startswith("https://"):
+                # Raw URL target — POST notification payload directly
+                try:
+                    await self._client.post(
+                        target,
+                        json=notification_payload,
+                        timeout=10.0,
+                    )
+                    sent_to.append(target)
+                except Exception as e:
+                    logger.warning(f"Failed to send notification to URL {target}: {e}")
+            else:
+                # Queue channel target
+                await self._execute_queue_message({
+                    "channel": target,
+                    "payload": notification_payload
                 })
                 sent_to.append(target)
 
@@ -912,6 +1159,249 @@ class DistributedPublishMCP:
         }
 
     # =========================================================================
+    # SUBSTACK TOOL IMPLEMENTATIONS
+    # =========================================================================
+
+    def _require_substack(self) -> SubstackClient:
+        """Return SubstackClient or raise."""
+        if not self._substack_client:
+            raise ValueError("Substack not configured. Set SUBSTACK_SID and SUBSTACK_PUBLICATION env vars.")
+        return self._substack_client
+
+    @staticmethod
+    def _parse_draft_body(draft_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse body_json or draft_body from a draft response into a ProseMirror doc dict."""
+        raw = draft_data.get("body_json") or draft_data.get("draft_body")
+        if raw is None or raw == "":
+            return {"type": "doc", "content": []}
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            raise ValueError(f"Unexpected draft body type: {type(raw).__name__}")
+        if raw.get("type") != "doc":
+            raw["type"] = "doc"
+        if not isinstance(raw.get("content"), list):
+            raw["content"] = []
+        return raw
+
+    async def _execute_substack_create_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        title = args.get("title", "Untitled")
+        subtitle = args.get("subtitle", "")
+        body = args.get("body", "")
+        audience = args.get("audience", "everyone")
+
+        draft = sc.create_draft(title=title, subtitle=subtitle, body=body, audience=audience)
+        return {
+            "success": True,
+            "draft_id": draft.id,
+            "title": draft.title,
+            "edit_url": f"https://{sc.publication}/publish/post/{draft.id}"
+        }
+
+    async def _execute_substack_update_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        draft_id = args["draft_id"]
+        sc.update_draft(
+            draft_id=draft_id,
+            title=args.get("title"),
+            subtitle=args.get("subtitle"),
+            body=args.get("body"),
+        )
+        return {"success": True, "draft_id": draft_id, "message": "Draft updated"}
+
+    async def _execute_substack_append_to_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        draft_id = args["draft_id"]
+        content_md = args.get("content", "")
+        section_title = args.get("section_title")
+        add_timestamp = args.get("add_timestamp", True)
+
+        draft_data = sc.get_draft(draft_id)
+        body_json = self._parse_draft_body(draft_data)
+
+        new_nodes: List[Dict[str, Any]] = []
+        if section_title:
+            ts = ""
+            if add_timestamp:
+                ts = f" ({datetime.now(timezone.utc).strftime('%I:%M %p UTC')})"
+            new_nodes.append({
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": f"{section_title}{ts}"}]
+            })
+
+        converted = MarkdownToSubstack.convert(content_md)
+        new_nodes.extend(converted.get("content", []))
+        body_json["content"].extend(new_nodes)
+        sc.update_draft(draft_id=draft_id, body=body_json)
+
+        if self._live_session and self._live_session.get("draft_id") == draft_id:
+            self._live_session["updates"] = self._live_session.get("updates", 0) + 1
+
+        return {
+            "success": True,
+            "draft_id": draft_id,
+            "message": "Content appended",
+            "total_sections": len([n for n in body_json["content"] if n.get("type") == "heading"])
+        }
+
+    async def _execute_substack_add_code_block(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        draft_id = args["draft_id"]
+        code = args.get("code", "")
+        language = args.get("language", "")
+        filename = args.get("filename", "")
+        caption = args.get("caption", "")
+
+        draft_data = sc.get_draft(draft_id)
+        body_json = self._parse_draft_body(draft_data)
+
+        if filename:
+            body_json["content"].append({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": f"File: {filename}", "marks": [{"type": "code"}]}]
+            })
+
+        body_json["content"].append({
+            "type": "codeBlock",
+            "attrs": {"language": language},
+            "content": [{"type": "text", "text": code}]
+        })
+
+        if caption:
+            body_json["content"].append({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": caption, "marks": [{"type": "em"}]}]
+            })
+
+        sc.update_draft(draft_id=draft_id, body=body_json)
+
+        if self._live_session and self._live_session.get("draft_id") == draft_id:
+            self._live_session["updates"] = self._live_session.get("updates", 0) + 1
+
+        return {"success": True, "draft_id": draft_id, "message": "Code block added"}
+
+    async def _execute_substack_add_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        draft_id = args["draft_id"]
+        url = args["url"]
+        caption = args.get("caption", "")
+        alt = args.get("alt", "")
+
+        draft_data = sc.get_draft(draft_id)
+        body_json = self._parse_draft_body(draft_data)
+
+        image_doc = SubstackDocument()
+        image_doc.image(url, alt=alt, caption=caption)
+        body_json["content"].extend(image_doc.build()["content"])
+
+        sc.update_draft(draft_id=draft_id, body=body_json)
+
+        if self._live_session and self._live_session.get("draft_id") == draft_id:
+            self._live_session["updates"] = self._live_session.get("updates", 0) + 1
+
+        return {"success": True, "draft_id": draft_id, "message": "Image added"}
+
+    async def _execute_substack_publish(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        draft_id = args["draft_id"]
+        send_email = args.get("send_email", False)
+
+        pub_result = sc.publish_draft(draft_id, send_email=send_email)
+        return {
+            "success": True,
+            "url": pub_result.get("canonical_url", ""),
+            "email_sent": send_email
+        }
+
+    async def _execute_substack_post_note(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        text = args.get("text", "")
+        link_url = args.get("link_url")
+
+        if link_url:
+            result = sc.post_note_with_link(text, link_url)
+        else:
+            result = sc.post_note(text)
+        return {"success": True, "note_id": result.get("id"), "message": "Note posted"}
+
+    async def _execute_substack_get_drafts(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        drafts = sc.get_drafts()
+        return {
+            "success": True,
+            "drafts": [
+                {"id": d.id, "title": d.title or "(Untitled)", "subtitle": d.subtitle}
+                for d in drafts
+            ]
+        }
+
+    async def _execute_substack_get_posts(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        limit = args.get("limit", 10)
+        posts = sc.get_archive(limit=limit)
+        return {
+            "success": True,
+            "posts": [
+                {"id": p.id, "title": p.title, "url": p.canonical_url, "date": p.post_date}
+                for p in posts
+            ]
+        }
+
+    async def _execute_substack_live_blog_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        title = args.get("title", f"Live Blog - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+        subtitle = args.get("subtitle", "")
+
+        doc = SubstackDocument()
+        doc.paragraph(SubstackDocument.bold("Live Blog Started"), f" - {datetime.now(timezone.utc).strftime('%I:%M %p UTC')}")
+        doc.horizontal_rule()
+
+        draft = sc.create_draft(title=title, subtitle=subtitle, body=doc)
+
+        self._live_session = {
+            "draft_id": draft.id,
+            "title": title,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "updates": 0,
+            "active": True
+        }
+
+        return {
+            "success": True,
+            "session": self._live_session,
+            "edit_url": f"https://{sc.publication}/publish/post/{draft.id}"
+        }
+
+    async def _execute_substack_live_blog_end(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        if not self._live_session:
+            return {"success": False, "error": "No active live blog session"}
+
+        draft_id = self._live_session["draft_id"]
+        publish = args.get("publish", False)
+
+        draft_data = sc.get_draft(draft_id)
+        body_json = self._parse_draft_body(draft_data)
+
+        closing = SubstackDocument()
+        closing.horizontal_rule()
+        closing.paragraph(SubstackDocument.bold("Live Blog Ended"), f" - {datetime.now(timezone.utc).strftime('%I:%M %p UTC')}")
+        body_json["content"].extend(closing.build()["content"])
+        sc.update_draft(draft_id=draft_id, body=body_json)
+
+        result: Dict[str, Any] = {"success": True, "session": self._live_session, "published": False}
+
+        if publish:
+            pub_result = sc.publish_draft(draft_id, send_email=False)
+            result["published"] = True
+            result["url"] = pub_result.get("canonical_url", "")
+
+        self._live_session = None
+        return result
+
+    # =========================================================================
     # PROPERTIES
     # =========================================================================
 
@@ -969,40 +1459,30 @@ async def lifespan(app: FastAPI):
     )
     await _server.start()
 
-    # Register tools with central registry
-    registry_url = os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
-    service_url = os.getenv("SERVICE_URL", f"http://localhost:{os.getenv('PORT', '4003')}")
+    # Background heartbeat: re-announce to registry every 60s
+    _heartbeat_task = None
 
-    try:
-        from tool_management.client import ToolManagementClient
+    async def _heartbeat_loop():
+        await asyncio.sleep(30)
+        while True:
+            try:
+                await _server._announce_to_registry()
+                logger.debug("Heartbeat: re-announced to registry")
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+            await asyncio.sleep(60)
 
-        client = ToolManagementClient(
-            registry_url=registry_url,
-            provider_id=DistributedPublishMCP.SERVICE_ID,
-            provider_url=service_url,
-            namespace="publish",
-        )
-
-        for tool in _server.tools:
-            client._tools[tool["name"]] = type("RegisteredTool", (), {
-                "name": tool["name"],
-                "description": tool["description"],
-                "input_schema": tool["inputSchema"],
-                "handler": lambda **kw: None,
-                "output_schema": None,
-                "namespace": "publish",
-                "tags": ["publish", "webhooks", "events"],
-            })()
-
-        await client.register_all()
-        logger.info(f"Registered {len(_server.tools)} tools with {registry_url}")
-
-    except ImportError:
-        logger.info("Tool management client not available, skipping global registration")
-    except Exception as e:
-        logger.warning(f"Could not register with central registry: {e}")
+    _heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     yield
+
+    if _heartbeat_task:
+        _heartbeat_task.cancel()
+        try:
+            await _heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
     await _server.stop()
 
 
@@ -1082,6 +1562,7 @@ async def list_events_endpoint(type: Optional[str] = None, limit: int = 50):
     return await _server._execute_list_events({"type": type, "limit": limit})
 
 
+@app.get("/mcp/sse")
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     if not _server:
@@ -1102,6 +1583,19 @@ async def sse_endpoint(request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
+
+
+@app.post("/mcp/sse")
+@app.post("/sse")
+async def sse_post_endpoint(request: Request):
+    """Handle MCP JSON-RPC POST requests via SSE URL (mcp-remote pattern)."""
+    if not _server:
+        raise HTTPException(503, "Server not initialized")
+
+    body = await request.json()
+    mcp_request = MCPRequest(**body)
+    response = await _server.handle_mcp_request(mcp_request)
+    return response.model_dump(exclude_none=True)
 
 
 # =============================================================================

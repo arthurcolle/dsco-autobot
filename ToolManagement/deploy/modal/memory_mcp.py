@@ -21,6 +21,7 @@ image = (
         "pydantic==2.9.2",
         "httpx==0.27.2",
         "numpy>=1.24.0",
+        "requests>=2.28.0",  # needed by native/__init__.py -> publish_mcp -> substack_client
     )
     .add_local_dir(SRC_DIR, remote_path="/root/src")
     .add_local_dir(NATIVE_DIR, remote_path="/root/native")
@@ -33,9 +34,13 @@ data_volume = modal.Volume.from_name("memory-mcp-data", create_if_missing=True)
     image=image,
     volumes={"/data": data_volume},
     timeout=300,
-    min_containers=1,  # Keep at least 1 instance running always
+    min_containers=1,
+    max_containers=10,
+    buffer_containers=2,
+
+    scaledown_window=60,
 )
-@modal.concurrent(max_inputs=50)
+@modal.concurrent(max_inputs=20, target_inputs=5)
 @modal.asgi_app()
 def web():
     """Serve the Distributed Memory MCP."""
@@ -49,6 +54,7 @@ def web():
     os.environ["REGISTRY_URL"] = "https://tools.distributed.systems"
     os.environ["SERVICE_URL"] = "https://arthurcolle--distributed-memory-mcp-web.modal.run"
     os.environ["MEMORY_DATA_DIR"] = "/data/memory"
+    os.environ["DATA_DIR"] = "/data"  # For SemanticBeliefStore persistence
 
     # API keys for cross-MCP calls (embeddings from search, etc.)
     os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"

@@ -20,10 +20,13 @@ image = (
         "uvicorn[standard]==0.32.0",
         "pydantic==2.9.2",
         "httpx==0.27.2",
+        "requests>=2.28.0",
     )
     .add_local_dir(SRC_DIR, remote_path="/root/src")
     .add_local_dir(NATIVE_DIR, remote_path="/root/native")
 )
+
+substack_secret = modal.Secret.from_name("substack-credentials", required_keys=[])
 
 data_volume = modal.Volume.from_name("publish-mcp-data", create_if_missing=True)
 
@@ -31,10 +34,15 @@ data_volume = modal.Volume.from_name("publish-mcp-data", create_if_missing=True)
 @app.function(
     image=image,
     volumes={"/data": data_volume},
+    secrets=[substack_secret],
     timeout=300,
-    min_containers=1,  # Keep at least 1 instance running always
+    min_containers=1,
+    max_containers=10,
+    buffer_containers=2,
+
+    scaledown_window=60,
 )
-@modal.concurrent(max_inputs=50)
+@modal.concurrent(max_inputs=20, target_inputs=5)
 @modal.asgi_app()
 def web():
     """Serve the Distributed Publish MCP."""

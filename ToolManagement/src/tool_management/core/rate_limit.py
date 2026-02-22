@@ -308,6 +308,40 @@ class RateLimiter:
                 "hour": windows.get("hour", SlidingWindow(3600, 1000)).current_count,
             }
 
+    def cleanup_stale(self, max_idle_seconds: int = 3600):
+        """Remove buckets/windows for clients that haven't had activity in max_idle_seconds."""
+        now = time.time()
+        cutoff = now - max_idle_seconds
+        to_remove = []
+
+        with self._lock:
+            # Find stale bucket entries
+            for key, bucket in self._buckets.items():
+                if bucket.last_update < cutoff:
+                    to_remove.append(key)
+            for key in to_remove:
+                del self._buckets[key]
+
+            # Find stale window entries
+            stale_clients = []
+            for client_id, windows in self._windows.items():
+                all_idle = True
+                for window in windows.values():
+                    if window.requests and max(window.requests) > cutoff:
+                        all_idle = False
+                        break
+                if all_idle:
+                    stale_clients.append(client_id)
+            for client_id in stale_clients:
+                del self._windows[client_id]
+                if client_id in self._concurrent and self._concurrent[client_id] == 0:
+                    del self._concurrent[client_id]
+
+            cleaned = len(to_remove) + len(stale_clients)
+            if cleaned > 0:
+                logger.debug(f"Cleaned up {len(to_remove)} stale buckets, {len(stale_clients)} stale client windows")
+            return cleaned
+
 
 class QuotaManager:
     """

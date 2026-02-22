@@ -74,9 +74,11 @@ data_volume = modal.Volume.from_name("tool-registry-data", create_if_missing=Tru
     image=image,
     volumes={"/data": data_volume},
     timeout=600,
-    min_containers=1,  # Keep at least 1 instance running always
+    min_containers=1,
+    max_containers=10,
+    scaledown_window=120,
 )
-@modal.concurrent(max_inputs=100)
+@modal.concurrent(max_inputs=50, target_inputs=10)
 # Custom domain: tools.distributed.systems
 # Register at: https://modal.com/settings/custom-domains
 # DNS CNAME: tools.distributed.systems -> arthurcolle--tool-registry-web.modal.run
@@ -93,8 +95,14 @@ def web():
     os.environ["DATA_DIR"] = "/data"
     os.environ["ENABLE_DOCS"] = "1"
     os.environ["DEBUG"] = "0"
-    os.environ["AUTO_START_QUEUE"] = "1"
+    os.environ["AUTO_START_QUEUE"] = "0"  # Disable task queue to reduce startup load
     os.environ["AUTO_START_NATIVE_MCPS"] = "0"  # Native MCPs deployed separately on Modal
+    os.environ["SYNC_ON_STARTUP"] = "0"  # Disable heavy backend sync — backends push-announce instead
+    os.environ["ENABLE_BG_TASKS"] = "0"  # Disable health poller + index init to avoid event loop starvation
+    os.environ["REGISTER_PERSISTENT_BACKENDS"] = "0"  # Avoid DuckDB write-lock contention during cold starts
+    os.environ["ENABLE_ANNOUNCE_EMBED_SYNC"] = "0"  # Keep announce lightweight; skip embedding/Neo4j background work
+    os.environ["ANNOUNCE_MIN_INTERVAL_SECONDS"] = "900"  # Ignore frequent heartbeat re-announces (15 min)
+    os.environ["DEFAULT_BEARER_TOKEN"] = "sk-arthur-234"  # Static token for probe/smoke testing
 
     # API Base URL for meta-tools (points to self)
     os.environ["API_BASE_URL"] = "https://tools.distributed.systems"
@@ -104,6 +112,9 @@ def web():
     os.environ["RESEARCH_MCP_URL"] = "https://arthurcolle--distributed-research-mcp-web.modal.run"
     os.environ["PUBLISH_MCP_URL"] = "https://arthurcolle--distributed-publish-mcp-web.modal.run"
     os.environ["MEMORY_MCP_URL"] = "https://arthurcolle--distributed-memory-mcp-web.modal.run"
+
+    # Neo4j Graph Management URL
+    os.environ["NEO4J_URL"] = "https://arthurcolle--graph-management-neo4j-serve.modal.run"
 
     # API keys for external services
     os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"

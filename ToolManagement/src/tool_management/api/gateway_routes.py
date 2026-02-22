@@ -616,47 +616,76 @@ async def stream_execute(
     client_id: str = Depends(get_client_id),
 ):
     """
-    Execute a tool with streaming results.
+    Execute a tool with streaming results via StreamingExecutor.
 
     Returns Server-Sent Events (SSE) with:
     - Progress updates
     - Partial results
     - Final result
     """
-    async def event_generator():
-        try:
-            # Simple streaming wrapper
-            yield f"event: started\ndata: {{'tool': '{tool}'}}\n\n"
+    try:
+        from ..core.streaming import get_streaming_executor
+        executor = get_streaming_executor()
+        execution = await executor.execute(
+            tool_name=tool,
+            inputs=request.input or {},
+            client_id=client_id,
+        )
+        return StreamingResponse(
+            executor.stream_sse(execution.execution_id, include_history=True),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except ValueError:
+        # Fallback: executor not initialized, use simple wrapper
+        async def event_generator():
+            try:
+                import json as _json
+                yield f"event: started\ndata: {_json.dumps({'tool': tool})}\n\n"
+                result = await execute_tool(
+                    tool_name=tool,
+                    inputs=request.input,
+                    client_id=client_id,
+                )
+                yield f"event: completed\ndata: {_json.dumps({'result': result['result']})}\n\n"
+            except Exception as e:
+                import json as _json
+                yield f"event: error\ndata: {_json.dumps({'error': str(e)})}\n\n"
 
-            result = await execute_tool(
-                tool_name=tool,
-                inputs=request.input,
-                client_id=client_id,
-            )
-
-            import json
-            yield f"event: completed\ndata: {json.dumps({'result': result['result']})}\n\n"
-
-        except Exception as e:
-            import json
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
 
 
 @router.get("/stream/{execution_id}/events")
 async def get_stream_events(execution_id: str):
-    """Get events for a streaming execution."""
-    # This would connect to the StreamingExecutor
-    # For now, return a placeholder
-    return {"execution_id": execution_id, "events": []}
+    """Stream SSE events for a running execution."""
+    try:
+        from ..core.streaming import get_streaming_executor
+        executor = get_streaming_executor()
+        ex = executor.get_execution(execution_id)
+        if not ex:
+            raise HTTPException(404, f"Execution not found: {execution_id}")
+        return StreamingResponse(
+            executor.stream_sse(execution_id, include_history=True),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except ValueError:
+        return {"execution_id": execution_id, "events": [], "error": "Streaming executor not initialized"}
 
 
 # =============================================================================

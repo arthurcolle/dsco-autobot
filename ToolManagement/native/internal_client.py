@@ -548,7 +548,7 @@ class InternalMCPClient:
         try:
             result = await self.call_tool(
                 tool_name="embed",
-                arguments={"texts": [text]},
+                arguments={"text": text},
                 capability="embed",
                 cache_key=cache_key,
                 cache_ttl=86400,  # Cache embeddings for 24 hours
@@ -562,6 +562,11 @@ class InternalMCPClient:
             if content and isinstance(content, list):
                 text_content = content[0].get("text", "{}")
                 data = json.loads(text_content)
+                # Search MCP embed returns {"embedding": [...]} (singular)
+                embedding = data.get("embedding")
+                if embedding is not None:
+                    return embedding
+                # Fallback: try plural form
                 embeddings = data.get("embeddings", [])
                 return embeddings[0] if embeddings else None
 
@@ -598,30 +603,19 @@ class InternalMCPClient:
             uncached_indices.append(i)
             uncached_texts.append(text)
 
-        # Batch call for uncached texts
+        # Call embed for each uncached text (embed tool accepts single text only)
         if uncached_texts:
             try:
-                result = await self.call_tool(
-                    tool_name="embed",
-                    arguments={"texts": uncached_texts},
-                    capability="embed",
-                )
+                for j, text in enumerate(uncached_texts):
+                    embedding = await self.get_embedding(text, cache=False)
+                    if embedding is not None:
+                        idx = uncached_indices[j]
+                        results[idx] = embedding
 
-                if not result.get("isError"):
-                    content = result.get("content", [])
-                    if content and isinstance(content, list):
-                        text_content = content[0].get("text", "{}")
-                        data = json.loads(text_content)
-                        embeddings = data.get("embeddings", [])
-
-                        for j, embedding in enumerate(embeddings):
-                            idx = uncached_indices[j]
-                            results[idx] = embedding
-
-                            # Cache each embedding
-                            if cache:
-                                text_hash = hashlib.sha256(uncached_texts[j].encode()).hexdigest()[:16]
-                                self._cache.set(f"embed:{text_hash}", embedding, ttl=86400)
+                        # Cache each embedding
+                        if cache:
+                            text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+                            self._cache.set(f"embed:{text_hash}", embedding, ttl=86400)
 
             except Exception as e:
                 logger.error(f"Batch embedding failed: {e}")

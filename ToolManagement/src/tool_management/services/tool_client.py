@@ -18,9 +18,9 @@ def generate_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
 
 class ToolManagementAPI:
     def __init__(
-        self, 
-        tool_api_url: str, 
-        service_name: str = "Your Service Name", 
+        self,
+        tool_api_url: str,
+        service_name: str = "Your Service Name",
         service_url: str = "http://yourserviceapi.internal",
         timeout: int = 30
     ):
@@ -39,6 +39,15 @@ class ToolManagementAPI:
         self.tool_mappings = {}  # Placeholder for future use
         self.tools_to_register = []
         self.timeout = timeout  # Timeout for HTTP requests
+        # Shared persistent httpx client for connection pooling
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        )
+
+    async def close(self):
+        """Close the shared httpx client."""
+        await self._client.aclose()
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -47,10 +56,9 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: JSON response from the health endpoint.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}/health")
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.get(f"{self.base_url}/health")
+        response.raise_for_status()
+        return response.json()
 
     async def get_tools(self) -> List[Dict[str, Any]]:
         """
@@ -59,10 +67,9 @@ class ToolManagementAPI:
         Returns:
             List[Dict[str, Any]]: List of tool details.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}/tools")
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.get(f"{self.base_url}/tools")
+        response.raise_for_status()
+        return response.json()
 
     async def create_tool(self, tool: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -74,10 +81,9 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Created tool details.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/tools", json=tool)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(f"{self.base_url}/tools", json=tool)
+        response.raise_for_status()
+        return response.json()
 
     async def get_tool(self, tool_id: str) -> Dict[str, Any]:
         """
@@ -89,11 +95,10 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Tool details.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}/tools/{tool_id}")
-            response.raise_for_status()
-            return response.json()
-        
+        response = await self._client.get(f"{self.base_url}/tools/{tool_id}")
+        response.raise_for_status()
+        return response.json()
+
     async def get_tool_by_name(self, tool_name: str) -> Dict[str, Any]:
         """
         Retrieves a specific tool by its name.
@@ -104,10 +109,9 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Tool details.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}/tools/name/{tool_name}")
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.get(f"{self.base_url}/tools/name/{tool_name}")
+        response.raise_for_status()
+        return response.json()
 
     async def update_tool(self, tool_id: str, tool: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -120,10 +124,9 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Updated tool details.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.put(f"{self.base_url}/tools/{tool_id}", json=tool)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.put(f"{self.base_url}/tools/{tool_id}", json=tool)
+        response.raise_for_status()
+        return response.json()
 
     async def delete_tool(self, tool_id: str) -> Dict[str, Any]:
         """
@@ -135,10 +138,9 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Response from the delete operation.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.delete(f"{self.base_url}/tools/{tool_id}")
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.delete(f"{self.base_url}/tools/{tool_id}")
+        response.raise_for_status()
+        return response.json()
 
     # Start of Selection
     async def execute_single_tool(self, tool_execution_request: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,16 +153,15 @@ class ToolManagementAPI:
         Returns:
             Dict[str, Any]: Execution response.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/execute_tool", json=tool_execution_request)
-            response.raise_for_status()
-            return response.json()
-        
+        response = await self._client.post(f"{self.base_url}/execute_tool", json=tool_execution_request)
+        response.raise_for_status()
+        return response.json()
+
     async def search_tools(
-        self, 
-        prompt: str, 
-        node_label: str = "Tool", 
-        limit: int = 5, 
+        self,
+        prompt: str,
+        node_label: str = "Tool",
+        limit: int = 5,
         for_model: str = "gpt-4o"
     ) -> List[Dict[str, Any]]:
         """
@@ -181,10 +182,9 @@ class ToolManagementAPI:
             "limit": limit,
             "for_model": for_model
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/tools/search", params=search_payload)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(f"{self.base_url}/tools/search", params=search_payload)
+        response.raise_for_status()
+        return response.json()
 
     async def execute_tools_sequential(self, sequential_execution_request: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -196,10 +196,9 @@ class ToolManagementAPI:
         Returns:
             List[Dict[str, Any]]: List of execution responses.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/execute_tools_sequential", json=sequential_execution_request)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(f"{self.base_url}/execute_tools_sequential", json=sequential_execution_request)
+        response.raise_for_status()
+        return response.json()
 
     async def execute_tools_parallel(self, parallel_execution_request: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -211,10 +210,9 @@ class ToolManagementAPI:
         Returns:
             List[Dict[str, Any]]: List of execution responses.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/execute_tools_parallel", json=parallel_execution_request)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(f"{self.base_url}/execute_tools_parallel", json=parallel_execution_request)
+        response.raise_for_status()
+        return response.json()
 
     def tool_wrapper(
         self, 

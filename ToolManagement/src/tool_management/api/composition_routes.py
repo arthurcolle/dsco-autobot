@@ -381,6 +381,17 @@ async def execute_composition(
     try:
         result = await _execute_workflow(workflow, request.inputs, execution_id)
 
+        # Apply output guard
+        try:
+            from ..guards.output_guard import apply_output_guard
+            result = apply_output_guard(
+                result,
+                tool_name=f"compose:{workflow.name}",
+                source_context={"workflow_id": workflow.id},
+            )
+        except ImportError:
+            pass
+
         # Update stats
         workflow.execution_count += 1
         workflow.success_count += 1
@@ -563,117 +574,31 @@ async def _execute_step(
 
 
 async def _execute_tool(tool_name: str, inputs: Any) -> Any:
-    """Execute a registered tool via direct MCP call."""
+    """Execute a registered tool via the persistent tool store registry."""
+    from ..persistence import get_tool_store
 
     # Convert inputs to dict if needed
     if not isinstance(inputs, dict):
         inputs = {"input": inputs}
 
-    # Try to execute tool via registry wrapper MCP first
+    store = get_tool_store()
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Call Registry Wrapper MCP to execute the tool
+        # Resolve tool to its backend via DuckDB registry
+        backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                "http://localhost:4005/mcp",
+                f"{backend_url}/mcp",
                 json={
                     "jsonrpc": "2.0",
                     "id": str(uuid4()),
                     "method": "tools/call",
                     "params": {
-                        "name": "execute_tool",
-                        "arguments": {
-                            "tool_name": tool_name,
-                            "arguments": inputs
-                        }
-                    }
-                },
-                timeout=30.0
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                if "result" in result:
-                    content = result["result"].get("content", [])
-                    if content and len(content) > 0:
-                        text = content[0].get("text", "{}")
-                        try:
-                            return json.loads(text)
-                        except:
-                            return {"output": text}
-    except Exception as e:
-        logger.debug(f"Registry wrapper execution failed: {e}, trying direct MCP call")
-
-    # Fallback: Try direct MCP tool call
-    # Map tool names to their MCP servers
-    tool_to_mcp = {
-        # Search MCP tools (4001)
-        "search": 4001,
-        "read": 4001,
-        "verify": 4001,
-        "rerank": 4001,
-        "embed": 4001,
-
-        # Research MCP tools (4002)
-        "deep_search": 4002,
-        "run_task": 4002,
-        "extract_data": 4002,
-        "create_task_group": 4002,
-        "find_all": 4002,
-        "synthesize": 4002,
-
-        # Publish MCP tools (4003)
-        "create_webhook": 4003,
-        "trigger_webhook": 4003,
-        "list_webhooks": 4003,
-        "delete_webhook": 4003,
-        "publish_event": 4003,
-        "list_events": 4003,
-        "queue_message": 4003,
-        "get_queue_messages": 4003,
-        "send_notification": 4003,
-        "syndicate_content": 4003,
-        "broadcast": 4003,
-
-        # Memory MCP tools (4004)
-        "focus": 4004,
-        "recall": 4004,
-        "consolidate": 4004,
-        "learn_skill": 4004,
-        "query_beliefs": 4004,
-
-        # Registry Wrapper MCP tools (4005)
-        "list_tools": 4005,
-        "get_tool": 4005,
-        "search_tools": 4005,
-        "execute_tool": 4005,
-        "list_native_mcps": 4005,
-        "get_registry_stats": 4005,
-        "list_services": 4005,
-    }
-
-    port = tool_to_mcp.get(tool_name)
-
-    if not port:
-        # Unknown tool, return placeholder
-        return {
-            "error": f"Unknown tool: {tool_name}",
-            "note": "Tool not mapped to any MCP server"
-        }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"http://localhost:{port}/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": str(uuid4()),
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool_name,
+                        "name": resolved_name,
                         "arguments": inputs
                     }
                 },
-                timeout=30.0
             )
 
             if response.status_code == 200:
@@ -684,13 +609,16 @@ async def _execute_tool(tool_name: str, inputs: Any) -> Any:
                         text = content[0].get("text", "{}")
                         try:
                             return json.loads(text)
-                        except:
+                        except (json.JSONDecodeError, ValueError):
                             return {"output": text}
 
             return {"error": f"Tool execution failed with status {response.status_code}"}
 
-    except Exception as e:
+    except ValueError as e:
+        # Tool or backend not found in registry
         return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Tool execution error: {str(e)}"}
 
 
 async def _llm_transform(
@@ -1001,6 +929,17 @@ async def compose_simple(composition: SimpleComposition):
     try:
         result = await _execute_simple_composition(composition, execution_id)
 
+        # Apply output guard to composition results
+        try:
+            from ..guards.output_guard import apply_output_guard
+            result = apply_output_guard(
+                result,
+                tool_name=f"compose:{composition.workflow_type.value}",
+                source_context={"workflow": composition.workflow_type.value, "tools": composition.tools},
+            )
+        except ImportError:
+            pass
+
         return {
             "execution_id": execution_id,
             "workflow_type": composition.workflow_type.value,
@@ -1061,28 +1000,46 @@ async def _execute_simple_composition(
         if not isinstance(items, list):
             items = [items]
 
-        # Apply tool to each item
-        results = []
-        for item in items:
-            item_args = {**tool_args, "input": item}
-            result = await _execute_tool(tool_name, item_args)
-            results.append(result)
+        # Apply tool to each item in parallel (with timeout guard)
+        map_tasks = [
+            _execute_tool(tool_name, {**tool_args, "input": item})
+            for item in items
+        ]
+        try:
+            raw_results = await asyncio.wait_for(
+                asyncio.gather(*map_tasks, return_exceptions=True),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            raw_results = [TimeoutError(f"Map phase exceeded 300s timeout")]
+        results = [
+            {"error": str(r)} if isinstance(r, Exception) else r
+            for r in raw_results
+        ]
 
         return {"mapped_results": results, "count": len(results)}
 
     elif workflow_type == WorkflowType.REDUCE:
-        # Reduce: Aggregate multiple results
+        # Reduce: Aggregate multiple results in parallel
         if not tools:
             raise ValueError("REDUCE requires at least one tool")
 
-        # Execute all tools in parallel
-        results = []
-        for i, tool_name in enumerate(tools):
-            args = arguments[i] if i < len(arguments) else {}
-            result = await _execute_tool(tool_name, args)
-            results.append(result)
+        reduce_tasks = [
+            _execute_tool(tool_name, arguments[i] if i < len(arguments) else {})
+            for i, tool_name in enumerate(tools)
+        ]
+        try:
+            raw_results = await asyncio.wait_for(
+                asyncio.gather(*reduce_tasks, return_exceptions=True),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            raw_results = [TimeoutError(f"Reduce phase exceeded 300s timeout")]
+        results = [
+            {"error": str(r)} if isinstance(r, Exception) else r
+            for r in raw_results
+        ]
 
-        # Final reduction step
         return {"aggregated": results, "count": len(results)}
 
     elif workflow_type == WorkflowType.MAP_REDUCE:
@@ -1101,11 +1058,21 @@ async def _execute_simple_composition(
         if not isinstance(items, list):
             items = [items]
 
-        map_results = []
-        for item in items:
-            item_args = {**map_args, "input": item}
-            result = await _execute_tool(map_tool, item_args)
-            map_results.append(result)
+        mr_tasks = [
+            _execute_tool(map_tool, {**map_args, "input": item})
+            for item in items
+        ]
+        try:
+            raw_map_results = await asyncio.wait_for(
+                asyncio.gather(*mr_tasks, return_exceptions=True),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            raw_map_results = [TimeoutError(f"Map-reduce map phase exceeded 300s timeout")]
+        map_results = [
+            {"error": str(r)} if isinstance(r, Exception) else r
+            for r in raw_map_results
+        ]
 
         # Reduce phase
         reduce_input = {**reduce_args, "items": map_results}
@@ -1124,7 +1091,13 @@ async def _execute_simple_composition(
             args = {**arguments[i], **inputs} if isinstance(inputs, dict) else arguments[i]
             tasks.append(_execute_tool(tool_name, args))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            results = [TimeoutError(f"Parallel phase exceeded 300s timeout")]
 
         # Merge results
         merged = {}
@@ -1155,12 +1128,22 @@ async def _execute_simple_composition(
         # Get segments
         segments = segment_result if isinstance(segment_result, list) else [segment_result]
 
-        # Process each segment
-        processed = []
-        for segment in segments:
-            seg_args = {**process_args, "input": segment}
-            result = await _execute_tool(process_tool, seg_args)
-            processed.append(result)
+        # Process each segment in parallel
+        seg_tasks = [
+            _execute_tool(process_tool, {**process_args, "input": segment})
+            for segment in segments
+        ]
+        try:
+            processed_raw = await asyncio.wait_for(
+                asyncio.gather(*seg_tasks, return_exceptions=True),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            processed_raw = [TimeoutError(f"Segment-process phase exceeded 300s timeout")]
+        processed = [
+            {"error": str(r)} if isinstance(r, Exception) else r
+            for r in processed_raw
+        ]
 
         # Aggregate (optional)
         if aggregate_tool:

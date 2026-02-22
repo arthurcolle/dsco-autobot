@@ -153,6 +153,64 @@ from .persistence import (
     SwarmDB,
     get_swarm_db,
 )
+from .mcp_task_types import (
+    MCPTaskType,
+    MCP_TASK_ROUTING,
+    MCP_BACKEND_CAPABILITIES,
+    get_backend_for_task,
+    get_task_types_for_backend,
+    is_mcp_task_type,
+)
+from .agent_capabilities import (
+    MCPCapability,
+    AgentMCPProfile,
+    create_specialized_profile,
+    create_generalist_profile,
+)
+from .swarm_events import (
+    SwarmEventType,
+    SwarmEvent,
+    EventSubscription,
+    task_created_event,
+    task_completed_event,
+    agent_idle_event,
+    skill_learned_event,
+    work_available_event,
+    workflow_completed_event,
+    mcp_skill_captured_event,
+)
+from .swarm_mcp_bridge import (
+    SwarmMCPBridge,
+    MCPBackendClient,
+    MCPError,
+    get_swarm_mcp_bridge,
+)
+from .master_control import (
+    MasterControlProgram,
+    ClearanceLevel,
+    ActionType,
+    AuthorizationRequest,
+    AuthorizationResult,
+    Violation,
+    AgentProfile,
+    get_mcp,
+)
+from .self_improve import (
+    SelfImprovementEngine,
+    CodeChange,
+    ChangeType,
+    ChangeStatus,
+    ImprovementProposal,
+    get_improvement_engine,
+)
+from .swarm_hierarchy import (
+    SwarmController,
+    SwarmDirective,
+    SwarmRelation,
+    SwarmRelationType,
+    AutonomyLevel,
+    get_swarm_controller,
+)
 
 __all__ = [
     # Wallet
@@ -227,4 +285,36 @@ __all__ = [
     # Persistence
     "SwarmDB",
     "get_swarm_db",
+
+    # MCP Task Types
+    "MCPTaskType",
+    "MCP_TASK_ROUTING",
+    "MCP_BACKEND_CAPABILITIES",
+    "get_backend_for_task",
+    "get_task_types_for_backend",
+    "is_mcp_task_type",
+
+    # Agent Capabilities
+    "MCPCapability",
+    "AgentMCPProfile",
+    "create_specialized_profile",
+    "create_generalist_profile",
+
+    # Swarm Events
+    "SwarmEventType",
+    "SwarmEvent",
+    "EventSubscription",
+    "task_created_event",
+    "task_completed_event",
+    "agent_idle_event",
+    "skill_learned_event",
+    "work_available_event",
+    "workflow_completed_event",
+    "mcp_skill_captured_event",
+
+    # MCP Bridge
+    "SwarmMCPBridge",
+    "MCPBackendClient",
+    "MCPError",
+    "get_swarm_mcp_bridge",
 ]
