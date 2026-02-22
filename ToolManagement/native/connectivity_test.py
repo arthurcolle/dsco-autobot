@@ -45,7 +45,7 @@ def header(msg: str) -> str:
     return f"\n{Colors.BOLD}{msg}{Colors.END}"
 
 
-async def test_server(
+async def run_server_connectivity_check(
     name: str,
     base_url: str,
     expected_tools: list[str]
@@ -242,7 +242,7 @@ async def main():
         print(info(f"URL: {server['url']}"))
         print()
 
-        results = await test_server(
+        results = await run_server_connectivity_check(
             server["name"],
             server["url"],
             server["expected_tools"]

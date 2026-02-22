@@ -11,7 +11,7 @@ import requests
 import json
 
 
-def test_health(base_url: str):
+def check_health(base_url: str):
     """Test health endpoint."""
     print("Testing /health endpoint...")
     response = requests.get(f"{base_url}/health")
@@ -20,7 +20,7 @@ def test_health(base_url: str):
     return True
 
 
-def test_probe(base_url: str):
+def check_probe(base_url: str):
     """Test Neo4j connection probe."""
     print("\nTesting /probe endpoint...")
     response = requests.get(f"{base_url}/probe")
@@ -30,7 +30,7 @@ def test_probe(base_url: str):
     return True
 
 
-def test_create_nodes(base_url: str):
+def check_create_nodes(base_url: str):
     """Test creating nodes."""
     print("\nTesting node creation...")
 
@@ -54,7 +54,7 @@ def test_create_nodes(base_url: str):
     return True
 
 
-def test_query_nodes(base_url: str):
+def check_query_nodes(base_url: str):
     """Test querying nodes."""
     print("\nTesting node queries...")
 
@@ -73,7 +73,7 @@ def test_query_nodes(base_url: str):
     return True
 
 
-def test_parameterized_query(base_url: str):
+def check_parameterized_query(base_url: str):
     """Test parameterized queries."""
     print("\nTesting parameterized queries...")
 
@@ -91,7 +91,7 @@ def test_parameterized_query(base_url: str):
     return True
 
 
-def test_relationship_query(base_url: str):
+def check_relationship_query(base_url: str):
     """Test relationship queries."""
     print("\nTesting relationship queries...")
 
@@ -113,7 +113,7 @@ def test_relationship_query(base_url: str):
     return True
 
 
-def test_cleanup(base_url: str):
+def check_cleanup(base_url: str):
     """Clean up test data."""
     print("\nCleaning up test data...")
 
@@ -142,13 +142,13 @@ def main():
 
     try:
         tests = [
-            test_health,
-            test_probe,
-            test_create_nodes,
-            test_query_nodes,
-            test_parameterized_query,
-            test_relationship_query,
-            test_cleanup,
+            check_health,
+            check_probe,
+            check_create_nodes,
+            check_query_nodes,
+            check_parameterized_query,
+            check_relationship_query,
+            check_cleanup,
         ]
 
         for test_func in tests:

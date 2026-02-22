@@ -27,6 +27,11 @@ BASE_URL = os.getenv("TEST_BASE_URL", "https://tools.distributed.systems")
 @pytest.fixture(scope="session")
 def client():
     with httpx.Client(timeout=30.0, base_url=BASE_URL) as c:
+        try:
+            # Gate integration tests on endpoint reachability.
+            c.get("/health", timeout=8.0)
+        except httpx.HTTPError as exc:
+            pytest.skip(f"Integration target unavailable at {BASE_URL}: {exc}")
         yield c
 
 
