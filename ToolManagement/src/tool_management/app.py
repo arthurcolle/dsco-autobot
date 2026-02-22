@@ -7,6 +7,7 @@ Includes durable task queue with admin operations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -14,9 +15,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from .api import router as tools_router
-from .api import service_router
+from .api.routes import router as tools_router
+from .api.service_routes import router as service_router
 from .api.admin_routes import router as admin_router
 from .api.retrieval_routes import router as retrieval_router
 from .api.desktop_routes import router as desktop_router
@@ -30,7 +32,10 @@ from .api.url_queue_routes import router as url_queue_router
 from .api.auth_routes import router as auth_router
 from .api.swarm_routes import router as swarm_router
 from .api.tools_api import router as tools_api_router
+from .api.execution_routes import router as execution_router
 from .api.advanced_search_routes import router as advanced_search_router
+from .api.job_routes import router as job_router
+from .oauth import router as oauth_router
 from .registry import get_registry, get_service_registry
 from .persistence import get_tool_store
 from .queue import get_task_queue, MCPBackend
@@ -82,8 +87,12 @@ async def lifespan(app: FastAPI):
     # Register default MCP backends from environment
     await _register_default_backends(queue)
 
-    # Register backends in persistent tool store
-    await _register_persistent_backends()
+    # Register backends in persistent tool store (optional; can be disabled on Modal)
+    register_persistent = os.getenv("REGISTER_PERSISTENT_BACKENDS", "1") == "1"
+    if register_persistent:
+        await _register_persistent_backends()
+    else:
+        logger.info("Persistent backend registration disabled (REGISTER_PERSISTENT_BACKENDS=0)")
 
     # Initialize core components
     intelligent_router = get_router()
@@ -140,34 +149,150 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start native MCPs: {e}")
 
-    # Initialize semantic tool index (always run, not just for native MCPs)
+    # Initialize streaming executor for async jobs
+    _cleanup_task = None
     try:
-        from .api.semantic_mcp_routes import initialize_semantic_index
-        logger.info("Initializing semantic tool index...")
-        await initialize_semantic_index()
-        logger.info("Semantic tool index initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize semantic index: {e}")
+        from .core.streaming import create_tool_executor_for_jobs, get_streaming_executor
+        tool_executor_fn = create_tool_executor_for_jobs()
+        streaming_executor = get_streaming_executor(tool_executor=tool_executor_fn)
+        logger.info("Streaming executor initialized for async jobs")
 
-    # Initialize advanced tool index with multi-faceted embeddings
-    try:
-        from .api.advanced_search_routes import reindex_all
-        logger.info("Initializing advanced tool index...")
-        await reindex_all()
-        logger.info("Advanced tool index initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize advanced index: {e}")
+        async def _cleanup_old_jobs():
+            while True:
+                await asyncio.sleep(300)
+                try:
+                    removed = streaming_executor.cleanup_old(max_age_seconds=3600)
+                    if removed:
+                        logger.info(f"Cleaned up {removed} old job executions")
+                except Exception as exc:
+                    logger.warning(f"Job cleanup error: {exc}")
+                # Also clean up stale rate limiter entries
+                try:
+                    from .core.rate_limit import get_quota_manager
+                    qm = get_quota_manager()
+                    cleaned = qm._rate_limiter.cleanup_stale(max_idle_seconds=3600)
+                    if cleaned:
+                        logger.info(f"Cleaned up {cleaned} stale rate limiter entries")
+                except Exception as exc:
+                    logger.warning(f"Rate limiter cleanup error: {exc}")
 
-    # Auto-sync tools from all backends
-    try:
-        from .api.mcp_routes import refresh_mcp_tools
-        logger.info("Syncing tools from backends...")
-        await refresh_mcp_tools()
-        logger.info("Tool sync complete")
+        _cleanup_task = asyncio.create_task(_cleanup_old_jobs())
     except Exception as e:
-        logger.error(f"Failed to sync tools: {e}")
+        logger.error(f"Failed to initialize streaming executor: {e}")
+
+    # Background health poller: check remote backends periodically
+    _health_poller_task = None
+    enable_bg_tasks = os.getenv("ENABLE_BG_TASKS", "1") == "1"
+    if enable_bg_tasks:
+        try:
+            async def _poll_backend_health():
+                """Periodically check backend health and update DuckDB."""
+                import httpx as _httpx
+                await asyncio.sleep(30)  # Wait for backends to start
+                while True:
+                    try:
+                        store = get_tool_store()
+                        backends = store.list_backends()
+                        for b in backends:
+                            url = b.get("url") or b.get("backend_url", "")
+                            health_ep = b.get("health_endpoint", "/health")
+                            backend_id = b.get("backend_id", "")
+                            if not url or not backend_id:
+                                continue
+                            try:
+                                async with _httpx.AsyncClient(timeout=5.0) as client:
+                                    resp = await client.get(f"{url}{health_ep}")
+                                    is_healthy = resp.status_code == 200
+                            except Exception:
+                                is_healthy = False
+                            store.update_backend_health(backend_id, is_healthy)
+                    except Exception as exc:
+                        logger.warning(f"Backend health poll error: {exc}")
+                    await asyncio.sleep(120)
+
+            _health_poller_task = asyncio.create_task(_poll_backend_health())
+            logger.info("Backend health poller started (120s interval)")
+        except Exception as e:
+            logger.error(f"Failed to start health poller: {e}")
+
+        # Initialize indexes in background (non-blocking)
+        async def _background_index_init():
+            await asyncio.sleep(10)  # Let the app warm up first
+            try:
+                from .api.semantic_mcp_routes import initialize_semantic_index
+                await initialize_semantic_index()
+                logger.info("Semantic tool index initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize semantic index: {e}")
+            try:
+                from .api.advanced_search_routes import reindex_all
+                await reindex_all()
+                logger.info("Advanced tool index initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize advanced index: {e}")
+
+        asyncio.create_task(_background_index_init())
+        logger.info("Index initialization started (non-blocking)")
+    else:
+        logger.info("Background tasks disabled (ENABLE_BG_TASKS=0)")
+
+    # Poll-sync tools from backends (runs in background, does NOT block startup)
+    sync_on_startup = os.getenv("SYNC_ON_STARTUP", "1") == "1"
+    if sync_on_startup:
+        async def _background_sync():
+            # Sync tools from all backends into DuckDB
+            try:
+                from .api.tools_api import sync_all_backends as _sync_all
+                logger.info("Background sync: syncing tools from all backends...")
+                result = await asyncio.wait_for(_sync_all(), timeout=45)
+                logger.info(f"Background sync complete: {result}")
+            except asyncio.TimeoutError:
+                logger.warning("Background sync: timed out after 45s (backends may still be starting)")
+            except Exception as e:
+                logger.error(f"Background sync failed: {e}")
+
+            # Sync tools to Neo4j graph (optional, graceful failure)
+            try:
+                neo4j_url = os.getenv("NEO4J_URL")
+                if neo4j_url:
+                    from .services.graph_client import GraphManagementClient
+                    graph = GraphManagementClient(base_url=neo4j_url)
+                    store = get_tool_store()
+                    tools = store.list_tools(limit=1000)
+                    for tool in tools:
+                        await graph.execute_query(
+                            "MERGE (t:Tool {tool_id: $tool_id}) "
+                            "SET t.name = $name, t.description = $description, "
+                            "t.backend_id = $backend_id, t.backend_url = $backend_url, "
+                            "t.category = $category, t.updated_at = datetime()",
+                            {
+                                "tool_id": tool.tool_id,
+                                "name": tool.name,
+                                "description": tool.description,
+                                "backend_id": tool.backend_id,
+                                "backend_url": tool.backend_url,
+                                "category": tool.category or "general",
+                            }
+                        )
+                    logger.info(f"Synced {len(tools)} tools to Neo4j graph")
+            except Exception as e:
+                logger.warning(f"Neo4j graph sync skipped: {e}")
+
+        asyncio.create_task(_background_sync())
+        logger.info("Background sync started (non-blocking)")
+    else:
+        logger.info("Startup poll-sync disabled (SYNC_ON_STARTUP=0), backends will push-announce")
 
     yield
+
+    # Stop background tasks
+    for _bg_task in [_cleanup_task, _health_poller_task]:
+        if _bg_task:
+            _bg_task.cancel()
+            try:
+                await _bg_task
+            except asyncio.CancelledError:
+                pass
 
     # Stop native MCP servers
     if native_manager:
@@ -355,19 +480,41 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Request logging middleware for debugging
+    # Backpressure middleware — shed load before hitting Modal's 2000 pending input queue limit
+    _inflight = 0
+    _max_inflight = int(os.getenv("MAX_INFLIGHT_REQUESTS", "500"))
+
     @app.middleware("http")
-    async def log_requests(request, call_next):
-        logger.info(f"Request: {request.method} {request.url.path}")
-        response = await call_next(request)
-        logger.info(f"Response: {response.status_code}")
-        return response
+    async def backpressure(request, call_next):
+        nonlocal _inflight
+        # Health checks always pass through
+        if request.url.path in ("/health", "/"):
+            return await call_next(request)
+        if _inflight >= _max_inflight:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "server_overloaded", "detail": "Too many concurrent requests, retry later"},
+                headers={"Retry-After": "2"},
+            )
+        _inflight += 1
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            _inflight -= 1
 
     # Root endpoint
     @app.get("/")
     async def root():
         registry = get_registry()
         service_registry = get_service_registry()
+
+        # Remote backends from DuckDB (the real source of truth on Modal)
+        store = get_tool_store()
+        backends = store.list_backends()
+        healthy_backends = [b for b in backends if b.get("is_healthy")]
+
+        # Also check in-process native manager (for local dev)
         native_manager = get_native_mcp_manager()
         native_status = native_manager.get_status() if native_manager else {}
 
@@ -377,6 +524,20 @@ def create_app() -> FastAPI:
             "status": "running",
             "tools_registered": len(registry),
             "services_registered": len(service_registry),
+            "backends": {
+                "total": len(backends),
+                "healthy": len(healthy_backends),
+                "servers": {
+                    b.get("backend_id", "?"): {
+                        "name": b.get("name"),
+                        "healthy": b.get("is_healthy", False),
+                        "url": b.get("url"),
+                        "last_health_check": b.get("last_health_check"),
+                        "tool_count": b.get("tool_count", 0),
+                    }
+                    for b in backends
+                },
+            },
             "native_mcps": {
                 "running": native_status.get("running", False),
                 "count": len(native_status.get("servers", {})),
@@ -391,6 +552,7 @@ def create_app() -> FastAPI:
                 "health": "/health",
                 "gateway": "/api/v1/gateway",
                 "tools": "/api/v1/tools",
+                "execute": "/api/v1/execute",
                 "services": "/api/v1/services",
                 "admin": "/api/v1/admin",
                 "desktop": "/api/v1/desktop",
@@ -402,10 +564,13 @@ def create_app() -> FastAPI:
     # Health check
     @app.get("/health")
     async def health():
-        registry = get_registry()
+        store = get_tool_store()
+        stats = store.get_stats()
         return {
             "status": "healthy",
-            "tool_count": len(registry),
+            "tool_count": stats.get("tool_count", 0),
+            "backend_count": stats.get("backend_count", 0),
+            "healthy_backends": stats.get("healthy_backends", 0),
         }
 
     # Include retrieval routes FIRST (specific paths before wildcards)
@@ -413,6 +578,9 @@ def create_app() -> FastAPI:
 
     # Include clean tools API (persistent, robust) - BEFORE tools_router to avoid wildcard conflicts
     app.include_router(tools_api_router)
+
+    # Include streaming-first execution endpoints (/api/v1/execute, /api/v1/calls/*/control)
+    app.include_router(execution_router)
 
     # Include tool routes
     app.include_router(tools_router, prefix="/api/v1")
@@ -459,6 +627,12 @@ def create_app() -> FastAPI:
 
     # Include advanced search routes (/api/v1/discover for multi-faceted tool discovery)
     app.include_router(advanced_search_router)
+
+    # Include async jobs API (/api/v1/jobs for submit/poll/stream/cancel)
+    app.include_router(job_router, prefix="/api/v1")
+
+    # OAuth 2.0 endpoints at root level (/.well-known/*, /oauth/*)
+    app.include_router(oauth_router)
 
     return app
 

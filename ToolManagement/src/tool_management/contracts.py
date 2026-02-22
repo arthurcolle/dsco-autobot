@@ -136,7 +136,9 @@ class ExecutionPriority(str, Enum):
 
 class ExecutionMode(str, Enum):
     """Execution mode affecting behavior."""
+    AUTO = "auto"               # Automatic mode selection
     SYNC = "sync"               # Synchronous, wait for result
+    JOB = "job"                 # Detached/background execution
     ASYNC = "async"             # Asynchronous, return immediately
     STREAM = "stream"           # Streaming response
     BATCH = "batch"             # Batch processing mode

@@ -91,11 +91,43 @@ class ToolStore:
         self._initialized = True
         logger.info(f"ToolStore initialized at {self.db_path}")
 
-    def _get_conn(self) -> duckdb.DuckDBPyConnection:
-        return duckdb.connect(self.db_path)
+    def _get_conn(self, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+        import time as _time
+        for attempt in range(3):
+            try:
+                # DuckDB rejects mixed connection configurations (read_only vs read_write)
+                # within the same process. Keep one consistent mode for all callers.
+                return duckdb.connect(self.db_path)
+            except Exception as e:
+                if attempt < 2 and ("lock" in str(e).lower() or "busy" in str(e).lower()
+                                     or "WAL" in str(e) or "Conflict" in str(e)):
+                    _time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
 
     def _init_schema(self):
-        """Initialize database schema."""
+        """Initialize database schema, recovering from WAL corruption if needed."""
+        try:
+            self._create_tables()
+        except Exception as e:
+            if "WAL" in str(e) or "Conflict" in str(e):
+                logger.warning(f"DuckDB WAL corrupted, deleting WAL and retrying: {e}")
+                import pathlib
+                wal_path = pathlib.Path(self.db_path + ".wal")
+                if wal_path.exists():
+                    wal_path.unlink()
+                try:
+                    self._create_tables()
+                except Exception:
+                    logger.warning("DB still broken after WAL removal, recreating from scratch")
+                    db = pathlib.Path(self.db_path)
+                    if db.exists():
+                        db.unlink()
+                    self._create_tables()
+            else:
+                raise
+
+    def _create_tables(self):
         with self._get_conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tools (
@@ -133,10 +165,24 @@ class ToolStore:
                 )
             """)
 
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS idempotency_records (
+                    idempotency_key VARCHAR NOT NULL,
+                    tool_id VARCHAR NOT NULL,
+                    request_hash VARCHAR NOT NULL,
+                    response_json JSON,
+                    success BOOLEAN DEFAULT true,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    PRIMARY KEY (idempotency_key, tool_id)
+                )
+            """)
+
             # Indexes for fast lookup
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_name ON tools(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_backend ON tools(backend_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_category ON tools(category)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_records(expires_at)")
 
     # ==================== Backend Operations ====================
 
@@ -174,7 +220,7 @@ class ToolStore:
 
     def get_backend(self, backend_id: str) -> Optional[Dict]:
         """Get backend by ID."""
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
             result = conn.execute(
                 "SELECT * FROM backends WHERE backend_id = ?", [backend_id]
             ).fetchone()
@@ -186,7 +232,7 @@ class ToolStore:
 
     def list_backends(self) -> List[Dict]:
         """List all registered backends."""
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
             results = conn.execute("SELECT * FROM backends ORDER BY name").fetchall()
             columns = [desc[0] for desc in conn.description]
             return [dict(zip(columns, row)) for row in results]
@@ -253,7 +299,7 @@ class ToolStore:
 
     def get_tool(self, tool_id: str) -> Optional[RegisteredTool]:
         """Get tool by ID."""
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
             result = conn.execute(
                 "SELECT * FROM tools WHERE tool_id = ?", [tool_id]
             ).fetchone()
@@ -269,7 +315,22 @@ class ToolStore:
 
     def get_tool_by_name(self, name: str, backend_id: str = None) -> Optional[RegisteredTool]:
         """Get tool by name, optionally filtered by backend."""
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
+            if backend_id is None and ":" in name:
+                # Accept fully-qualified names (backend:tool) as first-class lookup keys.
+                exact = conn.execute(
+                    "SELECT * FROM tools WHERE tool_id = ? ORDER BY updated_at DESC LIMIT 1", [name]
+                ).fetchone()
+                if exact:
+                    columns = [desc[0] for desc in conn.description]
+                    data = dict(zip(columns, exact))
+                    data['input_schema'] = json.loads(data['input_schema']) if data['input_schema'] else {}
+                    data['output_schema'] = json.loads(data['output_schema']) if data['output_schema'] else {}
+                    data['tags'] = json.loads(data['tags']) if data['tags'] else []
+                    return RegisteredTool(**data)
+
+                backend_id, name = name.split(":", 1)
+
             if backend_id:
                 result = conn.execute(
                     "SELECT * FROM tools WHERE name = ? AND backend_id = ?", [name, backend_id]
@@ -288,8 +349,8 @@ class ToolStore:
                 return RegisteredTool(**data)
         return None
 
-    def list_tools(self, backend_id: str = None, category: str = None, limit: int = 100) -> List[RegisteredTool]:
-        """List tools with optional filters."""
+    def list_tools(self, backend_id: str = None, category: str = None, limit: int = 100, offset: int = 0) -> List[RegisteredTool]:
+        """List tools with optional filters and pagination."""
         query = "SELECT * FROM tools WHERE 1=1"
         params = []
 
@@ -300,9 +361,9 @@ class ToolStore:
             query += " AND category = ?"
             params.append(category)
 
-        query += f" ORDER BY name LIMIT {limit}"
+        query += f" ORDER BY name LIMIT {limit} OFFSET {offset}"
 
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
             results = conn.execute(query, params).fetchall()
             columns = [desc[0] for desc in conn.description]
 
@@ -315,6 +376,21 @@ class ToolStore:
                 tools.append(RegisteredTool(**data))
 
             return tools
+
+    def count_tools(self, backend_id: str = None, category: str = None) -> int:
+        """Count tools matching filters."""
+        query = "SELECT COUNT(*) FROM tools WHERE 1=1"
+        params = []
+
+        if backend_id:
+            query += " AND backend_id = ?"
+            params.append(backend_id)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+
+        with self._get_conn(read_only=True) as conn:
+            return conn.execute(query, params).fetchone()[0]
 
     def list_tools_by_backend(self, backend_id: str) -> List[RegisteredTool]:
         """List all tools for a specific backend."""
@@ -347,6 +423,313 @@ class ToolStore:
                 raise ValueError(f"Tool not found: {tool_ref}")
             return tool.backend_id, tool.backend_url, tool.name
 
+    # ==================== Advanced Queries ====================
+
+    def query_tools(
+        self,
+        search: Optional[str] = None,
+        backend_id: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        limit: int = 100,
+        offset: int = 0,
+        columns: Optional[List[str]] = None,
+    ) -> tuple[List[Dict], int]:
+        """
+        Advanced tool query with text search, sorting, tag filtering, and column projection.
+
+        Args:
+            search: Text search across name and description (ILIKE)
+            backend_id: Filter by backend
+            category: Filter by category
+            tags: Filter tools that have ANY of these tags
+            sort_by: Column to sort by (name, call_count, updated_at, avg_latency_ms, error_count)
+            sort_order: asc or desc
+            limit: Page size
+            offset: Page offset
+            columns: Which columns to return (None = all). Use for compact responses.
+
+        Returns:
+            (rows as dicts, total count matching filters)
+        """
+        allowed_sort = {"name", "call_count", "updated_at", "avg_latency_ms", "error_count", "created_at", "category"}
+        if sort_by not in allowed_sort:
+            sort_by = "name"
+        if sort_order not in ("asc", "desc"):
+            sort_order = "asc"
+
+        where_clauses = ["1=1"]
+        params = []
+
+        if search:
+            # Split multi-word queries so "memory belief" matches tools with both words
+            words = search.strip().split()
+            if len(words) == 1:
+                where_clauses.append("(name ILIKE ? OR description ILIKE ?)")
+                params.extend([f"%{words[0]}%", f"%{words[0]}%"])
+            else:
+                word_clauses = []
+                for word in words:
+                    word_clauses.append("(name ILIKE ? OR description ILIKE ?)")
+                    params.extend([f"%{word}%", f"%{word}%"])
+                where_clauses.append(f"({' AND '.join(word_clauses)})")
+        if backend_id:
+            where_clauses.append("backend_id = ?")
+            params.append(backend_id)
+        if category:
+            where_clauses.append("category = ?")
+            params.append(category)
+        if tags:
+            # DuckDB JSON: check if tags array contains any of the given tags
+            tag_conditions = []
+            for tag in tags:
+                tag_conditions.append("list_contains(tags::VARCHAR[], ?)")
+                params.append(tag)
+            where_clauses.append(f"({' OR '.join(tag_conditions)})")
+
+        where_sql = " AND ".join(where_clauses)
+
+        with self._get_conn(read_only=True) as conn:
+            # Count
+            count_result = conn.execute(
+                f"SELECT COUNT(*) FROM tools WHERE {where_sql}", params
+            ).fetchone()
+            total = count_result[0] if count_result else 0
+
+            # Select
+            if columns:
+                safe_cols = [c for c in columns if c in {
+                    "tool_id", "name", "backend_id", "backend_url", "description",
+                    "input_schema", "output_schema", "tags", "category", "version",
+                    "created_at", "updated_at", "call_count", "error_count", "avg_latency_ms"
+                }]
+                if not safe_cols:
+                    safe_cols = ["tool_id", "name", "description", "backend_id"]
+                select_sql = ", ".join(safe_cols)
+            else:
+                select_sql = "*"
+                safe_cols = None
+
+            query = f"SELECT {select_sql} FROM tools WHERE {where_sql} ORDER BY {sort_by} {sort_order} LIMIT {limit} OFFSET {offset}"
+            results = conn.execute(query, params).fetchall()
+            col_names = [desc[0] for desc in conn.description]
+
+            rows = []
+            for row in results:
+                d = dict(zip(col_names, row))
+                # Deserialize JSON columns if present
+                for jcol in ("input_schema", "output_schema", "tags"):
+                    if jcol in d and d[jcol] is not None:
+                        if isinstance(d[jcol], str):
+                            d[jcol] = json.loads(d[jcol])
+                rows.append(d)
+
+            return rows, total
+
+    def get_tools_batch(self, names: List[str]) -> List[Dict]:
+        """
+        Fetch multiple tools by name in one query.
+        Returns compact tool dicts with full schemas.
+        """
+        if not names:
+            return []
+        qualified = [n for n in names if ":" in n]
+        plain = [n for n in names if ":" not in n]
+        where_parts = []
+        params: List[str] = []
+        if plain:
+            placeholders = ", ".join("?" for _ in plain)
+            where_parts.append(f"name IN ({placeholders})")
+            params.extend(plain)
+        if qualified:
+            placeholders = ", ".join("?" for _ in qualified)
+            where_parts.append(f"tool_id IN ({placeholders})")
+            params.extend(qualified)
+        if not where_parts:
+            return []
+        where_sql = " OR ".join(where_parts)
+        with self._get_conn(read_only=True) as conn:
+            results = conn.execute(
+                f"SELECT * FROM tools WHERE {where_sql} ORDER BY name",
+                params
+            ).fetchall()
+            col_names = [desc[0] for desc in conn.description]
+            rows = []
+            for row in results:
+                d = dict(zip(col_names, row))
+                for jcol in ("input_schema", "output_schema", "tags"):
+                    if jcol in d and d[jcol] is not None:
+                        if isinstance(d[jcol], str):
+                            d[jcol] = json.loads(d[jcol])
+                rows.append(d)
+            return rows
+
+    # ==================== Idempotency ====================
+
+    def get_idempotent_response(
+        self,
+        idempotency_key: str,
+        tool_id: str,
+        request_hash: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a previously stored idempotent response.
+
+        If a record exists and request_hash mismatches, raises ValueError.
+        """
+        with self._get_conn(read_only=True) as conn:
+            row = conn.execute(
+                """
+                SELECT request_hash, response_json, success, expires_at
+                FROM idempotency_records
+                WHERE idempotency_key = ? AND tool_id = ?
+                """,
+                [idempotency_key, tool_id],
+            ).fetchone()
+            if not row:
+                return None
+
+            stored_hash, response_json, success, expires_at = row
+            if isinstance(expires_at, str):
+                expires_at = datetime.fromisoformat(expires_at)
+            if expires_at and datetime.utcnow() > expires_at:
+                return None
+            if request_hash and stored_hash != request_hash:
+                raise ValueError("Idempotency key reused with different arguments")
+
+            response = json.loads(response_json) if isinstance(response_json, str) else response_json
+            return {
+                "success": bool(success),
+                "response": response,
+            }
+
+    def save_idempotent_response(
+        self,
+        idempotency_key: str,
+        tool_id: str,
+        request_hash: str,
+        response: Dict[str, Any],
+        success: bool = True,
+        ttl_seconds: int = 86_400,
+    ) -> bool:
+        """
+        Persist an idempotent response.
+
+        Returns True when inserted, False when an equivalent record already exists.
+        """
+        now = datetime.utcnow()
+        expires_at = datetime.utcfromtimestamp(now.timestamp() + max(0, ttl_seconds))
+        response_json = json.dumps(response)
+
+        with self._get_conn() as conn:
+            existing = conn.execute(
+                """
+                SELECT request_hash
+                FROM idempotency_records
+                WHERE idempotency_key = ? AND tool_id = ?
+                """,
+                [idempotency_key, tool_id],
+            ).fetchone()
+            if existing:
+                if existing[0] != request_hash:
+                    raise ValueError("Idempotency key reused with different arguments")
+                return False
+
+            conn.execute(
+                """
+                INSERT INTO idempotency_records (
+                    idempotency_key, tool_id, request_hash, response_json, success, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    idempotency_key,
+                    tool_id,
+                    request_hash,
+                    response_json,
+                    success,
+                    now,
+                    expires_at,
+                ],
+            )
+        return True
+
+    def cleanup_idempotency_records(self) -> int:
+        """Delete expired idempotency records and return removed count."""
+        now = datetime.utcnow()
+        with self._get_conn() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM idempotency_records WHERE expires_at IS NOT NULL AND expires_at < ?",
+                [now],
+            ).fetchone()[0]
+            conn.execute(
+                "DELETE FROM idempotency_records WHERE expires_at IS NOT NULL AND expires_at < ?",
+                [now],
+            )
+            return int(count)
+
+    def get_distinct_categories(self) -> List[Dict]:
+        """Get distinct categories with tool counts."""
+        with self._get_conn(read_only=True) as conn:
+            results = conn.execute("""
+                SELECT category, COUNT(*) as tool_count,
+                       SUM(call_count) as total_calls
+                FROM tools
+                GROUP BY category
+                ORDER BY tool_count DESC
+            """).fetchall()
+            return [
+                {"category": r[0], "tool_count": r[1], "total_calls": r[2] or 0}
+                for r in results
+            ]
+
+    def get_popular_tools(self, limit: int = 10) -> List[Dict]:
+        """Get most-used tools by call count."""
+        with self._get_conn(read_only=True) as conn:
+            results = conn.execute("""
+                SELECT tool_id, name, backend_id, description,
+                       call_count, avg_latency_ms, error_count
+                FROM tools
+                WHERE call_count > 0
+                ORDER BY call_count DESC
+                LIMIT ?
+            """, [limit]).fetchall()
+            col_names = [desc[0] for desc in conn.description]
+            return [dict(zip(col_names, row)) for row in results]
+
+    def summarize_tool_schema(self, tool_id: str) -> Optional[Dict]:
+        """
+        Return a compact schema summary: parameter names, types, and required flags.
+        Much smaller than the full JSON schema — good for context-limited agents.
+        """
+        tool = self.get_tool(tool_id)
+        if not tool:
+            return None
+
+        props = tool.input_schema.get("properties", {})
+        required = set(tool.input_schema.get("required", []))
+
+        params = []
+        for pname, pschema in props.items():
+            params.append({
+                "name": pname,
+                "type": pschema.get("type", "any"),
+                "required": pname in required,
+                "description": pschema.get("description", "")[:80],
+            })
+
+        return {
+            "tool_id": tool.tool_id,
+            "name": tool.name,
+            "description": tool.description[:200],
+            "backend": tool.backend_id,
+            "parameters": params,
+            "signature": _build_signature(tool.name, props, required),
+        }
+
+
     # ==================== Statistics ====================
 
     def record_call(self, tool_id: str, latency_ms: float, success: bool):
@@ -369,7 +752,7 @@ class ToolStore:
 
     def get_stats(self) -> Dict:
         """Get overall statistics."""
-        with self._get_conn() as conn:
+        with self._get_conn(read_only=True) as conn:
             tool_count = conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0]
             backend_count = conn.execute("SELECT COUNT(*) FROM backends").fetchone()[0]
             healthy_backends = conn.execute("SELECT COUNT(*) FROM backends WHERE is_healthy = true").fetchone()[0]
@@ -384,6 +767,19 @@ class ToolStore:
                 "total_errors": total_errors,
                 "error_rate": total_errors / total_calls if total_calls > 0 else 0
             }
+
+
+def _build_signature(name: str, props: Dict, required: set) -> str:
+    """Build a function-like signature string for a tool."""
+    parts = []
+    for pname, pschema in props.items():
+        ptype = pschema.get("type", "any")
+        if pname in required:
+            parts.append(f"{pname}: {ptype}")
+        else:
+            default = pschema.get("default", "...")
+            parts.append(f"{pname}: {ptype} = {default}")
+    return f"{name}({', '.join(parts)})"
 
 
 # Global singleton

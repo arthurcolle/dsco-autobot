@@ -19,6 +19,14 @@ import httpx
 from ..registry import get_registry
 from ..queue import get_task_queue
 from ..integrations.mcp_server import MCPServer, MCPRequest, MCPResponse, MCPNotification
+from ..oauth import require_bearer, make_401_response
+
+# Output guard for enforcing size limits and URL capture
+try:
+    from ..guards.output_guard import apply_output_guard
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +77,8 @@ def get_mcp_server() -> MCPServer:
 
 async def refresh_mcp_tools():
     """Refresh the MCP server's tool storage from registry AND native MCP backends"""
-    global _mcp_server
-    if _mcp_server:
+    mcp_server = get_mcp_server()
+    if mcp_server:
         registry = get_registry()
         queue = get_task_queue()
 
@@ -97,7 +105,7 @@ async def refresh_mcp_tools():
 
                 logger.info(f"Added {len(backend_tools)} tools from {backend.id}")
 
-        _mcp_server.tool_storage = tools_dict
+        mcp_server.tool_storage = tools_dict
         logger.info(f"Refreshed MCP server with {len(tools_dict)} total tools")
 
 
@@ -109,6 +117,10 @@ async def mcp_sse_get(request: Request):
     This allows MCP clients to connect using SSE transport.
     AI agents can connect to this endpoint and access all registered tools.
     """
+    # Auth gate — return 401 with RFC 9728 WWW-Authenticate if no valid Bearer token
+    if require_bearer(request) is None:
+        return make_401_response(request)
+
     session_id = str(uuid4())
     mcp_server = get_mcp_server()
 
@@ -161,7 +173,8 @@ async def mcp_sse_post(request: Request):
     When using mcp-remote with an SSE URL, it POSTs JSON-RPC to the same URL.
     This endpoint handles those POST requests.
     """
-    # Delegate to the main MCP JSON-RPC handler
+    if require_bearer(request) is None:
+        return make_401_response(request)
     return await mcp_jsonrpc(request)
 
 
@@ -178,6 +191,9 @@ async def mcp_jsonrpc(request: Request):
     - resources/read
     - etc.
     """
+    if require_bearer(request) is None:
+        return make_401_response(request)
+
     logger.info(f"Received MCP request to {request.url.path} from {request.client}")
     session_id = request.headers.get("X-Session-ID", str(uuid4()))
     mcp_server = get_mcp_server()
@@ -267,7 +283,7 @@ async def mcp_health():
         "registry_tools": len(registry),
         "backend_tools": total_backend_tools,
         "total_tools": len(registry) + total_backend_tools,
-        "meta_tools": 8,  # search_tools, get_tool, execute_tool, etc.
+        "meta_tools": 14,  # Includes discovery, execution, batch, and job-control meta-tools.
         "active_sessions": len(mcp_server.sessions),
         "backends": healthy_backends
     }
@@ -368,10 +384,17 @@ async def mcp_batch_execute(request: Request):
 
                 if response.status_code == 200:
                     result = response.json()
+                    result_data = result.get("result")
+                    if OUTPUT_GUARD_AVAILABLE and result_data is not None:
+                        result_data = apply_output_guard(
+                            result_data,
+                            tool_name=f"{backend_id}:{tool_name}",
+                            source_context={"backend": backend_id, "via": "mcp_batch"},
+                        )
                     return {
                         "tool": tool_name,
                         "backend": backend_id,
-                        "result": result.get("result"),
+                        "result": result_data,
                         "success": True
                     }
                 else:
@@ -491,6 +514,12 @@ async def mcp_pipeline_execute(request: Request):
                 if response.status_code == 200:
                     result = response.json()
                     prev_result = result.get("result", {})
+                    if OUTPUT_GUARD_AVAILABLE and prev_result is not None:
+                        prev_result = apply_output_guard(
+                            prev_result,
+                            tool_name=f"{backend_id}:{tool_name}",
+                            source_context={"backend": backend_id, "via": "mcp_pipeline", "step": i},
+                        )
                     results.append({
                         "step": i,
                         "tool": tool_name,

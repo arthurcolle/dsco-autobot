@@ -23,6 +23,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Output guard for enforcing size limits and URL capture
+try:
+    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    OUTPUT_GUARD_AVAILABLE = True
+except ImportError:
+    OUTPUT_GUARD_AVAILABLE = False
+    logger.info("Output guard not available")
+
 # API Base URL - configurable for deployed environments
 # In Modal, we use the public URL; locally, we use localhost
 _default_url = "https://tools.distributed.systems" if os.getenv("MODAL_ENVIRONMENT") or os.getenv("DATA_DIR") == "/data" else "http://localhost:2016"
@@ -37,7 +45,7 @@ def get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=5.0),
+            timeout=httpx.Timeout(None, connect=15.0),  # No read/write timeout
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
         )
     return _http_client
@@ -258,6 +266,16 @@ class MCPServer:
                 )
 
             result = await method_handler(request.params or {}, session_id)
+
+            # Apply output guard on tools/call results (enforce size, cap links, capture URLs)
+            if request.method == "tools/call" and OUTPUT_GUARD_AVAILABLE and isinstance(result, dict):
+                tool_name = (request.params or {}).get("name", "")
+                result = guard_mcp_content(
+                    result,
+                    tool_name=tool_name,
+                    source_context={"server": "mcp-meta", "session": session_id},
+                )
+
             return MCPResponse(id=request.id, result=result)
 
         except Exception as e:
@@ -355,7 +373,7 @@ class MCPServer:
                         "min_score": {
                             "type": "number",
                             "description": "Minimum relevance score (0-1)",
-                            "default": 0.5
+                            "default": 0.3
                         }
                     },
                     "required": ["query"]
@@ -388,9 +406,81 @@ class MCPServer:
                         "arguments": {
                             "type": "object",
                             "description": "Arguments to pass to the tool"
+                        },
+                        "execution_mode": {
+                            "type": "string",
+                            "enum": ["auto", "sync", "stream", "job"],
+                            "description": "Execution path selector. auto uses latency-aware sync with timeout escalation.",
+                            "default": "auto"
+                        },
+                        "stream": {
+                            "type": "boolean",
+                            "description": "Request streaming mode. MCP returns a detached/job handle for stream requests.",
+                            "default": False
+                        },
+                        "early_stop": {
+                            "type": "object",
+                            "description": "Advisory early-stop policy used for streaming calls."
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Tool execution timeout in milliseconds",
+                            "default": 30000
+                        },
+                        "sync_timeout_ms": {
+                            "type": "integer",
+                            "description": "Auto-mode sync attempt budget before escalation to job",
+                            "default": 5000
+                        },
+                        "idempotency_key": {
+                            "type": "string",
+                            "description": "Idempotency key for write operations to prevent duplicate side effects"
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": "Maximum output size in characters (default 32000). Outputs exceeding this are truncated.",
+                            "default": 32000
+                        },
+                        "max_links": {
+                            "type": "integer",
+                            "description": "Maximum number of URLs/links to include in output (default 50). Extra URLs are still captured for background processing.",
+                            "default": 50
                         }
                     },
                     "required": ["tool_name", "arguments"]
+                }
+            },
+            {
+                "name": "batch_execute",
+                "description": "Execute multiple independent tool calls in one request. Supports parallel or sequential execution and returns results in input order.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "calls": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool_name": {"type": "string"},
+                                    "tool": {"type": "string"},
+                                    "arguments": {"type": "object"},
+                                    "execution_mode": {
+                                        "type": "string",
+                                        "enum": ["auto", "sync", "stream", "job"],
+                                        "default": "auto"
+                                    },
+                                    "idempotency_key": {"type": "string"}
+                                }
+                            },
+                            "description": "Tool calls to execute"
+                        },
+                        "execution": {
+                            "type": "string",
+                            "enum": ["parallel", "sequential"],
+                            "default": "parallel"
+                        }
+                    },
+                    "required": ["calls"]
                 }
             },
             {
@@ -473,6 +563,121 @@ class MCPServer:
                         }
                     }
                 }
+            },
+            {
+                "name": "batch_get_tools",
+                "description": "Fetch multiple tools by name in a single call. Returns full schemas or compact signatures. Use this after search_tools to get details for several tools at once.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of exact tool names to fetch"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "If true, return compact signatures instead of full JSON schemas",
+                            "default": True
+                        }
+                    },
+                    "required": ["names"]
+                }
+            },
+            {
+                "name": "query_tools",
+                "description": "Advanced tool query with text search, sorting, tag filtering, and compact mode. More powerful than search_tools for structured filtering.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "search": {
+                            "type": "string",
+                            "description": "Text search across tool names and descriptions"
+                        },
+                        "backend_id": {
+                            "type": "string",
+                            "description": "Filter by backend/server ID"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Filter by category"
+                        },
+                        "tags": {
+                            "type": "string",
+                            "description": "Comma-separated tag list (e.g., 'web,api,search')"
+                        },
+                        "sort_by": {
+                            "type": "string",
+                            "enum": ["name", "call_count", "updated_at", "avg_latency_ms", "error_count"],
+                            "description": "Sort results by this field",
+                            "default": "name"
+                        },
+                        "sort_order": {
+                            "type": "string",
+                            "enum": ["asc", "desc"],
+                            "default": "asc"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 20
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "default": 0
+                        }
+                    }
+                }
+            },
+            {
+                "name": "submit_job",
+                "description": "Submit a long-running tool as a background job. Returns a job_id immediately that you can poll with get_job_status. Use this for tools that may take >30s (e.g., deep_search).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Tool to execute (e.g., 'deep_search', 'backend:tool')"
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Arguments to pass to the tool"
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Max execution time in seconds",
+                            "default": 300
+                        }
+                    },
+                    "required": ["tool_name", "arguments"]
+                }
+            },
+            {
+                "name": "get_job_status",
+                "description": "Poll the status and results of a previously submitted job. Returns status, progress percentage, partial results, and final result when complete.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "description": "The job_id returned by submit_job"
+                        }
+                    },
+                    "required": ["job_id"]
+                }
+            },
+            {
+                "name": "cancel_job",
+                "description": "Cancel a running job by its job_id.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "description": "The job_id to cancel"
+                        }
+                    },
+                    "required": ["job_id"]
+                }
             }
         ]
 
@@ -505,41 +710,101 @@ class MCPServer:
 
         # Route meta-tools to appropriate endpoints
         if tool_name == "search_tools":
-            # Search tools from persistent store
+            # Semantic search via multi-faceted embeddings (Jina v3)
             try:
                 client = get_http_client()
                 query = tool_args.get("query", "")
-                limit = tool_args.get("limit", 20)
-                # Use the tools list endpoint and filter client-side
-                response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/?limit={limit}",
-                    timeout=10.0
+                limit = tool_args.get("limit", 10)
+                min_score = tool_args.get("min_score", 0.3)
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/discover/search",
+                    json={"query": query, "limit": limit},
+                    timeout=15.0
                 )
 
                 if response.status_code == 200:
                     data = response.json()
-                    tools = data.get("tools", [])
-                    # Filter by query if provided
-                    if query:
-                        query_lower = query.lower()
-                        tools = [t for t in tools if query_lower in t.get("name", "").lower() or query_lower in t.get("description", "").lower()]
+                    tools = data.get("results", [])
+                    # Filter by min_score
+                    if min_score and min_score > 0:
+                        tools = [t for t in tools if t.get("score", 0) >= min_score]
+
+                    # Enrich with compact signatures via batch-get
+                    tool_names = [t.get("name") for t in tools if t.get("name")]
+                    if tool_names:
+                        try:
+                            sig_resp = await client.post(
+                                f"{API_BASE_URL}/api/v1/tools/batch-get",
+                                json={"names": tool_names, "compact": True},
+                                timeout=10.0
+                            )
+                            if sig_resp.status_code == 200:
+                                sig_data = sig_resp.json()
+                                sig_map = {s["name"]: s.get("signature", "") for s in sig_data.get("tools", [])}
+                                for t in tools:
+                                    t["signature"] = sig_map.get(t.get("name"), "")
+                        except Exception:
+                            pass  # signatures are optional enrichment
+
                     return {
                         "content": [
                             {
                                 "type": "text",
-                                "text": json_module.dumps({"tools": tools, "count": len(tools)}, indent=2)
+                                "text": json_module.dumps({
+                                    "tools": tools,
+                                    "count": len(tools),
+                                    "query": query,
+                                    "search_type": "semantic_embedding",
+                                }, indent=2)
                             }
                         ],
                         "isError": False
                     }
                 else:
+                    # Fallback: keyword search against DuckDB tools list (paginated)
+                    fallback = await client.get(
+                        f"{API_BASE_URL}/api/v1/tools/",
+                        params={"limit": 500, "offset": 0},
+                        timeout=10.0
+                    )
+                    if fallback.status_code == 200:
+                        fb_data = fallback.json()
+                        all_tools = fb_data.get("tools", [])
+                        if query:
+                            q = query.lower()
+                            words = q.split()
+                            scored = []
+                            for t in all_tools:
+                                text = f"{t.get('name','')} {t.get('description','')}".lower()
+                                score = sum(1 for w in words if w in text)
+                                if score > 0:
+                                    scored.append({**t, "score": round(score / len(words), 2)})
+                            scored.sort(key=lambda x: x["score"], reverse=True)
+                            all_tools = scored[:limit]
+                        else:
+                            all_tools = all_tools[:limit]
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json_module.dumps({
+                                        "tools": all_tools,
+                                        "count": len(all_tools),
+                                        "total": fb_data.get("total", len(all_tools)),
+                                        "query": query,
+                                        "search_type": "keyword_fallback",
+                                    }, indent=2)
+                                }
+                            ],
+                            "isError": False
+                        }
                     return {
                         "content": [
                             {
                                 "type": "text",
                                 "text": json_module.dumps({
                                     "error": f"Tool search failed with status {response.status_code}",
-                                    "details": response.text
+                                    "details": response.text[:200]
                                 }, indent=2)
                             }
                         ],
@@ -559,52 +824,48 @@ class MCPServer:
                 }
 
         elif tool_name == "get_tool":
-            # Get specific tool details - accept "name" or "tool_name"
+            # Get specific tool details from DuckDB store via direct lookup
             try:
                 target_name = tool_args.get("name") or tool_args.get("tool_name")
                 client = get_http_client()
-                # Use the list endpoint and filter to find the tool
+
+                # Fetch full tool data
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/?limit=100",
+                    f"{API_BASE_URL}/api/v1/tools/{target_name}",
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    data = response.json()
-                    tools = data.get("tools", [])
-                    # Find matching tool by name or tool_id
-                    matching = [t for t in tools if t.get("name") == target_name or t.get("tool_id") == target_name]
-                    if matching:
-                        return {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json_module.dumps(matching[0], indent=2)
-                                }
-                            ],
-                            "isError": False
-                        }
-                    else:
-                        return {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json_module.dumps({
-                                        "error": f"Tool not found: {target_name}",
-                                        "available_tools": [t.get("name") for t in tools[:10]]
-                                    }, indent=2)
-                                }
-                            ],
-                            "isError": True
-                        }
+                    tool_data = response.json()
+                    # Enrich with compact signature
+                    try:
+                        schema_resp = await client.get(
+                            f"{API_BASE_URL}/api/v1/tools/schema/{target_name}",
+                            timeout=5.0
+                        )
+                        if schema_resp.status_code == 200:
+                            schema_data = schema_resp.json()
+                            tool_data["signature"] = schema_data.get("signature")
+                            tool_data["parameters_summary"] = schema_data.get("parameters")
+                    except Exception:
+                        pass  # signature is optional enrichment
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(tool_data, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
                 else:
                     return {
                         "content": [
                             {
                                 "type": "text",
                                 "text": json_module.dumps({
-                                    "error": f"Failed to get tool with status {response.status_code}",
-                                    "details": response.text
+                                    "error": f"Tool not found: {target_name}",
+                                    "hint": "Use search_tools to find available tools by description"
                                 }, indent=2)
                             }
                         ],
@@ -624,27 +885,82 @@ class MCPServer:
                 }
 
         elif tool_name == "execute_tool":
-            # Execute actual tool via persistent tools API
+            # Execution-mode aware dispatch through the streaming-first execute API.
             try:
-                # Accept either "tool" or "tool_name" parameter
                 target_tool = tool_args.get("tool") or tool_args.get("tool_name")
+                arguments = tool_args.get("arguments", {})
+                execution_mode = tool_args.get("execution_mode", "auto")
+                stream_requested = bool(tool_args.get("stream", False))
+                timeout_ms = int(tool_args.get("timeout_ms", 30000))
+                sync_timeout_ms = int(tool_args.get("sync_timeout_ms", 5000))
+                idempotency_key = tool_args.get("idempotency_key")
+                early_stop = tool_args.get("early_stop")
+
+                # Per-call output limits forwarded to job executor
+                if tool_args.get("max_output_chars"):
+                    arguments["_max_output_chars"] = tool_args["max_output_chars"]
+                if tool_args.get("max_links"):
+                    arguments["_max_links"] = tool_args["max_links"]
+
+                # MCP call returns JSON, not live SSE. For stream requests, run as detached job.
+                effective_mode = execution_mode
+                if stream_requested or execution_mode == "stream":
+                    effective_mode = "job"
+
                 client = get_http_client()
-                response = await client.post(
-                    f"{API_BASE_URL}/api/v1/tools/execute",
+                exec_response = await client.post(
+                    f"{API_BASE_URL}/api/v1/execute",
                     json={
-                        "tool": target_tool,
-                        "arguments": tool_args.get("arguments", {})
+                        "tool_name": target_tool,
+                        "arguments": arguments,
+                        "execution_mode": effective_mode,
+                        "stream": False,
+                        "timeout_ms": timeout_ms,
+                        "sync_timeout_ms": sync_timeout_ms,
+                        "idempotency_key": idempotency_key,
+                        "early_stop": early_stop,
                     },
-                    timeout=60.0
                 )
 
-                if response.status_code == 200:
-                    result = response.json()
+                if exec_response.status_code == 200:
+                    exec_data = exec_response.json()
+                    status = exec_data.get("status")
+                    job_id = exec_data.get("job_id") or exec_data.get("call_id")
+
+                    if status in {"submitted", "running_background"} and job_id:
+                        mode_text = "stream-detached" if (stream_requested or execution_mode == "stream") else "job"
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json_module.dumps({
+                                        "status": status,
+                                        "execution_mode": mode_text,
+                                        "job_id": job_id,
+                                        "message": (
+                                            f"Tool '{target_tool}' is running as job '{job_id}'. "
+                                            f"Call get_job_status with job_id='{job_id}' to retrieve results."
+                                        ),
+                                        "poll_url": exec_data.get("poll_url"),
+                                        "stream_url": exec_data.get("stream_url"),
+                                    }, indent=2)
+                                }
+                            ],
+                            "isError": False
+                        }
+
                     return {
                         "content": [
                             {
                                 "type": "text",
-                                "text": json_module.dumps(result, indent=2)
+                                "text": json_module.dumps({
+                                    "status": status or "completed",
+                                    "execution_mode": execution_mode,
+                                    "tool": target_tool,
+                                    "result": exec_data.get("result"),
+                                    "latency_ms": exec_data.get("latency_ms"),
+                                    "idempotent_replay": exec_data.get("idempotent_replay", False),
+                                }, indent=2)
                             }
                         ],
                         "isError": False
@@ -655,13 +971,19 @@ class MCPServer:
                             {
                                 "type": "text",
                                 "text": json_module.dumps({
-                                    "error": f"Tool execution failed with status {response.status_code}",
-                                    "details": response.text
+                                    "error": {
+                                        "code": "EXECUTE_FAILED",
+                                        "message": f"execute_tool failed with HTTP {exec_response.status_code}",
+                                        "category": "transient",
+                                        "retryable": True,
+                                        "details": exec_response.text[:500],
+                                    }
                                 }, indent=2)
                             }
                         ],
                         "isError": True
                     }
+
             except Exception as e:
                 return {
                     "content": [
@@ -675,23 +997,81 @@ class MCPServer:
                     "isError": True
                 }
 
-        elif tool_name == "compose_workflow":
-            # Execute workflow composition
+        elif tool_name == "batch_execute":
+            # Execute multiple tools in one request; results are returned in input order.
             try:
                 client = get_http_client()
                 response = await client.post(
-                    f"{API_BASE_URL}/compose/compose-simple",
+                    f"{API_BASE_URL}/api/v1/execute/batch",
+                    json={
+                        "calls": tool_args.get("calls", []),
+                        "execution": tool_args.get("execution", "parallel"),
+                    },
+                    timeout=35.0,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2),
+                            }
+                        ],
+                        "isError": False,
+                    }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": {
+                                    "code": "BATCH_EXECUTE_FAILED",
+                                    "message": f"batch_execute failed with status {response.status_code}",
+                                    "category": "transient",
+                                    "retryable": True,
+                                    "details": response.text[:300],
+                                }
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": {
+                                    "code": "BATCH_EXECUTE_FAILED",
+                                    "message": f"batch_execute failed: {str(e)}",
+                                    "category": "transient",
+                                    "retryable": True,
+                                }
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+        elif tool_name == "compose_workflow":
+            # Execute workflow composition — no timeout
+            try:
+                client = get_http_client()
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/compose/compose-simple",
                     json={
                         "workflow_type": tool_args.get("workflow_type"),
                         "tools": tool_args.get("tools", []),
                         "arguments": tool_args.get("arguments", []),
                         "inputs": tool_args.get("inputs", {})
                     },
-                    timeout=60.0
                 )
 
                 if response.status_code == 200:
                     result = response.json()
+                    is_error = result.get("status") == "failed" or "error" in result
                     return {
                         "content": [
                             {
@@ -699,7 +1079,7 @@ class MCPServer:
                                 "text": json_module.dumps(result, indent=2)
                             }
                         ],
-                        "isError": False
+                        "isError": is_error
                     }
                 else:
                     return {
@@ -728,16 +1108,30 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tool_categories":
-            # List available categories with detailed breakdown
+            # List backends and their tools from DuckDB store
             try:
                 client = get_http_client()
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/admin/tool-categories",
+                    f"{API_BASE_URL}/api/v1/tools/backends",
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    result = response.json()
+                    backends = response.json()
+                    categories = {}
+                    for b in backends:
+                        bid = b.get("backend_id", "unknown")
+                        categories[bid] = {
+                            "name": b.get("name"),
+                            "tool_count": b.get("tool_count", 0),
+                            "healthy": b.get("is_healthy", False),
+                            "url": b.get("url"),
+                        }
+                    result = {
+                        "backends": categories,
+                        "total_backends": len(backends),
+                        "total_tools": sum(b.get("tool_count", 0) for b in backends),
+                    }
                     return {
                         "content": [
                             {
@@ -774,11 +1168,11 @@ class MCPServer:
                 }
 
         elif tool_name == "get_registry_stats":
-            # Get registry statistics
+            # Get registry statistics from DuckDB store
             try:
                 client = get_http_client()
                 response = await client.get(
-                    f"{API_BASE_URL}/health",
+                    f"{API_BASE_URL}/api/v1/tools/stats/overview",
                     timeout=5.0
                 )
 
@@ -820,19 +1214,19 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tools_paginated":
-            # List tools with pagination
+            # List tools with pagination from DuckDB store
             try:
                 client = get_http_client()
                 offset = tool_args.get("offset", 0)
                 limit = tool_args.get("limit", 20)
                 category = tool_args.get("category")
 
-                params = {"offset": offset, "limit": limit}
+                params = {"limit": limit, "offset": offset}
                 if category:
                     params["category"] = category
 
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/admin/list-all-tools",
+                    f"{API_BASE_URL}/api/v1/tools/",
                     params=params,
                     timeout=10.0
                 )
@@ -875,21 +1269,34 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tool_names":
-            # Get lightweight list of tool names
+            # Get lightweight list of tool names from DuckDB store
             try:
                 client = get_http_client()
-                params = {}
+                params = {"limit": 500, "offset": 0}
                 if tool_args.get("category"):
                     params["category"] = tool_args["category"]
 
                 response = await client.get(
-                    f"{API_BASE_URL}/api/v1/admin/list-tool-names",
+                    f"{API_BASE_URL}/api/v1/tools/",
                     params=params,
                     timeout=10.0
                 )
 
                 if response.status_code == 200:
-                    result = response.json()
+                    data = response.json()
+                    tools = data.get("tools", [])
+                    total = data.get("total", len(tools))
+                    # Group by backend
+                    by_backend = {}
+                    for t in tools:
+                        bid = t.get("backend", "unknown")
+                        by_backend.setdefault(bid, []).append(t.get("name"))
+                    result = {
+                        "tool_names": [t.get("name") for t in tools],
+                        "count": len(tools),
+                        "total": total,
+                        "by_backend": by_backend,
+                    }
                     return {
                         "content": [
                             {
@@ -925,6 +1332,275 @@ class MCPServer:
                     "isError": True
                 }
 
+        elif tool_name == "batch_get_tools":
+            # Fetch multiple tools by name in one call
+            try:
+                client = get_http_client()
+                names = tool_args.get("names", [])
+                compact = tool_args.get("compact", True)
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/tools/batch-get",
+                    json={"names": names, "compact": compact},
+                    timeout=15.0
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
+                else:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({
+                                    "error": f"batch_get_tools failed with status {response.status_code}",
+                                    "details": response.text[:200]
+                                }, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"batch_get_tools failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+        elif tool_name == "query_tools":
+            # Advanced query with text search, sorting, tag filtering
+            try:
+                client = get_http_client()
+                params = {}
+                for key in ("search", "backend_id", "category", "tags", "sort_by", "sort_order"):
+                    if tool_args.get(key):
+                        params[key] = tool_args[key]
+                params["limit"] = tool_args.get("limit", 20)
+                params["offset"] = tool_args.get("offset", 0)
+                params["compact"] = True  # Always compact for MCP to save context
+
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/tools/query",
+                    params=params,
+                    timeout=15.0
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
+                else:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({
+                                    "error": f"query_tools failed with status {response.status_code}",
+                                    "details": response.text[:200]
+                                }, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"query_tools failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+        elif tool_name == "submit_job":
+            # Submit a long-running tool as a background job
+            try:
+                client = get_http_client()
+                target_tool = tool_args.get("tool_name") or tool_args.get("tool")
+                arguments = tool_args.get("arguments", {})
+                timeout = tool_args.get("timeout", 300)
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/jobs/submit",
+                    json={
+                        "tool": target_tool,
+                        "arguments": arguments,
+                        "timeout": timeout,
+                    },
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
+                else:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({
+                                    "error": f"submit_job failed with status {response.status_code}",
+                                    "details": response.text[:300]
+                                }, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"submit_job failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+        elif tool_name == "get_job_status":
+            # Poll the status of a submitted job
+            try:
+                client = get_http_client()
+                job_id = tool_args.get("job_id")
+                if not job_id:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({"error": "job_id is required"})}],
+                        "isError": True,
+                    }
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/jobs/{job_id}",
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
+                elif response.status_code == 404:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({"error": f"Job not found: {job_id}"}, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+                else:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({
+                                    "error": f"get_job_status failed with status {response.status_code}",
+                                    "details": response.text[:300]
+                                }, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"get_job_status failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+        elif tool_name == "cancel_job":
+            # Cancel a running job
+            try:
+                client = get_http_client()
+                job_id = tool_args.get("job_id")
+                if not job_id:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({"error": "job_id is required"})}],
+                        "isError": True,
+                    }
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/jobs/{job_id}/cancel",
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2)
+                            }
+                        ],
+                        "isError": False
+                    }
+                else:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps({
+                                    "error": f"cancel_job failed with status {response.status_code}",
+                                    "details": response.text[:300]
+                                }, indent=2)
+                            }
+                        ],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"cancel_job failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
         # Unknown meta-tool
         return {
             "content": [
@@ -936,9 +1612,17 @@ class MCPServer:
                             "search_tools",
                             "get_tool",
                             "execute_tool",
+                            "batch_execute",
                             "compose_workflow",
                             "list_tool_categories",
-                            "get_registry_stats"
+                            "get_registry_stats",
+                            "list_tools_paginated",
+                            "list_tool_names",
+                            "batch_get_tools",
+                            "query_tools",
+                            "submit_job",
+                            "get_job_status",
+                            "cancel_job"
                         ]
                     }, indent=2)
                 }

@@ -28,7 +28,11 @@ class EventType(str, Enum):
     STARTED = "started"
     PROGRESS = "progress"
     PARTIAL = "partial"
+    SIGNAL = "signal"
     LOG = "log"
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    DETACHED = "detached"
     COMPLETED = "completed"
     ERROR = "error"
     CANCELLED = "cancelled"
@@ -96,8 +100,9 @@ class StreamingExecution:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
 
-    # Events
+    # Events (bounded to prevent memory leak)
     events: List[ToolEvent] = field(default_factory=list)
+    _max_events: int = 1000
 
     # Subscribers
     _subscribers: List[asyncio.Queue] = field(default_factory=list)
@@ -105,6 +110,17 @@ class StreamingExecution:
     # Cancellation
     _cancelled: bool = False
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _task: Optional[asyncio.Task] = None
+
+    # Flow control
+    _paused: bool = False
+    _pause_event: asyncio.Event = field(default_factory=asyncio.Event)
+    detached: bool = False
+    control_state: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Not paused by default.
+        self._pause_event.set()
 
     def subscribe(self) -> asyncio.Queue:
         """Subscribe to events."""
@@ -120,6 +136,12 @@ class StreamingExecution:
     async def emit(self, event: ToolEvent):
         """Emit an event to all subscribers."""
         self.events.append(event)
+        # Trim old non-terminal events to prevent unbounded memory growth
+        if len(self.events) > self._max_events:
+            # Keep last _max_events entries, always preserving STARTED and terminal events
+            trimmed = [e for e in self.events[:len(self.events) - self._max_events]
+                       if e.type in (EventType.STARTED, EventType.COMPLETED, EventType.ERROR, EventType.CANCELLED)]
+            self.events = trimmed + self.events[len(self.events) - self._max_events:]
 
         for queue in self._subscribers:
             try:
@@ -131,10 +153,34 @@ class StreamingExecution:
         """Request cancellation."""
         self._cancelled = True
         self._cancel_event.set()
+        if self._task and not self._task.done():
+            self._task.cancel()
 
     @property
     def is_cancelled(self) -> bool:
         return self._cancelled
+
+    def pause(self):
+        """Pause event emission."""
+        self._paused = True
+        self._pause_event.clear()
+
+    def resume(self):
+        """Resume event emission."""
+        self._paused = False
+        self._pause_event.set()
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    async def wait_if_paused(self):
+        """Block while paused."""
+        await self._pause_event.wait()
+
+    def detach(self):
+        """Detach execution from the active client stream."""
+        self.detached = True
 
 
 class StreamingExecutor:
@@ -190,7 +236,7 @@ class StreamingExecutor:
         self._executions[execution.execution_id] = execution
 
         # Start execution in background
-        asyncio.create_task(self._run_execution(execution, inputs))
+        execution._task = asyncio.create_task(self._run_execution(execution, inputs))
 
         return execution
 
@@ -216,6 +262,7 @@ class StreamingExecutor:
             message: str = None,
             partial_data: Any = None,
         ):
+            await execution.wait_if_paused()
             if execution.is_cancelled:
                 raise asyncio.CancelledError("Execution cancelled")
 
@@ -313,6 +360,79 @@ class StreamingExecutor:
             execution.cancel()
             return True
         return False
+
+    async def pause_execution(self, execution_id: str) -> bool:
+        """Pause event emission for an execution."""
+        execution = self._executions.get(execution_id)
+        if execution and execution.status == "running" and not execution.is_paused:
+            execution.pause()
+            await execution.emit(ToolEvent(
+                type=EventType.PAUSED,
+                execution_id=execution.execution_id,
+                message="Execution paused",
+                progress=execution.progress,
+            ))
+            return True
+        return False
+
+    async def resume_execution(self, execution_id: str) -> bool:
+        """Resume event emission for an execution."""
+        execution = self._executions.get(execution_id)
+        if execution and execution.status == "running" and execution.is_paused:
+            execution.resume()
+            await execution.emit(ToolEvent(
+                type=EventType.RESUMED,
+                execution_id=execution.execution_id,
+                message="Execution resumed",
+                progress=execution.progress,
+            ))
+            return True
+        return False
+
+    async def detach_execution(self, execution_id: str) -> bool:
+        """Mark a running execution as detached from the current stream consumer."""
+        execution = self._executions.get(execution_id)
+        if execution and execution.status == "running" and not execution.detached:
+            execution.detach()
+            await execution.emit(ToolEvent(
+                type=EventType.DETACHED,
+                execution_id=execution.execution_id,
+                message="Execution detached",
+                progress=execution.progress,
+            ))
+            return True
+        return False
+
+    async def emit_signal(
+        self,
+        execution_id: str,
+        signal_type: str,
+        data: Optional[Dict[str, Any]] = None,
+        message: Optional[str] = None,
+    ) -> bool:
+        """Emit an advisory signal event for an execution."""
+        execution = self._executions.get(execution_id)
+        if not execution:
+            return False
+        payload: Dict[str, Any] = {"type": signal_type}
+        if data:
+            payload.update(data)
+        await execution.emit(ToolEvent(
+            type=EventType.SIGNAL,
+            execution_id=execution.execution_id,
+            message=message,
+            data=payload,
+            progress=execution.progress,
+        ))
+        return True
+
+    def update_control_state(self, execution_id: str, values: Dict[str, Any]) -> bool:
+        """Attach control metadata to an execution (priority, filters, etc.)."""
+        execution = self._executions.get(execution_id)
+        if not execution:
+            return False
+        execution.control_state.update(values)
+        return True
 
     async def stream_events(
         self,
@@ -417,3 +537,86 @@ def get_streaming_executor(tool_executor: Callable = None) -> StreamingExecutor:
             raise ValueError("tool_executor required for first initialization")
         _executor = StreamingExecutor(tool_executor)
     return _executor
+
+
+def create_tool_executor_for_jobs():
+    """
+    Factory that returns an async callback suitable for StreamingExecutor.
+
+    The callback resolves tool_name → backend via DuckDB tool store,
+    sends an MCP tools/call to the backend with a 300s timeout,
+    applies the output guard, and returns the MCP result.
+
+    Signature: async (tool_name, inputs, progress_callback) -> result
+    """
+    import httpx as _httpx
+    from uuid import uuid4 as _uuid4
+
+    # Shared long-lived client — NO read timeout, connections stay open indefinitely
+    _shared_client = _httpx.AsyncClient(
+        timeout=_httpx.Timeout(None, connect=15.0),  # No read/write/pool timeout
+        limits=_httpx.Limits(max_keepalive_connections=20, max_connections=100),
+    )
+
+    async def _tool_executor(
+        tool_name: str,
+        inputs: Dict[str, Any],
+        progress_callback: Callable = None,
+    ) -> Any:
+        from ..persistence import get_tool_store
+
+        # Pop internal meta-keys (no longer used for timeout, kept for compat)
+        inputs.pop("_timeout", None)
+        inputs.pop("_max_output_chars", None)
+        inputs.pop("_max_links", None)
+
+        # Report dispatch progress
+        if progress_callback:
+            await progress_callback(progress=10, message="resolving_backend")
+
+        store = get_tool_store()
+        backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+
+        if progress_callback:
+            await progress_callback(progress=30, message="invoking_backend")
+
+        response = await _shared_client.post(
+            f"{backend_url}/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": str(_uuid4()),
+                "method": "tools/call",
+                "params": {
+                    "name": resolved_name,
+                    "arguments": inputs,
+                },
+            },
+        )
+
+        if progress_callback:
+            await progress_callback(progress=80, message="processing_backend_response")
+
+        if response.status_code != 200:
+            raise RuntimeError(f"Backend {backend_id} returned HTTP {response.status_code}: {response.text[:300]}")
+
+        data = response.json()
+        if "error" in data and data["error"]:
+            raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
+
+        result = data.get("result")
+
+        # Apply output guard if available
+        try:
+            from ..guards.output_guard import apply_output_guard
+            if result is not None:
+                result = apply_output_guard(
+                    result,
+                    tool_name=f"{backend_id}:{resolved_name}",
+                    source_context={"backend": backend_id, "via": "job_executor"},
+                )
+        except ImportError:
+            pass
+
+        return result
+
+    return _tool_executor
