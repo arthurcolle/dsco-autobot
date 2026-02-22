@@ -395,6 +395,10 @@ class QuotaManager:
         """Release concurrent slot."""
         self._rate_limiter.release(client_id)
 
+    def get_usage(self, client_id: str) -> Dict:
+        """Get current in-window usage counters for a client."""
+        return self._rate_limiter.get_usage(client_id)
+
     def record_usage(
         self,
         client_id: str,

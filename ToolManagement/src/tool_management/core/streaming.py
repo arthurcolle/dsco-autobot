@@ -262,6 +262,8 @@ class StreamingExecutor:
         self._fanout_max_active_per_trace = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_TRACE", "256")))
         self._fanout_max_active_per_session = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_SESSION", "512")))
         self._fanout_max_active_per_parent = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_PARENT", "256")))
+        self._max_pending = max(0, int(os.getenv("STREAMING_MAX_PENDING", "4096")))
+        self._max_inflight = max(0, int(os.getenv("STREAMING_MAX_INFLIGHT", "8192")))
 
         if self._execution_store is None and os.getenv("ENABLE_DURABLE_EXECUTIONS", "1") == "1":
             try:
@@ -393,6 +395,19 @@ class StreamingExecutor:
                     "FANOUT_LIMIT_EXCEEDED:"
                     f"scope={fanout_scope_key},active={active_in_scope},budget={effective_fanout_budget}"
                 )
+
+        queue_depth = len(self._pending_queue)
+        inflight = self._active_count + queue_depth
+        if self._max_pending > 0 and queue_depth >= self._max_pending:
+            raise RuntimeError(
+                "QUEUE_BACKPRESSURE:"
+                f"queue_depth={queue_depth},max_pending={self._max_pending}"
+            )
+        if self._max_inflight > 0 and inflight >= self._max_inflight:
+            raise RuntimeError(
+                "INFLIGHT_LIMIT_EXCEEDED:"
+                f"inflight={inflight},max_inflight={self._max_inflight}"
+            )
 
         execution = StreamingExecution(
             tool_name=tool_name,
@@ -881,6 +896,8 @@ class StreamingExecutor:
             "active_count": self._active_count,
             "queue_depth": len(self._pending_queue),
             "max_concurrent": self.max_concurrent,
+            "max_pending": self._max_pending,
+            "max_inflight": self._max_inflight,
             "durable_store_enabled": bool(self._execution_store),
         }
 

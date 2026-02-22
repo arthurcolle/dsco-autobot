@@ -13,7 +13,7 @@ Deployable services that wrap vendor integrations with:
 """
 
 from .durable_store import DurableStore, ToolRequest, ToolResponse, RequestStatus
-from .service_wrapper import ServiceWrapper, ServiceConfig
+from .service_wrapper import ServiceWrapper, ServiceConfig, EconomicPolicy
 from .registry_client import RegistryClient, RegisteredTool, InMemoryRegistry
 from .billing_hooks import (
     BillingHook,
@@ -48,6 +48,7 @@ __all__ = [
     # Service wrapper
     "ServiceWrapper",
     "ServiceConfig",
+    "EconomicPolicy",
     # Registry
     "RegistryClient",
     "RegisteredTool",

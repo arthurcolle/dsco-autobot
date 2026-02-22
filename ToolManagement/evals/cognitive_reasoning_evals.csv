@@ -1,0 +1,751 @@
+prompt,category,capability,difficulty,answer_type,reasoning_steps,expected_answer
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,A
+Solve a hard mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,hard,free_text,2,Reasoned conclusion 1
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,5
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a hard spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,B
+Solve a hard abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,hard,free_text,2,Reasoned conclusion 6
+Solve a hard linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,hard,numeric,3,10
+Solve a easy critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,easy,boolean,4,Yes
+Solve a easy planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,C
+Solve a hard social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,hard,free_text,2,Reasoned conclusion 11
+Solve a medium metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,medium,numeric,3,15
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a easy logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,hard,multiple_choice,1,D
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 16
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,20
+Solve a medium spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,medium,boolean,4,Yes
+Solve a hard temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,hard,multiple_choice,1,A
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 21
+Solve a hard critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,hard,numeric,3,25
+Solve a easy planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,easy,boolean,4,No
+Solve a hard scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,hard,multiple_choice,1,B
+Solve a medium metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,medium,free_text,2,Reasoned conclusion 26
+Solve a easy ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,easy,numeric,3,30
+Solve a hard logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,hard,boolean,4,Yes
+Solve a hard mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,easy,multiple_choice,1,C
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 31
+Solve a hard spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,hard,numeric,3,35
+Solve a easy temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,easy,boolean,4,No
+Solve a medium abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,D
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 36
+Solve a easy planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,easy,numeric,3,40
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a hard social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,medium,multiple_choice,1,A
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 41
+Solve a medium logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,medium,numeric,3,45
+Solve a easy mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,easy,boolean,4,No
+Solve a medium causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,medium,multiple_choice,1,B
+Solve a easy spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,easy,free_text,2,Reasoned conclusion 46
+Solve a hard temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,hard,numeric,3,50
+Solve a medium abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,medium,boolean,4,Yes
+Solve a easy linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,medium,multiple_choice,1,C
+Solve a easy planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,easy,free_text,2,Reasoned conclusion 51
+Solve a easy scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,easy,numeric,3,55
+Solve a medium social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,medium,boolean,4,No
+Solve a hard metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,easy,multiple_choice,1,D
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 56
+Solve a easy mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,easy,numeric,3,60
+Solve a hard causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,hard,boolean,4,Yes
+Solve a medium analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,medium,multiple_choice,1,A
+Solve a hard temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,hard,free_text,2,Reasoned conclusion 61
+Solve a medium abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,medium,numeric,3,65
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a medium critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,easy,multiple_choice,1,B
+Solve a easy scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,easy,free_text,2,Reasoned conclusion 66
+Solve a easy social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,easy,numeric,3,70
+Solve a easy metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,easy,boolean,4,Yes
+Solve a medium ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,easy,multiple_choice,1,C
+Solve a hard mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,hard,free_text,2,Reasoned conclusion 71
+Solve a easy causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,easy,numeric,3,75
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a easy spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,easy,multiple_choice,1,D
+Solve a medium abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,medium,free_text,2,Reasoned conclusion 76
+Solve a medium linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,medium,numeric,3,80
+Solve a easy critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,easy,boolean,4,Yes
+Solve a medium planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,hard,multiple_choice,1,A
+Solve a medium social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,medium,free_text,2,Reasoned conclusion 81
+Solve a medium metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,medium,numeric,3,85
+Solve a medium ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,medium,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,easy,multiple_choice,1,B
+Solve a medium causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,medium,free_text,2,Reasoned conclusion 86
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,90
+Solve a hard spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,hard,boolean,4,Yes
+Solve a easy temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,easy,multiple_choice,1,C
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 91
+Solve a medium critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,medium,numeric,3,95
+Solve a medium planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,medium,boolean,4,No
+Solve a medium scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,hard,multiple_choice,1,D
+Solve a hard metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,hard,free_text,2,Reasoned conclusion 96
+Solve a medium ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,medium,numeric,3,3
+Solve a easy logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,easy,boolean,4,Yes
+Solve a hard mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,easy,multiple_choice,1,A
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 101
+Solve a hard spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,hard,numeric,3,8
+Solve a easy temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,easy,boolean,4,No
+Solve a easy abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,hard,multiple_choice,1,B
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 106
+Solve a easy planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,easy,numeric,3,13
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a easy social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,medium,multiple_choice,1,C
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 111
+Solve a medium logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,medium,numeric,3,18
+Solve a easy mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,easy,boolean,4,No
+Solve a medium causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,medium,multiple_choice,1,D
+Solve a easy spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,easy,free_text,2,Reasoned conclusion 116
+Solve a medium temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,medium,numeric,3,23
+Solve a hard abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,hard,boolean,4,Yes
+Solve a easy linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,hard,multiple_choice,1,A
+Solve a medium planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,medium,free_text,2,Reasoned conclusion 121
+Solve a hard scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,hard,numeric,3,28
+Solve a easy social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,easy,boolean,4,No
+Solve a medium metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,medium,multiple_choice,1,B
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 126
+Solve a medium mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,medium,numeric,3,33
+Solve a medium causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,medium,boolean,4,Yes
+Solve a medium analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,easy,multiple_choice,1,C
+Solve a hard temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,hard,free_text,2,Reasoned conclusion 131
+Solve a easy abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,easy,numeric,3,38
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a medium critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,hard,multiple_choice,1,D
+Solve a hard scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,hard,free_text,2,Reasoned conclusion 136
+Solve a hard social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,hard,numeric,3,43
+Solve a easy metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,easy,boolean,4,Yes
+Solve a medium ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,hard,multiple_choice,1,A
+Solve a medium mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,medium,free_text,2,Reasoned conclusion 141
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,48
+Solve a easy analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,easy,boolean,4,No
+Solve a hard spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,easy,multiple_choice,1,B
+Solve a medium abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,medium,free_text,2,Reasoned conclusion 146
+Solve a easy linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,easy,numeric,3,53
+Solve a medium critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,medium,boolean,4,Yes
+Solve a hard planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,C
+Solve a medium social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,medium,free_text,2,Reasoned conclusion 151
+Solve a easy metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,easy,numeric,3,58
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,medium,multiple_choice,1,D
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 156
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,63
+Solve a medium spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,medium,boolean,4,Yes
+Solve a easy temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,medium,multiple_choice,1,A
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 161
+Solve a easy critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,easy,numeric,3,68
+Solve a easy planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,easy,boolean,4,No
+Solve a easy scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,easy,multiple_choice,1,B
+Solve a hard metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,hard,free_text,2,Reasoned conclusion 166
+Solve a hard ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,hard,numeric,3,73
+Solve a hard logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,hard,boolean,4,Yes
+Solve a medium mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,medium,multiple_choice,1,C
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 171
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,78
+Solve a medium temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,medium,boolean,4,No
+Solve a medium abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,hard,multiple_choice,1,D
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 176
+Solve a medium planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,medium,numeric,3,83
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a medium social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,hard,multiple_choice,1,A
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 181
+Solve a hard logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,hard,numeric,3,88
+Solve a hard mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,hard,boolean,4,No
+Solve a hard causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,hard,multiple_choice,1,B
+Solve a hard spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,hard,free_text,2,Reasoned conclusion 186
+Solve a medium temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,medium,numeric,3,93
+Solve a medium abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,medium,boolean,4,Yes
+Solve a medium linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,medium,multiple_choice,1,C
+Solve a hard planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,hard,free_text,2,Reasoned conclusion 191
+Solve a easy scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,easy,numeric,3,98
+Solve a medium social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,medium,boolean,4,No
+Solve a easy metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,easy,multiple_choice,1,D
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 196
+Solve a hard mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,hard,numeric,3,6
+Solve a hard causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,hard,boolean,4,Yes
+Solve a hard analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,hard,multiple_choice,1,A
+Solve a easy temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,easy,free_text,2,Reasoned conclusion 201
+Solve a easy abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,easy,numeric,3,11
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a medium critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,hard,multiple_choice,1,B
+Solve a easy scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,easy,free_text,2,Reasoned conclusion 206
+Solve a medium social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,medium,numeric,3,16
+Solve a medium metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,medium,boolean,4,Yes
+Solve a easy ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,C
+Solve a hard mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,hard,free_text,2,Reasoned conclusion 211
+Solve a easy causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,easy,numeric,3,21
+Solve a easy analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,easy,boolean,4,No
+Solve a easy spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,easy,multiple_choice,1,D
+Solve a hard abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,hard,free_text,2,Reasoned conclusion 216
+Solve a hard linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,hard,numeric,3,26
+Solve a hard critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,hard,boolean,4,Yes
+Solve a medium planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,A
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 221
+Solve a medium metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,medium,numeric,3,31
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,hard,multiple_choice,1,B
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 226
+Solve a easy analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,easy,numeric,3,36
+Solve a easy spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,easy,boolean,4,Yes
+Solve a medium temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,medium,multiple_choice,1,C
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 231
+Solve a easy critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,easy,numeric,3,41
+Solve a hard planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,hard,boolean,4,No
+Solve a hard scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,hard,multiple_choice,1,D
+Solve a hard metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,hard,free_text,2,Reasoned conclusion 236
+Solve a hard ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,hard,numeric,3,46
+Solve a medium logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,medium,boolean,4,Yes
+Solve a medium mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,hard,multiple_choice,1,A
+Solve a medium analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,medium,free_text,2,Reasoned conclusion 241
+Solve a easy spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,easy,numeric,3,51
+Solve a hard temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,hard,boolean,4,No
+Solve a hard abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,B
+Solve a medium critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,medium,free_text,2,Reasoned conclusion 246
+Solve a hard planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,hard,numeric,3,56
+Solve a medium scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,medium,boolean,4,Yes
+Solve a medium social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,hard,multiple_choice,1,C
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 251
+Solve a medium logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,medium,numeric,3,61
+Solve a hard mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,hard,boolean,4,No
+Solve a medium causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,medium,multiple_choice,1,D
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 256
+Solve a medium temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,medium,numeric,3,66
+Solve a hard abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,hard,boolean,4,Yes
+Solve a hard linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,medium,multiple_choice,1,A
+Solve a hard planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,hard,free_text,2,Reasoned conclusion 261
+Solve a easy scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,easy,numeric,3,71
+Solve a medium social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,medium,boolean,4,No
+Solve a easy metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,medium,multiple_choice,1,B
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 266
+Solve a hard mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,hard,numeric,3,76
+Solve a medium causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,medium,boolean,4,Yes
+Solve a easy analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,easy,multiple_choice,1,C
+Solve a hard temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,hard,free_text,2,Reasoned conclusion 271
+Solve a medium abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,medium,numeric,3,81
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a medium critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,medium,multiple_choice,1,D
+Solve a medium scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,medium,free_text,2,Reasoned conclusion 276
+Solve a easy social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,easy,numeric,3,86
+Solve a hard metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,hard,boolean,4,Yes
+Solve a hard ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,hard,multiple_choice,1,A
+Solve a medium mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,medium,free_text,2,Reasoned conclusion 281
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,91
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a hard spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,B
+Solve a easy abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,easy,free_text,2,Reasoned conclusion 286
+Solve a easy linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,easy,numeric,3,96
+Solve a easy critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,easy,boolean,4,Yes
+Solve a medium planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,hard,multiple_choice,1,C
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 291
+Solve a hard metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,hard,numeric,3,4
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,easy,multiple_choice,1,D
+Solve a easy causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,easy,free_text,2,Reasoned conclusion 296
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,9
+Solve a hard spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,hard,boolean,4,Yes
+Solve a easy temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,hard,multiple_choice,1,A
+Solve a hard linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,hard,free_text,2,Reasoned conclusion 301
+Solve a easy critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,easy,numeric,3,14
+Solve a medium planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,medium,boolean,4,No
+Solve a easy scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,hard,multiple_choice,1,B
+Solve a easy metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,easy,free_text,2,Reasoned conclusion 306
+Solve a easy ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,easy,numeric,3,19
+Solve a easy logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,easy,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,easy,multiple_choice,1,C
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 311
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,24
+Solve a hard temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,hard,boolean,4,No
+Solve a medium abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,D
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 316
+Solve a hard planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,hard,numeric,3,29
+Solve a medium scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,medium,boolean,4,Yes
+Solve a easy social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,medium,multiple_choice,1,A
+Solve a easy ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,easy,free_text,2,Reasoned conclusion 321
+Solve a easy logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,easy,numeric,3,34
+Solve a hard mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,hard,boolean,4,No
+Solve a hard causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,hard,multiple_choice,1,B
+Solve a easy spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,easy,free_text,2,Reasoned conclusion 326
+Solve a hard temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,hard,numeric,3,39
+Solve a medium abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,medium,boolean,4,Yes
+Solve a medium linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,easy,multiple_choice,1,C
+Solve a medium planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,medium,free_text,2,Reasoned conclusion 331
+Solve a easy scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,easy,numeric,3,44
+Solve a medium social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,medium,boolean,4,No
+Solve a hard metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,medium,multiple_choice,1,D
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 336
+Solve a easy mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,easy,numeric,3,49
+Solve a medium causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,medium,boolean,4,Yes
+Solve a medium analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,easy,multiple_choice,1,A
+Solve a easy temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,easy,free_text,2,Reasoned conclusion 341
+Solve a medium abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,medium,numeric,3,54
+Solve a easy linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,easy,boolean,4,No
+Solve a easy critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,medium,multiple_choice,1,B
+Solve a easy scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,easy,free_text,2,Reasoned conclusion 346
+Solve a hard social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,hard,numeric,3,59
+Solve a medium metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,medium,boolean,4,Yes
+Solve a medium ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,C
+Solve a easy mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,easy,free_text,2,Reasoned conclusion 351
+Solve a hard causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,hard,numeric,3,64
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a medium spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,D
+Solve a medium abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,medium,free_text,2,Reasoned conclusion 356
+Solve a medium linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,medium,numeric,3,69
+Solve a medium critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,medium,boolean,4,Yes
+Solve a hard planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,A
+Solve a medium social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,medium,free_text,2,Reasoned conclusion 361
+Solve a easy metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,easy,numeric,3,74
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,hard,multiple_choice,1,B
+Solve a easy causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,easy,free_text,2,Reasoned conclusion 366
+Solve a hard analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,hard,numeric,3,79
+Solve a hard spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,hard,boolean,4,Yes
+Solve a easy temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,easy,multiple_choice,1,C
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 371
+Solve a medium critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,medium,numeric,3,84
+Solve a medium planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,medium,boolean,4,No
+Solve a medium scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,medium,multiple_choice,1,D
+Solve a hard metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,hard,free_text,2,Reasoned conclusion 376
+Solve a medium ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,medium,numeric,3,89
+Solve a medium logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,medium,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,medium,multiple_choice,1,A
+Solve a medium analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,medium,free_text,2,Reasoned conclusion 381
+Solve a hard spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,hard,numeric,3,94
+Solve a medium temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,medium,boolean,4,No
+Solve a easy abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,B
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 386
+Solve a medium planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,medium,numeric,3,99
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a medium social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,medium,multiple_choice,1,C
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 391
+Solve a medium logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,medium,numeric,3,7
+Solve a medium mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,medium,boolean,4,No
+Solve a medium causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,easy,multiple_choice,1,D
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 396
+Solve a medium temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,medium,numeric,3,12
+Solve a medium abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,medium,boolean,4,Yes
+Solve a easy linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,easy,multiple_choice,1,A
+Solve a medium planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,medium,free_text,2,Reasoned conclusion 401
+Solve a hard scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,hard,numeric,3,17
+Solve a hard social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,hard,boolean,4,No
+Solve a easy metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,medium,multiple_choice,1,B
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 406
+Solve a hard mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,hard,numeric,3,22
+Solve a easy causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,easy,boolean,4,Yes
+Solve a medium analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,easy,multiple_choice,1,C
+Solve a medium temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,medium,free_text,2,Reasoned conclusion 411
+Solve a medium abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,medium,numeric,3,27
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a hard critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,easy,multiple_choice,1,D
+Solve a hard scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,hard,free_text,2,Reasoned conclusion 416
+Solve a medium social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,medium,numeric,3,32
+Solve a medium metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,medium,boolean,4,Yes
+Solve a medium ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,A
+Solve a hard mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,hard,free_text,2,Reasoned conclusion 421
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,37
+Solve a medium analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,medium,boolean,4,No
+Solve a easy spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,B
+Solve a medium abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,medium,free_text,2,Reasoned conclusion 426
+Solve a easy linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,easy,numeric,3,42
+Solve a medium critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,medium,boolean,4,Yes
+Solve a easy planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,C
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 431
+Solve a medium metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,medium,numeric,3,47
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a medium logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,easy,multiple_choice,1,D
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 436
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,52
+Solve a easy spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,easy,boolean,4,Yes
+Solve a medium temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,hard,multiple_choice,1,A
+Solve a hard linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,hard,free_text,2,Reasoned conclusion 441
+Solve a hard critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,hard,numeric,3,57
+Solve a medium planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,medium,boolean,4,No
+Solve a hard scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,medium,multiple_choice,1,B
+Solve a medium metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,medium,free_text,2,Reasoned conclusion 446
+Solve a medium ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,medium,numeric,3,62
+Solve a medium logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,medium,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,hard,multiple_choice,1,C
+Solve a easy analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,easy,free_text,2,Reasoned conclusion 451
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,67
+Solve a medium temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,medium,boolean,4,No
+Solve a hard abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,D
+Solve a hard critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,hard,free_text,2,Reasoned conclusion 456
+Solve a easy planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,easy,numeric,3,72
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a easy social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,medium,multiple_choice,1,A
+Solve a hard ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,hard,free_text,2,Reasoned conclusion 461
+Solve a hard logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,hard,numeric,3,77
+Solve a hard mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,hard,boolean,4,No
+Solve a hard causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,medium,multiple_choice,1,B
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 466
+Solve a hard temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,hard,numeric,3,82
+Solve a hard abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,hard,boolean,4,Yes
+Solve a easy linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,medium,multiple_choice,1,C
+Solve a medium planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,medium,free_text,2,Reasoned conclusion 471
+Solve a hard scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,hard,numeric,3,87
+Solve a easy social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,easy,boolean,4,No
+Solve a easy metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,hard,multiple_choice,1,D
+Solve a easy logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,easy,free_text,2,Reasoned conclusion 476
+Solve a hard mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,hard,numeric,3,92
+Solve a hard causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,hard,boolean,4,Yes
+Solve a hard analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,medium,multiple_choice,1,A
+Solve a easy temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,easy,free_text,2,Reasoned conclusion 481
+Solve a hard abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,hard,numeric,3,97
+Solve a hard linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,hard,boolean,4,No
+Solve a easy critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,easy,multiple_choice,1,B
+Solve a easy scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,easy,free_text,2,Reasoned conclusion 486
+Solve a medium social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,medium,numeric,3,5
+Solve a medium metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,medium,boolean,4,Yes
+Solve a medium ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,easy,multiple_choice,1,C
+Solve a hard mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,hard,free_text,2,Reasoned conclusion 491
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,10
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a medium spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,hard,multiple_choice,1,D
+Solve a easy abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,easy,free_text,2,Reasoned conclusion 496
+Solve a hard linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,hard,numeric,3,15
+Solve a hard critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,hard,boolean,4,Yes
+Solve a hard planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,medium,multiple_choice,1,A
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 501
+Solve a easy metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,easy,numeric,3,20
+Solve a medium ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,medium,boolean,4,No
+Solve a medium logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,hard,multiple_choice,1,B
+Solve a medium causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,medium,free_text,2,Reasoned conclusion 506
+Solve a hard analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,hard,numeric,3,25
+Solve a hard spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,hard,boolean,4,Yes
+Solve a hard temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,hard,multiple_choice,1,C
+Solve a hard linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,hard,free_text,2,Reasoned conclusion 511
+Solve a hard critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,hard,numeric,3,30
+Solve a hard planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,hard,boolean,4,No
+Solve a medium scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,easy,multiple_choice,1,D
+Solve a medium metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,medium,free_text,2,Reasoned conclusion 516
+Solve a medium ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,medium,numeric,3,35
+Solve a easy logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,easy,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,easy,multiple_choice,1,A
+Solve a medium analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,medium,free_text,2,Reasoned conclusion 521
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,40
+Solve a hard temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,hard,boolean,4,No
+Solve a medium abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,medium,multiple_choice,1,B
+Solve a hard critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,hard,free_text,2,Reasoned conclusion 526
+Solve a easy planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,easy,numeric,3,45
+Solve a easy scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,easy,boolean,4,Yes
+Solve a medium social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,hard,multiple_choice,1,C
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 531
+Solve a medium logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,medium,numeric,3,50
+Solve a easy mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,easy,boolean,4,No
+Solve a easy causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,hard,multiple_choice,1,D
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 536
+Solve a medium temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,medium,numeric,3,55
+Solve a hard abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,hard,boolean,4,Yes
+Solve a hard linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,medium,multiple_choice,1,A
+Solve a hard planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,hard,free_text,2,Reasoned conclusion 541
+Solve a easy scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,easy,numeric,3,60
+Solve a hard social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,hard,boolean,4,No
+Solve a easy metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,easy,multiple_choice,1,B
+Solve a easy logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,easy,free_text,2,Reasoned conclusion 546
+Solve a hard mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,hard,numeric,3,65
+Solve a medium causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,medium,boolean,4,Yes
+Solve a easy analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,medium,multiple_choice,1,C
+Solve a hard temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,hard,free_text,2,Reasoned conclusion 551
+Solve a easy abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,easy,numeric,3,70
+Solve a medium linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,medium,boolean,4,No
+Solve a easy critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,medium,multiple_choice,1,D
+Solve a hard scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,hard,free_text,2,Reasoned conclusion 556
+Solve a medium social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,medium,numeric,3,75
+Solve a hard metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,hard,boolean,4,Yes
+Solve a hard ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,A
+Solve a easy mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,easy,free_text,2,Reasoned conclusion 561
+Solve a hard causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,hard,numeric,3,80
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a medium spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,hard,multiple_choice,1,B
+Solve a hard abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,hard,free_text,2,Reasoned conclusion 566
+Solve a easy linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,easy,numeric,3,85
+Solve a hard critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,hard,boolean,4,Yes
+Solve a medium planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,easy,multiple_choice,1,C
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 571
+Solve a hard metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,hard,numeric,3,90
+Solve a easy ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,easy,boolean,4,No
+Solve a medium logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,easy,multiple_choice,1,D
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 576
+Solve a medium analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,medium,numeric,3,95
+Solve a easy spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,easy,boolean,4,Yes
+Solve a medium temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,medium,multiple_choice,1,A
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 581
+Solve a hard critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,hard,numeric,3,3
+Solve a easy planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,easy,boolean,4,No
+Solve a medium scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,medium,multiple_choice,1,B
+Solve a easy metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,easy,free_text,2,Reasoned conclusion 586
+Solve a hard ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,hard,numeric,3,8
+Solve a hard logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,hard,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,medium,multiple_choice,1,C
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 591
+Solve a hard spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,hard,numeric,3,13
+Solve a hard temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,hard,boolean,4,No
+Solve a medium abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,D
+Solve a hard critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,hard,free_text,2,Reasoned conclusion 596
+Solve a easy planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,easy,numeric,3,18
+Solve a hard scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,hard,boolean,4,Yes
+Solve a hard social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,easy,multiple_choice,1,A
+Solve a hard ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,hard,free_text,2,Reasoned conclusion 601
+Solve a easy logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,easy,numeric,3,23
+Solve a medium mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,medium,boolean,4,No
+Solve a hard causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,hard,multiple_choice,1,B
+Solve a hard spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,hard,free_text,2,Reasoned conclusion 606
+Solve a hard temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,hard,numeric,3,28
+Solve a hard abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,hard,boolean,4,Yes
+Solve a easy linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,easy,multiple_choice,1,C
+Solve a hard planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,hard,free_text,2,Reasoned conclusion 611
+Solve a medium scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,medium,numeric,3,33
+Solve a hard social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,hard,boolean,4,No
+Solve a medium metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,hard,multiple_choice,1,D
+Solve a medium logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,medium,free_text,2,Reasoned conclusion 616
+Solve a medium mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,medium,numeric,3,38
+Solve a easy causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,easy,boolean,4,Yes
+Solve a hard analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,hard,multiple_choice,1,A
+Solve a hard temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,hard,free_text,2,Reasoned conclusion 621
+Solve a easy abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,easy,numeric,3,43
+Solve a easy linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,easy,boolean,4,No
+Solve a easy critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,easy,multiple_choice,1,B
+Solve a medium scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,medium,free_text,2,Reasoned conclusion 626
+Solve a hard social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,hard,numeric,3,48
+Solve a easy metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,easy,boolean,4,Yes
+Solve a hard ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,hard,multiple_choice,1,C
+Solve a medium mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,medium,free_text,2,Reasoned conclusion 631
+Solve a hard causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,hard,numeric,3,53
+Solve a medium analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,medium,boolean,4,No
+Solve a hard spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,D
+Solve a hard abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,hard,free_text,2,Reasoned conclusion 636
+Solve a hard linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,hard,numeric,3,58
+Solve a medium critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,medium,boolean,4,Yes
+Solve a hard planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,medium,multiple_choice,1,A
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 641
+Solve a medium metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,medium,numeric,3,63
+Solve a medium ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,medium,boolean,4,No
+Solve a hard logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,hard,list,5,"item_4, item_0"
+Solve a easy mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,easy,multiple_choice,1,B
+Solve a medium causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,medium,free_text,2,Reasoned conclusion 646
+Solve a hard analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,hard,numeric,3,68
+Solve a easy spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,easy,boolean,4,Yes
+Solve a easy temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,medium,multiple_choice,1,C
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 651
+Solve a medium critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,medium,numeric,3,73
+Solve a hard planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,hard,boolean,4,No
+Solve a easy scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,easy,multiple_choice,1,D
+Solve a medium metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,medium,free_text,2,Reasoned conclusion 656
+Solve a easy ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,easy,numeric,3,78
+Solve a hard logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,hard,boolean,4,Yes
+Solve a hard mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,medium,multiple_choice,1,A
+Solve a medium analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,medium,free_text,2,Reasoned conclusion 661
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,83
+Solve a easy temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,easy,boolean,4,No
+Solve a hard abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,hard,multiple_choice,1,B
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 666
+Solve a hard planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,hard,numeric,3,88
+Solve a hard scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,hard,boolean,4,Yes
+Solve a easy social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,hard,multiple_choice,1,C
+Solve a medium ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,medium,free_text,2,Reasoned conclusion 671
+Solve a easy logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,easy,numeric,3,93
+Solve a medium mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,medium,boolean,4,No
+Solve a medium causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,easy,multiple_choice,1,D
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 676
+Solve a hard temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,hard,numeric,3,98
+Solve a medium abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,medium,boolean,4,Yes
+Solve a hard linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard critical_thinking task using scientific-capability-1. Provide a multiple_choice answer with 1 step(s).,critical_thinking,scientific-capability-1,hard,multiple_choice,1,A
+Solve a easy planning_strategy task using scientific-capability-2. Provide a free_text answer with 2 step(s).,planning_strategy,scientific-capability-2,easy,free_text,2,Reasoned conclusion 681
+Solve a hard scientific_reasoning task using scientific-capability-3. Provide a numeric answer with 3 step(s).,scientific_reasoning,scientific-capability-3,hard,numeric,3,6
+Solve a easy social_cognition task using scientific-capability-4. Provide a boolean answer with 4 step(s).,social_cognition,scientific-capability-4,easy,boolean,4,No
+Solve a medium metacognition task using scientific-capability-5. Provide a list answer with 5 step(s).,metacognition,scientific-capability-5,medium,list,5,"item_4, item_0"
+Solve a easy ethical_reasoning task using social-cognition-capability-1. Provide a multiple_choice answer with 1 step(s).,ethical_reasoning,social-cognition-capability-1,easy,multiple_choice,1,B
+Solve a hard logical_reasoning task using social-cognition-capability-2. Provide a free_text answer with 2 step(s).,logical_reasoning,social-cognition-capability-2,hard,free_text,2,Reasoned conclusion 686
+Solve a easy mathematical_reasoning task using social-cognition-capability-3. Provide a numeric answer with 3 step(s).,mathematical_reasoning,social-cognition-capability-3,easy,numeric,3,11
+Solve a easy causal_reasoning task using social-cognition-capability-4. Provide a boolean answer with 4 step(s).,causal_reasoning,social-cognition-capability-4,easy,boolean,4,Yes
+Solve a easy analogical_reasoning task using social-cognition-capability-5. Provide a list answer with 5 step(s).,analogical_reasoning,social-cognition-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard spatial_reasoning task using metacognition-capability-1. Provide a multiple_choice answer with 1 step(s).,spatial_reasoning,metacognition-capability-1,hard,multiple_choice,1,C
+Solve a medium temporal_reasoning task using metacognition-capability-2. Provide a free_text answer with 2 step(s).,temporal_reasoning,metacognition-capability-2,medium,free_text,2,Reasoned conclusion 691
+Solve a hard abstract_reasoning task using metacognition-capability-3. Provide a numeric answer with 3 step(s).,abstract_reasoning,metacognition-capability-3,hard,numeric,3,16
+Solve a hard linguistic_reasoning task using metacognition-capability-4. Provide a boolean answer with 4 step(s).,linguistic_reasoning,metacognition-capability-4,hard,boolean,4,No
+Solve a medium critical_thinking task using metacognition-capability-5. Provide a list answer with 5 step(s).,critical_thinking,metacognition-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard planning_strategy task using ethical-capability-1. Provide a multiple_choice answer with 1 step(s).,planning_strategy,ethical-capability-1,hard,multiple_choice,1,D
+Solve a easy scientific_reasoning task using ethical-capability-2. Provide a free_text answer with 2 step(s).,scientific_reasoning,ethical-capability-2,easy,free_text,2,Reasoned conclusion 696
+Solve a medium social_cognition task using ethical-capability-3. Provide a numeric answer with 3 step(s).,social_cognition,ethical-capability-3,medium,numeric,3,21
+Solve a easy metacognition task using ethical-capability-4. Provide a boolean answer with 4 step(s).,metacognition,ethical-capability-4,easy,boolean,4,Yes
+Solve a hard ethical_reasoning task using ethical-capability-5. Provide a list answer with 5 step(s).,ethical_reasoning,ethical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium logical_reasoning task using logical-capability-1. Provide a multiple_choice answer with 1 step(s).,logical_reasoning,logical-capability-1,medium,multiple_choice,1,A
+Solve a easy mathematical_reasoning task using logical-capability-2. Provide a free_text answer with 2 step(s).,mathematical_reasoning,logical-capability-2,easy,free_text,2,Reasoned conclusion 701
+Solve a medium causal_reasoning task using logical-capability-3. Provide a numeric answer with 3 step(s).,causal_reasoning,logical-capability-3,medium,numeric,3,26
+Solve a hard analogical_reasoning task using logical-capability-4. Provide a boolean answer with 4 step(s).,analogical_reasoning,logical-capability-4,hard,boolean,4,No
+Solve a medium spatial_reasoning task using logical-capability-5. Provide a list answer with 5 step(s).,spatial_reasoning,logical-capability-5,medium,list,5,"item_4, item_0"
+Solve a medium temporal_reasoning task using mathematical-capability-1. Provide a multiple_choice answer with 1 step(s).,temporal_reasoning,mathematical-capability-1,medium,multiple_choice,1,B
+Solve a easy abstract_reasoning task using mathematical-capability-2. Provide a free_text answer with 2 step(s).,abstract_reasoning,mathematical-capability-2,easy,free_text,2,Reasoned conclusion 706
+Solve a medium linguistic_reasoning task using mathematical-capability-3. Provide a numeric answer with 3 step(s).,linguistic_reasoning,mathematical-capability-3,medium,numeric,3,31
+Solve a easy critical_thinking task using mathematical-capability-4. Provide a boolean answer with 4 step(s).,critical_thinking,mathematical-capability-4,easy,boolean,4,Yes
+Solve a hard planning_strategy task using mathematical-capability-5. Provide a list answer with 5 step(s).,planning_strategy,mathematical-capability-5,hard,list,5,"item_4, item_0"
+Solve a medium scientific_reasoning task using causal-capability-1. Provide a multiple_choice answer with 1 step(s).,scientific_reasoning,causal-capability-1,medium,multiple_choice,1,C
+Solve a easy social_cognition task using causal-capability-2. Provide a free_text answer with 2 step(s).,social_cognition,causal-capability-2,easy,free_text,2,Reasoned conclusion 711
+Solve a easy metacognition task using causal-capability-3. Provide a numeric answer with 3 step(s).,metacognition,causal-capability-3,easy,numeric,3,36
+Solve a hard ethical_reasoning task using causal-capability-4. Provide a boolean answer with 4 step(s).,ethical_reasoning,causal-capability-4,hard,boolean,4,No
+Solve a medium logical_reasoning task using causal-capability-5. Provide a list answer with 5 step(s).,logical_reasoning,causal-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard mathematical_reasoning task using analogical-capability-1. Provide a multiple_choice answer with 1 step(s).,mathematical_reasoning,analogical-capability-1,hard,multiple_choice,1,D
+Solve a hard causal_reasoning task using analogical-capability-2. Provide a free_text answer with 2 step(s).,causal_reasoning,analogical-capability-2,hard,free_text,2,Reasoned conclusion 716
+Solve a easy analogical_reasoning task using analogical-capability-3. Provide a numeric answer with 3 step(s).,analogical_reasoning,analogical-capability-3,easy,numeric,3,41
+Solve a easy spatial_reasoning task using analogical-capability-4. Provide a boolean answer with 4 step(s).,spatial_reasoning,analogical-capability-4,easy,boolean,4,Yes
+Solve a medium temporal_reasoning task using analogical-capability-5. Provide a list answer with 5 step(s).,temporal_reasoning,analogical-capability-5,medium,list,5,"item_4, item_0"
+Solve a hard abstract_reasoning task using spatial-capability-1. Provide a multiple_choice answer with 1 step(s).,abstract_reasoning,spatial-capability-1,hard,multiple_choice,1,A
+Solve a medium linguistic_reasoning task using spatial-capability-2. Provide a free_text answer with 2 step(s).,linguistic_reasoning,spatial-capability-2,medium,free_text,2,Reasoned conclusion 721
+Solve a easy critical_thinking task using spatial-capability-3. Provide a numeric answer with 3 step(s).,critical_thinking,spatial-capability-3,easy,numeric,3,46
+Solve a medium planning_strategy task using spatial-capability-4. Provide a boolean answer with 4 step(s).,planning_strategy,spatial-capability-4,medium,boolean,4,No
+Solve a hard scientific_reasoning task using spatial-capability-5. Provide a list answer with 5 step(s).,scientific_reasoning,spatial-capability-5,hard,list,5,"item_4, item_0"
+Solve a hard social_cognition task using temporal-capability-1. Provide a multiple_choice answer with 1 step(s).,social_cognition,temporal-capability-1,hard,multiple_choice,1,B
+Solve a hard metacognition task using temporal-capability-2. Provide a free_text answer with 2 step(s).,metacognition,temporal-capability-2,hard,free_text,2,Reasoned conclusion 726
+Solve a easy ethical_reasoning task using temporal-capability-3. Provide a numeric answer with 3 step(s).,ethical_reasoning,temporal-capability-3,easy,numeric,3,51
+Solve a hard logical_reasoning task using temporal-capability-4. Provide a boolean answer with 4 step(s).,logical_reasoning,temporal-capability-4,hard,boolean,4,Yes
+Solve a easy mathematical_reasoning task using temporal-capability-5. Provide a list answer with 5 step(s).,mathematical_reasoning,temporal-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard causal_reasoning task using abstract-capability-1. Provide a multiple_choice answer with 1 step(s).,causal_reasoning,abstract-capability-1,hard,multiple_choice,1,C
+Solve a hard analogical_reasoning task using abstract-capability-2. Provide a free_text answer with 2 step(s).,analogical_reasoning,abstract-capability-2,hard,free_text,2,Reasoned conclusion 731
+Solve a medium spatial_reasoning task using abstract-capability-3. Provide a numeric answer with 3 step(s).,spatial_reasoning,abstract-capability-3,medium,numeric,3,56
+Solve a easy temporal_reasoning task using abstract-capability-4. Provide a boolean answer with 4 step(s).,temporal_reasoning,abstract-capability-4,easy,boolean,4,No
+Solve a easy abstract_reasoning task using abstract-capability-5. Provide a list answer with 5 step(s).,abstract_reasoning,abstract-capability-5,easy,list,5,"item_4, item_0"
+Solve a easy linguistic_reasoning task using linguistic-capability-1. Provide a multiple_choice answer with 1 step(s).,linguistic_reasoning,linguistic-capability-1,easy,multiple_choice,1,D
+Solve a easy critical_thinking task using linguistic-capability-2. Provide a free_text answer with 2 step(s).,critical_thinking,linguistic-capability-2,easy,free_text,2,Reasoned conclusion 736
+Solve a medium planning_strategy task using linguistic-capability-3. Provide a numeric answer with 3 step(s).,planning_strategy,linguistic-capability-3,medium,numeric,3,61
+Solve a hard scientific_reasoning task using linguistic-capability-4. Provide a boolean answer with 4 step(s).,scientific_reasoning,linguistic-capability-4,hard,boolean,4,Yes
+Solve a easy social_cognition task using linguistic-capability-5. Provide a list answer with 5 step(s).,social_cognition,linguistic-capability-5,easy,list,5,"item_4, item_0"
+Solve a hard metacognition task using critical-thinking-capability-1. Provide a multiple_choice answer with 1 step(s).,metacognition,critical-thinking-capability-1,hard,multiple_choice,1,A
+Solve a hard ethical_reasoning task using critical-thinking-capability-2. Provide a free_text answer with 2 step(s).,ethical_reasoning,critical-thinking-capability-2,hard,free_text,2,Reasoned conclusion 741
+Solve a easy logical_reasoning task using critical-thinking-capability-3. Provide a numeric answer with 3 step(s).,logical_reasoning,critical-thinking-capability-3,easy,numeric,3,66
+Solve a easy mathematical_reasoning task using critical-thinking-capability-4. Provide a boolean answer with 4 step(s).,mathematical_reasoning,critical-thinking-capability-4,easy,boolean,4,No
+Solve a easy causal_reasoning task using critical-thinking-capability-5. Provide a list answer with 5 step(s).,causal_reasoning,critical-thinking-capability-5,easy,list,5,"item_4, item_0"
+Solve a medium analogical_reasoning task using planning-strategy-capability-1. Provide a multiple_choice answer with 1 step(s).,analogical_reasoning,planning-strategy-capability-1,medium,multiple_choice,1,B
+Solve a medium spatial_reasoning task using planning-strategy-capability-2. Provide a free_text answer with 2 step(s).,spatial_reasoning,planning-strategy-capability-2,medium,free_text,2,Reasoned conclusion 746
+Solve a easy temporal_reasoning task using planning-strategy-capability-3. Provide a numeric answer with 3 step(s).,temporal_reasoning,planning-strategy-capability-3,easy,numeric,3,71
+Solve a easy abstract_reasoning task using planning-strategy-capability-4. Provide a boolean answer with 4 step(s).,abstract_reasoning,planning-strategy-capability-4,easy,boolean,4,Yes
+Solve a hard linguistic_reasoning task using planning-strategy-capability-5. Provide a list answer with 5 step(s).,linguistic_reasoning,planning-strategy-capability-5,hard,list,5,"item_4, item_0"

@@ -280,6 +280,8 @@ async def submit_job(request: JobSubmitRequest):
         message = str(exc)
         if message.startswith("FANOUT_LIMIT_EXCEEDED:"):
             raise HTTPException(status_code=429, detail=message) from exc
+        if message.startswith("QUEUE_BACKPRESSURE:") or message.startswith("INFLIGHT_LIMIT_EXCEEDED:"):
+            raise HTTPException(status_code=429, detail=message) from exc
         raise
     submit_count = int(execution.control_state.get("submit_count", 1))
 

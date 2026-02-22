@@ -1,0 +1,21 @@
+{
+  "dataset_rows": 750,
+  "train": 450,
+  "dev": 150,
+  "test": 150,
+  "baseline_score_dev_subset": 0.04,
+  "reasoning_methods": [
+    "deductive",
+    "inductive",
+    "abductive",
+    "analogical",
+    "causal",
+    "probabilistic",
+    "spatial",
+    "temporal",
+    "critical",
+    "metacognitive",
+    "ethical",
+    "scientific"
+  ]
+}

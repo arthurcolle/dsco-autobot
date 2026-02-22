@@ -446,6 +446,7 @@ class BillingManager:
         self.billing_hook = billing_hook or NoOpBillingHook()
         self.agent_hook = agent_hook or NoOpAgentHook()
         self.event_handlers: List[Callable[[BillingEvent], None]] = []
+        self._reserved_requests: Dict[str, int] = {}
 
     def on_event(self, handler: Callable[[BillingEvent], None]):
         """Register event handler."""
@@ -471,6 +472,8 @@ class BillingManager:
 
         Returns True if execution should proceed.
         """
+        estimated_cost_cents = max(0, int(estimated_cost_cents))
+
         # Check balance
         has_balance = await self.billing_hook.check_balance(
             client_id=request.client_id or "unknown",
@@ -496,6 +499,7 @@ class BillingManager:
             )
             if not reserved:
                 return False
+            self._reserved_requests[request.id] = estimated_cost_cents
 
         # Notify agent system
         if agent_context:
@@ -510,19 +514,30 @@ class BillingManager:
         agent_context: Optional[AgentContext] = None,
     ):
         """Post-execution billing and tracking."""
-        # Release reservation and apply actual cost
-        await self.billing_hook.release_reservation(
-            request_id=request.id,
-            actual_cost_cents=request.cost_cents,
-        )
+        actual_cost_cents = max(0, int(request.cost_cents))
+        reserved_amount = self._reserved_requests.pop(request.id, 0)
 
-        # Deduct credits
-        await self.billing_hook.deduct_credits(
-            client_id=request.client_id or "unknown",
-            amount_cents=request.cost_cents,
-            request_id=request.id,
-            organization_id=request.organization_id,
-        )
+        # If credits were reserved up-front, settle against reservation.
+        # If actual cost exceeded reservation, deduct the delta only.
+        if reserved_amount > 0:
+            await self.billing_hook.release_reservation(
+                request_id=request.id,
+                actual_cost_cents=actual_cost_cents,
+            )
+            if actual_cost_cents > reserved_amount:
+                await self.billing_hook.deduct_credits(
+                    client_id=request.client_id or "unknown",
+                    amount_cents=actual_cost_cents - reserved_amount,
+                    request_id=request.id,
+                    organization_id=request.organization_id,
+                )
+        elif actual_cost_cents > 0:
+            await self.billing_hook.deduct_credits(
+                client_id=request.client_id or "unknown",
+                amount_cents=actual_cost_cents,
+                request_id=request.id,
+                organization_id=request.organization_id,
+            )
 
         # Record usage
         usage = UsageRecord(

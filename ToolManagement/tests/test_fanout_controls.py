@@ -88,6 +88,39 @@ async def test_fanout_budget_blocks_excess_jobs():
     await _shutdown_executor(executor)
 
 
+@pytest.mark.asyncio
+async def test_queue_backpressure_blocks_excess_pending(monkeypatch):
+    monkeypatch.setenv("STREAMING_MAX_PENDING", "1")
+    monkeypatch.setenv("STREAMING_MAX_INFLIGHT", "0")
+
+    async def tool_executor(_tool_name, _inputs, progress_callback=None):
+        await asyncio.sleep(0.2)
+        return {"ok": True}
+
+    executor = StreamingExecutor(
+        tool_executor=tool_executor,
+        heartbeat_interval=60,
+        max_concurrent=1,
+        execution_store=None,
+    )
+
+    first = await executor.execute(
+        tool_name="search",
+        inputs={"q": "a"},
+        trace_id="tr_backpressure",
+    )
+
+    with pytest.raises(RuntimeError, match="QUEUE_BACKPRESSURE"):
+        await executor.execute(
+            tool_name="search",
+            inputs={"q": "b"},
+            trace_id="tr_backpressure",
+        )
+
+    executor.cancel_execution(first.execution_id)
+    await _shutdown_executor(executor)
+
+
 def test_execute_batch_rejects_oversized_payload(monkeypatch):
     monkeypatch.setenv("EXECUTE_BATCH_MAX_CALLS", "2")
     app = FastAPI()

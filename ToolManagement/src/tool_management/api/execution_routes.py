@@ -823,6 +823,28 @@ async def _submit_job(
                     retry_after_ms=2000,
                 ),
             ) from exc
+        if message.startswith("QUEUE_BACKPRESSURE:"):
+            raise HTTPException(
+                status_code=429,
+                detail=_structured_error(
+                    "QUEUE_BACKPRESSURE",
+                    message,
+                    category="resource_limit",
+                    retryable=True,
+                    retry_after_ms=1000,
+                ),
+            ) from exc
+        if message.startswith("INFLIGHT_LIMIT_EXCEEDED:"):
+            raise HTTPException(
+                status_code=429,
+                detail=_structured_error(
+                    "INFLIGHT_LIMIT_EXCEEDED",
+                    message,
+                    category="resource_limit",
+                    retryable=True,
+                    retry_after_ms=1000,
+                ),
+            ) from exc
         raise
     return execution
 

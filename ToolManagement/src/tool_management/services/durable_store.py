@@ -193,6 +193,17 @@ class DurableStore:
                 FOREIGN KEY (request_id) REFERENCES tool_requests(id)
             );
 
+            CREATE TABLE IF NOT EXISTS economic_events (
+                id TEXT PRIMARY KEY,
+                request_id TEXT,
+                client_id TEXT,
+                organization_id TEXT,
+                event_type TEXT NOT NULL,
+                amount_cents INTEGER DEFAULT 0,
+                payload TEXT,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_requests_client ON tool_requests(client_id);
             CREATE INDEX IF NOT EXISTS idx_requests_org ON tool_requests(organization_id);
             CREATE INDEX IF NOT EXISTS idx_requests_tool ON tool_requests(tool_name);
@@ -200,6 +211,9 @@ class DurableStore:
             CREATE INDEX IF NOT EXISTS idx_requests_created ON tool_requests(created_at);
             CREATE INDEX IF NOT EXISTS idx_requests_idempotency ON tool_requests(idempotency_key);
             CREATE INDEX IF NOT EXISTS idx_responses_request ON tool_responses(request_id);
+            CREATE INDEX IF NOT EXISTS idx_economic_events_request ON economic_events(request_id);
+            CREATE INDEX IF NOT EXISTS idx_economic_events_client ON economic_events(client_id);
+            CREATE INDEX IF NOT EXISTS idx_economic_events_created ON economic_events(created_at);
         """)
         await self._db.commit()
 
@@ -459,6 +473,99 @@ class DurableStore:
             "by_tool": by_tool,
             "totals": totals,
         }
+
+    async def append_economic_event(
+        self,
+        *,
+        event_type: str,
+        request_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        amount_cents: int = 0,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist an economic event for durable accounting/audit."""
+        event_id = str(uuid4())
+        created_at = datetime.utcnow().isoformat()
+        await self._db.execute(
+            """
+            INSERT INTO economic_events (
+                id, request_id, client_id, organization_id, event_type, amount_cents, payload, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                request_id,
+                client_id,
+                organization_id,
+                event_type,
+                int(amount_cents),
+                json.dumps(payload or {}),
+                created_at,
+            ),
+        )
+        await self._db.commit()
+        return {
+            "id": event_id,
+            "request_id": request_id,
+            "client_id": client_id,
+            "organization_id": organization_id,
+            "event_type": event_type,
+            "amount_cents": int(amount_cents),
+            "payload": payload or {},
+            "created_at": created_at,
+        }
+
+    async def get_economic_events(
+        self,
+        *,
+        client_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Query persisted economic events."""
+        query = "SELECT * FROM economic_events WHERE 1=1"
+        params: List[Any] = []
+
+        if client_id:
+            query += " AND client_id = ?"
+            params.append(client_id)
+        if organization_id:
+            query += " AND organization_id = ?"
+            params.append(organization_id)
+        if request_id:
+            query += " AND request_id = ?"
+            params.append(request_id)
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        if since:
+            query += " AND created_at >= ?"
+            params.append(since.isoformat())
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        events: List[Dict[str, Any]] = []
+        async with self._db.execute(query, params) as cursor:
+            async for row in cursor:
+                payload = row["payload"]
+                events.append(
+                    {
+                        "id": row["id"],
+                        "request_id": row["request_id"],
+                        "client_id": row["client_id"],
+                        "organization_id": row["organization_id"],
+                        "event_type": row["event_type"],
+                        "amount_cents": int(row["amount_cents"] or 0),
+                        "payload": json.loads(payload) if payload else {},
+                        "created_at": row["created_at"],
+                    }
+                )
+        return events
 
     # =========================================================================
     # MAINTENANCE
