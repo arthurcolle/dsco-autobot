@@ -938,8 +938,38 @@ class StreamingExecutor:
         )
         if event_id:
             event.event_id = int(event_id)
+        if event.type == EventType.PARTIAL:
+            self._persist_execution_group_chunk(execution, event)
         self._persist_execution(execution, last_event=event)
         self._schedule_webhook(execution, event)
+
+    def _persist_execution_group_chunk(self, execution: StreamingExecution, event: ToolEvent):
+        if not self._execution_store:
+            return
+        convergence_key = self._normalize_convergence_key(execution.control_state.get("convergence_key"))
+        if not convergence_key:
+            return
+        reducer = str(execution.control_state.get("group_reducer") or "append_unique").strip().lower()
+        max_items = max(1, int(os.getenv("STREAMING_GROUP_MAX_ITEMS", "2000")))
+        try:
+            snapshot = self._execution_store.upsert_execution_group_chunk(
+                convergence_key=convergence_key,
+                tool_name=execution.tool_name,
+                chunk=event.data,
+                execution_id=execution.execution_id,
+                trace_id=execution.trace_id,
+                session_id=execution.session_id,
+                reducer=reducer,
+                max_items=max_items,
+            )
+            execution.control_state["group_convergence_key"] = convergence_key
+            execution.control_state["group_reducer"] = reducer
+            execution.control_state["group_chunk_count"] = int(snapshot.get("chunk_count") or 0)
+            state = snapshot.get("state") if isinstance(snapshot.get("state"), dict) else {}
+            items = state.get("items") if isinstance(state.get("items"), list) else []
+            execution.control_state["group_unique_items"] = len(items)
+        except Exception as exc:
+            logger.debug(f"Failed to persist execution group chunk ({execution.execution_id}): {exc}")
 
     def _persist_execution(self, execution: StreamingExecution, last_event: Optional[ToolEvent] = None):
         if not self._execution_store:

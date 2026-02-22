@@ -261,6 +261,31 @@ class ExecutionStore:
                     created_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS execution_group_states (
+                    convergence_key TEXT PRIMARY KEY,
+                    tool_name TEXT NOT NULL,
+                    reducer TEXT NOT NULL DEFAULT 'append_unique',
+                    state_json TEXT NOT NULL,
+                    chunk_count INTEGER DEFAULT 0,
+                    execution_count INTEGER DEFAULT 0,
+                    last_execution_id TEXT,
+                    last_trace_id TEXT,
+                    last_session_id TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS execution_group_members (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    convergence_key TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    tool_name TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    joined_at REAL NOT NULL,
+                    UNIQUE (convergence_key, execution_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_kind ON workflow_executions(workflow_kind);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_updated ON workflow_executions(updated_at DESC);
@@ -289,6 +314,10 @@ class ExecutionStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_gate_created ON workflow_gate_decisions(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_id ON recommendation_feedback(recommendation_id);
                 CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_created ON recommendation_feedback(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_group_states_tool ON execution_group_states(tool_name);
+                CREATE INDEX IF NOT EXISTS idx_execution_group_states_updated ON execution_group_states(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_group_members_group ON execution_group_members(convergence_key);
+                CREATE INDEX IF NOT EXISTS idx_execution_group_members_execution ON execution_group_members(execution_id);
                 """
             )
 
@@ -776,6 +805,11 @@ class ExecutionStore:
             return json.loads(value)
         except Exception:
             return default
+
+    @staticmethod
+    def _stable_fingerprint(value: Any) -> str:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -2224,6 +2258,268 @@ class ExecutionStore:
             },
         }
 
+    @classmethod
+    def _merge_execution_group_items(
+        cls,
+        existing_items: Any,
+        chunk: Any,
+        *,
+        reducer: str,
+        max_items: int,
+    ) -> tuple[List[Any], int]:
+        base_items = existing_items if isinstance(existing_items, list) else []
+        incoming = chunk if isinstance(chunk, list) else [chunk]
+
+        normalized_reducer = str(reducer or "append_unique").strip().lower()
+        if normalized_reducer == "latest":
+            latest_value = incoming[-1] if incoming else None
+            return ([latest_value] if latest_value is not None else []), 1 if latest_value is not None else 0
+
+        if normalized_reducer == "append":
+            merged = list(base_items) + list(incoming)
+            if max_items > 0 and len(merged) > max_items:
+                merged = merged[-max_items:]
+            return merged, len(incoming)
+
+        # Default reducer: append_unique
+        merged = list(base_items)
+        seen = {cls._stable_fingerprint(item) for item in merged}
+        added = 0
+        for item in incoming:
+            fp = cls._stable_fingerprint(item)
+            if fp in seen:
+                continue
+            merged.append(item)
+            seen.add(fp)
+            added += 1
+
+        if max_items > 0 and len(merged) > max_items:
+            merged = merged[-max_items:]
+        return merged, added
+
+    def upsert_execution_group_chunk(
+        self,
+        *,
+        convergence_key: str,
+        tool_name: str,
+        chunk: Any,
+        execution_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        reducer: str = "append_unique",
+        max_items: int = 2000,
+    ) -> Dict[str, Any]:
+        key = str(convergence_key or "").strip()
+        if not key:
+            raise ValueError("convergence_key is required")
+        tool = str(tool_name or "").strip() or "unknown"
+        normalized_reducer = str(reducer or "append_unique").strip().lower() or "append_unique"
+        max_items = max(1, int(max_items))
+        now = time.time()
+
+        with self._lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM execution_group_states
+                    WHERE convergence_key = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+
+                if row:
+                    existing_state = self._safe_json_loads(row["state_json"], {}) or {}
+                    existing_items = existing_state.get("items", [])
+                    merged_items, added = self._merge_execution_group_items(
+                        existing_items,
+                        chunk,
+                        reducer=normalized_reducer,
+                        max_items=max_items,
+                    )
+                    chunk_count = int(row["chunk_count"] or 0) + 1
+                    state = dict(existing_state)
+                    state["items"] = merged_items
+                    stats = state.get("stats") if isinstance(state.get("stats"), dict) else {}
+                    stats.update(
+                        {
+                            "chunk_updates": chunk_count,
+                            "unique_items": len(merged_items),
+                            "last_reducer": normalized_reducer,
+                            "last_added": added,
+                        }
+                    )
+                    state["stats"] = stats
+                    conn.execute(
+                        """
+                        UPDATE execution_group_states
+                        SET
+                            tool_name = ?,
+                            reducer = ?,
+                            state_json = ?,
+                            chunk_count = ?,
+                            last_execution_id = COALESCE(?, last_execution_id),
+                            last_trace_id = COALESCE(?, last_trace_id),
+                            last_session_id = COALESCE(?, last_session_id),
+                            updated_at = ?
+                        WHERE convergence_key = ?
+                        """,
+                        (
+                            tool,
+                            normalized_reducer,
+                            json.dumps(state, default=str),
+                            chunk_count,
+                            execution_id,
+                            trace_id,
+                            session_id,
+                            now,
+                            key,
+                        ),
+                    )
+                else:
+                    merged_items, added = self._merge_execution_group_items(
+                        [],
+                        chunk,
+                        reducer=normalized_reducer,
+                        max_items=max_items,
+                    )
+                    state = {
+                        "items": merged_items,
+                        "stats": {
+                            "chunk_updates": 1,
+                            "unique_items": len(merged_items),
+                            "last_reducer": normalized_reducer,
+                            "last_added": added,
+                        },
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO execution_group_states (
+                            convergence_key, tool_name, reducer, state_json, chunk_count, execution_count,
+                            last_execution_id, last_trace_id, last_session_id, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            key,
+                            tool,
+                            normalized_reducer,
+                            json.dumps(state, default=str),
+                            execution_id,
+                            trace_id,
+                            session_id,
+                            now,
+                            now,
+                        ),
+                    )
+
+                execution_added = False
+                if execution_id:
+                    cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO execution_group_members (
+                            convergence_key, execution_id, tool_name, trace_id, session_id, joined_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (key, execution_id, tool, trace_id, session_id, now),
+                    )
+                    execution_added = bool(cursor.rowcount)
+                    if execution_added:
+                        conn.execute(
+                            """
+                            UPDATE execution_group_states
+                            SET execution_count = execution_count + 1, updated_at = ?
+                            WHERE convergence_key = ?
+                            """,
+                            (now, key),
+                        )
+
+                refreshed = conn.execute(
+                    """
+                    SELECT *
+                    FROM execution_group_states
+                    WHERE convergence_key = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+
+        if not refreshed:
+            return {}
+
+        result = dict(refreshed)
+        result["state"] = self._safe_json_loads(result.get("state_json"), {})
+        result["execution_added"] = execution_added
+        return result
+
+    def get_execution_group_state(self, convergence_key: str) -> Optional[Dict[str, Any]]:
+        key = str(convergence_key or "").strip()
+        if not key:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM execution_group_states
+                WHERE convergence_key = ?
+                LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["state"] = self._safe_json_loads(data.get("state_json"), {})
+        return data
+
+    def list_execution_group_states(
+        self,
+        *,
+        tool_name: Optional[str] = None,
+        limit: int = 100,
+        updated_since: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        if updated_since is not None:
+            clauses.append("updated_at >= ?")
+            params.append(float(updated_since))
+        query = "SELECT * FROM execution_group_states"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["state"] = self._safe_json_loads(data.get("state_json"), {})
+            results.append(data)
+        return results
+
+    def delete_execution_group_state(self, convergence_key: str) -> bool:
+        key = str(convergence_key or "").strip()
+        if not key:
+            return False
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "DELETE FROM execution_group_members WHERE convergence_key = ?",
+                    (key,),
+                )
+                row = conn.execute(
+                    "DELETE FROM execution_group_states WHERE convergence_key = ?",
+                    (key,),
+                )
+        return bool(getattr(row, "rowcount", 0))
+
     def get_storage_stats(self) -> Dict[str, Any]:
         with self._conn() as conn:
             table_counts = {}
@@ -2239,6 +2535,8 @@ class ExecutionStore:
                 "execution_policy_decisions",
                 "workflow_gate_decisions",
                 "recommendation_feedback",
+                "execution_group_states",
+                "execution_group_members",
             ]
             for table in tables:
                 row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
@@ -2259,7 +2557,8 @@ class ExecutionStore:
                     COALESCE((SELECT SUM(LENGTH(output_json)) FROM workflow_executions), 0) AS workflow_output_bytes,
                     COALESCE((SELECT SUM(LENGTH(payload_json)) FROM workflow_artifacts), 0) AS artifact_payload_bytes,
                     COALESCE((SELECT SUM(LENGTH(request_json)) FROM workflow_side_effects), 0) AS side_effect_request_bytes,
-                    COALESCE((SELECT SUM(LENGTH(response_json)) FROM workflow_side_effects), 0) AS side_effect_response_bytes
+                    COALESCE((SELECT SUM(LENGTH(response_json)) FROM workflow_side_effects), 0) AS side_effect_response_bytes,
+                    COALESCE((SELECT SUM(LENGTH(state_json)) FROM execution_group_states), 0) AS execution_group_state_bytes
                 """
             ).fetchone()
 
@@ -2289,6 +2588,7 @@ class ExecutionStore:
                 "artifact_payload_bytes": int(workflow_payload_bytes["artifact_payload_bytes"] or 0),
                 "side_effect_request_bytes": int(workflow_payload_bytes["side_effect_request_bytes"] or 0),
                 "side_effect_response_bytes": int(workflow_payload_bytes["side_effect_response_bytes"] or 0),
+                "execution_group_state_bytes": int(workflow_payload_bytes["execution_group_state_bytes"] or 0),
             },
         }
 

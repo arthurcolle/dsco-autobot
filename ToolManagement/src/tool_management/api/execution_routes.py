@@ -175,6 +175,25 @@ class PolicyDecisionQueryResponse(BaseModel):
     decisions: List[Dict[str, Any]]
 
 
+class ExecutionGroupStateModel(BaseModel):
+    convergence_key: str
+    tool_name: str
+    reducer: str
+    chunk_count: int = 0
+    execution_count: int = 0
+    last_execution_id: Optional[str] = None
+    last_trace_id: Optional[str] = None
+    last_session_id: Optional[str] = None
+    created_at: float
+    updated_at: float
+    state: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionGroupListResponse(BaseModel):
+    count: int
+    groups: List[ExecutionGroupStateModel]
+
+
 def _resolve_tool_name(tool_name: Optional[str], tool: Optional[str]) -> str:
     resolved = tool_name or tool
     if not resolved:
@@ -335,6 +354,21 @@ def _should_signal_sufficient(
         return True
     score = _quality_score(chunk_data)
     return score is not None and score >= early_stop.quality_threshold
+
+
+def _normalize_execution_group_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(row)
+    payload.pop("state_json", None)
+    payload["convergence_key"] = str(payload.get("convergence_key") or "")
+    payload["tool_name"] = str(payload.get("tool_name") or "unknown")
+    payload["reducer"] = str(payload.get("reducer") or "append_unique")
+    payload["chunk_count"] = int(payload.get("chunk_count") or 0)
+    payload["execution_count"] = int(payload.get("execution_count") or 0)
+    payload["created_at"] = float(payload.get("created_at") or 0.0)
+    payload["updated_at"] = float(payload.get("updated_at") or 0.0)
+    state = payload.get("state")
+    payload["state"] = state if isinstance(state, dict) else {}
+    return payload
 
 
 async def _submit_job(
@@ -911,6 +945,38 @@ async def list_policy_decisions(
         limit=limit,
     )
     return {"count": len(decisions), "decisions": decisions}
+
+
+@router.get("/execution-groups", response_model=ExecutionGroupListResponse)
+async def list_execution_groups(
+    tool_name: Optional[str] = Query(default=None),
+    updated_since: Optional[float] = Query(default=None, ge=0.0),
+    limit: int = Query(default=100, ge=1, le=2000),
+):
+    store = get_execution_store()
+    rows = store.list_execution_group_states(
+        tool_name=tool_name,
+        updated_since=updated_since,
+        limit=limit,
+    )
+    groups = [ExecutionGroupStateModel.model_validate(_normalize_execution_group_row(row)) for row in rows]
+    return {"count": len(groups), "groups": groups}
+
+
+@router.get("/execution-groups/{convergence_key}", response_model=ExecutionGroupStateModel)
+async def get_execution_group(convergence_key: str):
+    store = get_execution_store()
+    row = store.get_execution_group_state(convergence_key)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Execution group not found: {convergence_key}")
+    return ExecutionGroupStateModel.model_validate(_normalize_execution_group_row(row))
+
+
+@router.delete("/execution-groups/{convergence_key}")
+async def delete_execution_group(convergence_key: str):
+    store = get_execution_store()
+    deleted = store.delete_execution_group_state(convergence_key)
+    return {"convergence_key": convergence_key, "deleted": bool(deleted)}
 
 
 @router.get("/policy-decisions/analytics")
