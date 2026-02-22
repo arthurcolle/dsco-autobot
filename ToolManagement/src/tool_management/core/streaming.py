@@ -11,6 +11,9 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import heapq
+import os
 import uuid
 import time
 import json
@@ -99,6 +102,8 @@ class StreamingExecution:
     progress: float = 0
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
+    queued_at: Optional[float] = None
+    queue_priority: int = 0
 
     # Events (bounded to prevent memory leak)
     events: List[ToolEvent] = field(default_factory=list)
@@ -116,6 +121,7 @@ class StreamingExecution:
     _paused: bool = False
     _pause_event: asyncio.Event = field(default_factory=asyncio.Event)
     detached: bool = False
+    dedupe_key: Optional[str] = None
     control_state: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -198,6 +204,7 @@ class StreamingExecutor:
         self,
         tool_executor: Callable,
         heartbeat_interval: float = 15.0,
+        max_concurrent: int = 8,
     ):
         """
         Initialize executor.
@@ -205,17 +212,29 @@ class StreamingExecutor:
         Args:
             tool_executor: Async function(tool_name, inputs, progress_callback) -> result
             heartbeat_interval: Seconds between heartbeat events
+            max_concurrent: Maximum number of concurrent running executions
         """
         self.tool_executor = tool_executor
         self.heartbeat_interval = heartbeat_interval
+        self.max_concurrent = max(1, int(max_concurrent))
 
         self._executions: Dict[str, StreamingExecution] = {}
+        self._pending_queue: List[tuple[int, float, str]] = []
+        self._execution_inputs: Dict[str, Dict[str, Any]] = {}
+        self._active_count: int = 0
+        self._queue_event: asyncio.Event = asyncio.Event()
+        self._scheduler_task: Optional[asyncio.Task] = None
+        self._dedupe_index: Dict[str, tuple[str, float]] = {}
+        self._shutdown: bool = False
 
     async def execute(
         self,
         tool_name: str,
         inputs: Dict[str, Any],
         client_id: str = None,
+        priority: int | str | None = None,
+        dedupe_window_seconds: int = 0,
+        dedupe_key: Optional[str] = None,
     ) -> StreamingExecution:
         """
         Start a streaming execution.
@@ -228,17 +247,89 @@ class StreamingExecutor:
         Returns:
             StreamingExecution that can be subscribed to
         """
+        normalized_priority = self._normalize_priority(priority)
+        now = time.time()
+        effective_dedupe_key = dedupe_key or self._build_dedupe_key(tool_name, inputs)
+        dedupe_window_seconds = max(0, int(dedupe_window_seconds))
+        if dedupe_window_seconds > 0:
+            self._prune_dedupe_index(now, dedupe_window_seconds)
+            existing = self._dedupe_index.get(effective_dedupe_key)
+            if existing:
+                existing_id, created_at = existing
+                existing_execution = self._executions.get(existing_id)
+                if existing_execution and (now - created_at) <= dedupe_window_seconds:
+                    if existing_execution.status not in {"error", "cancelled"}:
+                        existing_execution.control_state["submit_count"] = (
+                            int(existing_execution.control_state.get("submit_count", 1)) + 1
+                        )
+                        existing_execution.control_state["deduplicated_requests"] = (
+                            int(existing_execution.control_state.get("deduplicated_requests", 0)) + 1
+                        )
+                        existing_execution.control_state["last_dedupe_reuse_at"] = now
+                        return existing_execution
+
         execution = StreamingExecution(
             tool_name=tool_name,
             client_id=client_id,
+            status="queued",
+            queued_at=now,
+            queue_priority=normalized_priority,
+            dedupe_key=effective_dedupe_key,
         )
+        execution.control_state["submit_count"] = 1
 
         self._executions[execution.execution_id] = execution
+        if dedupe_window_seconds > 0:
+            self._dedupe_index[effective_dedupe_key] = (execution.execution_id, now)
 
-        # Start execution in background
-        execution._task = asyncio.create_task(self._run_execution(execution, inputs))
+        # Queue execution and let scheduler honor priority + concurrency.
+        heapq.heappush(
+            self._pending_queue,
+            (-normalized_priority, now, execution.execution_id),
+        )
+        self._execution_inputs[execution.execution_id] = dict(inputs)
+        await execution.emit(ToolEvent(
+            type=EventType.PROGRESS,
+            execution_id=execution.execution_id,
+            progress=0.0,
+            message="queued",
+        ))
+        self._ensure_scheduler()
+        self._queue_event.set()
 
         return execution
+
+    def _ensure_scheduler(self):
+        if self._scheduler_task and not self._scheduler_task.done():
+            return
+        self._shutdown = False
+        self._scheduler_task = asyncio.create_task(self._schedule_loop())
+
+    async def _schedule_loop(self):
+        """Dispatch queued executions according to priority and concurrency limits."""
+        while not self._shutdown:
+            await self._queue_event.wait()
+            self._queue_event.clear()
+
+            while self._pending_queue and self._active_count < self.max_concurrent:
+                _neg_priority, _enqueued_at, execution_id = heapq.heappop(self._pending_queue)
+                execution = self._executions.get(execution_id)
+                if not execution:
+                    continue
+                if execution.status in {"cancelled", "completed", "error"}:
+                    continue
+                if execution.is_cancelled:
+                    execution.status = "cancelled"
+                    execution.completed_at = time.time()
+                    continue
+
+                inputs = self._execution_inputs.get(execution_id, {})
+                self._active_count += 1
+                execution._task = asyncio.create_task(self._run_execution(execution, inputs))
+
+            if self._pending_queue and self._active_count < self.max_concurrent:
+                # Re-trigger loop to avoid starvation on race edges.
+                self._queue_event.set()
 
     async def _run_execution(
         self,
@@ -337,6 +428,10 @@ class StreamingExecutor:
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
+            if execution.status in {"completed", "error", "cancelled"}:
+                self._execution_inputs.pop(execution.execution_id, None)
+            self._active_count = max(0, self._active_count - 1)
+            self._queue_event.set()
 
     async def _heartbeat_loop(self, execution: StreamingExecution):
         """Send periodic heartbeats."""
@@ -356,8 +451,23 @@ class StreamingExecutor:
     def cancel_execution(self, execution_id: str) -> bool:
         """Cancel an execution."""
         execution = self._executions.get(execution_id)
-        if execution and execution.status == "running":
+        if not execution:
+            return False
+        if execution.status in {"running", "queued", "pending"}:
             execution.cancel()
+            if execution.status in {"queued", "pending"}:
+                execution.status = "cancelled"
+                execution.completed_at = time.time()
+                self._execution_inputs.pop(execution.execution_id, None)
+                try:
+                    asyncio.create_task(execution.emit(ToolEvent(
+                        type=EventType.CANCELLED,
+                        execution_id=execution.execution_id,
+                        message="Execution cancelled",
+                    )))
+                except RuntimeError:
+                    pass
+            self._queue_event.set()
             return True
         return False
 
@@ -434,6 +544,24 @@ class StreamingExecutor:
         execution.control_state.update(values)
         return True
 
+    def reprioritize_execution(self, execution_id: str, priority: int | str) -> bool:
+        """Reprioritize a queued execution."""
+        execution = self._executions.get(execution_id)
+        if not execution:
+            return False
+        if execution.status not in {"pending", "queued"}:
+            return False
+
+        new_priority = self._normalize_priority(priority)
+        execution.queue_priority = new_priority
+        execution.control_state["priority"] = priority
+        heapq.heappush(
+            self._pending_queue,
+            (-new_priority, time.time(), execution.execution_id),
+        )
+        self._queue_event.set()
+        return True
+
     async def stream_events(
         self,
         execution_id: str,
@@ -463,7 +591,7 @@ class StreamingExecutor:
                     yield event
 
             # Stream new events
-            while execution.status == "running" or not queue.empty():
+            while execution.status in {"pending", "queued", "running"} or not queue.empty():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
                     yield event
@@ -508,6 +636,9 @@ class StreamingExecutor:
         return {
             "total_executions": len(self._executions),
             "by_status": statuses,
+            "active_count": self._active_count,
+            "queue_depth": len(self._pending_queue),
+            "max_concurrent": self.max_concurrent,
         }
 
     def cleanup_old(self, max_age_seconds: int = 3600):
@@ -521,8 +652,59 @@ class StreamingExecutor:
 
         for ex_id in to_remove:
             del self._executions[ex_id]
+            self._execution_inputs.pop(ex_id, None)
+
+        # Drop stale dedupe mappings that no longer resolve.
+        stale_keys = [
+            key for key, (ex_id, created_at) in self._dedupe_index.items()
+            if ex_id not in self._executions or (now - created_at) > max_age_seconds
+        ]
+        for key in stale_keys:
+            self._dedupe_index.pop(key, None)
 
         return len(to_remove)
+
+    def _normalize_priority(self, priority: int | str | None) -> int:
+        if priority is None:
+            return 50
+        if isinstance(priority, int):
+            return max(0, min(100, priority))
+        p = str(priority).strip().lower()
+        mapping = {
+            "p0": 100,
+            "critical": 100,
+            "urgent": 90,
+            "p1": 75,
+            "high": 75,
+            "p2": 50,
+            "normal": 50,
+            "medium": 50,
+            "p3": 25,
+            "background": 25,
+            "low": 25,
+        }
+        return mapping.get(p, 50)
+
+    def _build_dedupe_key(self, tool_name: str, inputs: Dict[str, Any]) -> str:
+        stable_inputs = {
+            k: v for k, v in inputs.items()
+            if k not in {"_submitted_at", "_trace_id"}
+        }
+        payload = json.dumps(
+            {"tool_name": tool_name, "arguments": stable_inputs},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _prune_dedupe_index(self, now: float, window_seconds: int):
+        expired = [
+            key for key, (_execution_id, created_at) in self._dedupe_index.items()
+            if (now - created_at) > window_seconds
+        ]
+        for key in expired:
+            self._dedupe_index.pop(key, None)
 
 
 # Singleton instance
@@ -535,7 +717,8 @@ def get_streaming_executor(tool_executor: Callable = None) -> StreamingExecutor:
     if _executor is None:
         if tool_executor is None:
             raise ValueError("tool_executor required for first initialization")
-        _executor = StreamingExecutor(tool_executor)
+        max_concurrent = int(os.getenv("STREAMING_MAX_CONCURRENT", "8"))
+        _executor = StreamingExecutor(tool_executor, max_concurrent=max_concurrent)
     return _executor
 
 

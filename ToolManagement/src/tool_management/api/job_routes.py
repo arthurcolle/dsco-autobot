@@ -25,6 +25,20 @@ class JobSubmitRequest(BaseModel):
     tool: str = Field(..., description="Tool name (or backend:tool)")
     arguments: Dict[str, Any] = Field(default_factory=dict)
     timeout: float = Field(default=300.0, description="Max execution time in seconds")
+    priority: str = Field(
+        default="p1",
+        description="Priority tier: p0|p1|p2|p3 (or critical|high|normal|background)",
+    )
+    dedupe_window_seconds: int = Field(
+        default=60,
+        ge=0,
+        le=3600,
+        description="Deduplicate identical tool+arguments within this window",
+    )
+    dedupe_key: Optional[str] = Field(
+        default=None,
+        description="Optional explicit dedupe key; defaults to hash(tool+arguments)",
+    )
     client_id: Optional[str] = None
 
 
@@ -37,6 +51,9 @@ class JobStatusResponse(BaseModel):
     stages_completed: List[str] = Field(default_factory=list)
     stages_remaining: List[str] = Field(default_factory=list)
     estimated_completion_seconds: Optional[int] = None
+    queue_priority: int = 0
+    submit_count: int = 1
+    deduplicated_requests: int = 0
     partial_results: List[Any] = Field(default_factory=list)
     result: Optional[Any] = None
     error: Optional[str] = None
@@ -46,6 +63,8 @@ class JobStatusResponse(BaseModel):
 class JobSubmitResponse(BaseModel):
     job_id: str
     status: str
+    deduplicated: bool = False
+    priority: int = 0
     poll_url: str
     stream_url: str
 
@@ -85,6 +104,8 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
         if msg not in dedup_stages:
             dedup_stages.append(msg)
     remaining = [s for s in expected_stages if s not in dedup_stages]
+    if ex.status == "queued" and not stage:
+        stage = "queued"
 
     eta = None
     if ex.status == "running":
@@ -94,6 +115,9 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
             elapsed = max(0.0, (time.time() - (ex.started_at or time.time())))
             remaining_pct = max(0.0, 100.0 - ex.progress)
             eta = int((elapsed / max(1.0, ex.progress)) * remaining_pct)
+    elif ex.status == "queued":
+        # Conservative queueing estimate based on scheduler depth and priority tiers.
+        eta = None
 
     return JobStatusResponse(
         job_id=ex.execution_id,
@@ -104,10 +128,14 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
         stages_completed=dedup_stages,
         stages_remaining=remaining,
         estimated_completion_seconds=eta,
+        queue_priority=ex.queue_priority,
+        submit_count=int(ex.control_state.get("submit_count", 1)),
+        deduplicated_requests=int(ex.control_state.get("deduplicated_requests", 0)),
         partial_results=partial_results,
         result=result,
         error=error,
         timestamps={
+            "queued_at": ex.queued_at,
             "started_at": ex.started_at,
             "completed_at": ex.completed_at,
         },
@@ -135,11 +163,17 @@ async def submit_job(request: JobSubmitRequest):
         tool_name=request.tool,
         inputs={**request.arguments, "_timeout": request.timeout},
         client_id=request.client_id,
+        priority=request.priority,
+        dedupe_window_seconds=request.dedupe_window_seconds,
+        dedupe_key=request.dedupe_key,
     )
+    submit_count = int(execution.control_state.get("submit_count", 1))
 
     return JobSubmitResponse(
         job_id=execution.execution_id,
         status=execution.status,
+        deduplicated=submit_count > 1,
+        priority=execution.queue_priority,
         poll_url=f"/api/v1/jobs/{execution.execution_id}",
         stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
     )
@@ -221,6 +255,8 @@ async def list_jobs(
             "tool": ex.tool_name,
             "status": ex.status,
             "progress": ex.progress,
+            "queue_priority": ex.queue_priority,
+            "submit_count": int(ex.control_state.get("submit_count", 1)),
             "started_at": ex.started_at,
             "completed_at": ex.completed_at,
         })

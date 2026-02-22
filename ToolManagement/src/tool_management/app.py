@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -73,6 +74,13 @@ async def lifespan(app: FastAPI):
     """Application lifecycle handler."""
     debug = os.getenv("DEBUG", "0") == "1"
     configure_logging(debug)
+    app.state.warm_pool_state = {
+        "enabled": False,
+        "interval_seconds": None,
+        "last_run_at": None,
+        "runs": 0,
+        "backends": {},
+    }
 
     registry = get_registry()
     service_registry = get_service_registry()
@@ -182,6 +190,7 @@ async def lifespan(app: FastAPI):
 
     # Background health poller: check remote backends periodically
     _health_poller_task = None
+    _warm_pool_task = None
     enable_bg_tasks = os.getenv("ENABLE_BG_TASKS", "1") == "1"
     if enable_bg_tasks:
         try:
@@ -214,6 +223,71 @@ async def lifespan(app: FastAPI):
             logger.info("Backend health poller started (120s interval)")
         except Exception as e:
             logger.error(f"Failed to start health poller: {e}")
+
+        # Keep backends warm to reduce cold-start latency on Modal-hosted MCPs.
+        warm_pool_enabled = os.getenv("ENABLE_BACKEND_WARM_POOL", "1") == "1"
+        warm_pool_interval = int(os.getenv("BACKEND_WARM_POOL_INTERVAL_SECONDS", "240"))
+        warm_pool_timeout = float(os.getenv("BACKEND_WARM_POOL_TIMEOUT_SECONDS", "5.0"))
+        if warm_pool_enabled:
+            app.state.warm_pool_state = {
+                "enabled": True,
+                "interval_seconds": warm_pool_interval,
+                "last_run_at": None,
+                "runs": 0,
+                "backends": {},
+            }
+
+            async def _warm_backends():
+                import httpx as _httpx
+
+                await asyncio.sleep(15)  # Give backends time to fully initialize.
+                async with _httpx.AsyncClient(timeout=warm_pool_timeout) as client:
+                    while True:
+                        try:
+                            store = get_tool_store()
+                            backends = store.list_backends()
+                            run_started = asyncio.get_event_loop().time()
+                            backend_results = {}
+
+                            for backend in backends:
+                                backend_id = backend.get("backend_id", "")
+                                url = backend.get("url") or backend.get("backend_url")
+                                health_ep = backend.get("health_endpoint", "/health")
+                                if not backend_id or not url:
+                                    continue
+
+                                started = asyncio.get_event_loop().time()
+                                try:
+                                    resp = await client.get(f"{url}{health_ep}")
+                                    ok = resp.status_code == 200
+                                    latency_ms = int((asyncio.get_event_loop().time() - started) * 1000)
+                                except Exception as exc:
+                                    ok = False
+                                    latency_ms = None
+                                    logger.debug(f"Warm ping failed for {backend_id}: {exc}")
+
+                                backend_results[backend_id] = {
+                                    "ok": ok,
+                                    "latency_ms": latency_ms,
+                                    "url": url,
+                                }
+
+                            app.state.warm_pool_state = {
+                                "enabled": True,
+                                "interval_seconds": warm_pool_interval,
+                                "last_run_at": datetime.utcnow().isoformat(),
+                                "runs": int(app.state.warm_pool_state.get("runs", 0)) + 1,
+                                "duration_ms": int((asyncio.get_event_loop().time() - run_started) * 1000),
+                                "backends": backend_results,
+                            }
+                        except Exception as exc:
+                            logger.warning(f"Backend warm-pool loop error: {exc}")
+                        await asyncio.sleep(warm_pool_interval)
+
+            _warm_pool_task = asyncio.create_task(_warm_backends())
+            logger.info(f"Backend warm-pool started ({warm_pool_interval}s interval)")
+        else:
+            logger.info("Backend warm-pool disabled (ENABLE_BACKEND_WARM_POOL=0)")
 
         # Initialize indexes in background (non-blocking)
         async def _background_index_init():
@@ -286,7 +360,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Stop background tasks
-    for _bg_task in [_cleanup_task, _health_poller_task]:
+    for _bg_task in [_cleanup_task, _health_poller_task, _warm_pool_task]:
         if _bg_task:
             _bg_task.cancel()
             try:
@@ -566,11 +640,13 @@ def create_app() -> FastAPI:
     async def health():
         store = get_tool_store()
         stats = store.get_stats()
+        warm_pool_state = getattr(app.state, "warm_pool_state", {"enabled": False})
         return {
             "status": "healthy",
             "tool_count": stats.get("tool_count", 0),
             "backend_count": stats.get("backend_count", 0),
             "healthy_backends": stats.get("healthy_backends", 0),
+            "warm_pool": warm_pool_state,
         }
 
     # Include retrieval routes FIRST (specific paths before wildcards)

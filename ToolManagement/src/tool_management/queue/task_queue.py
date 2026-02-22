@@ -331,6 +331,26 @@ class DurableTaskQueue:
         available.sort(key=lambda b: (-b.priority, b.current_load))
         return available[0]
 
+    def get_available_backend_for_task(self, task: Task) -> Optional[MCPBackend]:
+        """
+        Resolve the backend for a task.
+
+        - If task.backend is pinned, respect that pin.
+        - Otherwise choose the best healthy backend by priority/load.
+        """
+        if task.backend:
+            pinned = self._backends.get(task.backend)
+            if not pinned:
+                return None
+            if not pinned.is_healthy or pinned.current_load >= pinned.max_concurrent:
+                return None
+            return pinned
+
+        required_caps = task.metadata.get("required_capabilities") if task.metadata else None
+        if isinstance(required_caps, list) and required_caps:
+            return self.get_available_backend(capabilities=required_caps)
+        return self.get_available_backend()
+
     # =========================================================================
     # Task Operations
     # =========================================================================
@@ -472,6 +492,31 @@ class DurableTaskQueue:
                 WHERE status IN ('pending', 'queued')
             """).fetchone()
             stats["queue_depth"] = row["count"]
+
+            # Count by priority value
+            rows = conn.execute("""
+                SELECT priority, COUNT(*) as count
+                FROM tasks
+                GROUP BY priority
+                ORDER BY priority DESC
+            """).fetchall()
+            stats["by_priority"] = {str(row["priority"]): row["count"] for row in rows}
+
+            # Priority buckets for operational visibility
+            bucket_rows = conn.execute("""
+                SELECT
+                  CASE
+                    WHEN priority >= 75 THEN 'p0'
+                    WHEN priority >= 50 THEN 'p1'
+                    WHEN priority >= 25 THEN 'p2'
+                    ELSE 'p3'
+                  END AS bucket,
+                  COUNT(*) as count
+                FROM tasks
+                WHERE status IN ('pending', 'queued', 'running')
+                GROUP BY bucket
+            """).fetchall()
+            stats["priority_buckets"] = {row["bucket"]: row["count"] for row in bucket_rows}
 
             # Running count
             row = conn.execute("""
@@ -654,8 +699,13 @@ class DurableTaskQueue:
                     continue
 
                 # Find available backend
-                backend = self.get_available_backend()
+                backend = self.get_available_backend_for_task(task)
                 if not backend:
+                    # Return task to queue if no suitable backend is currently available.
+                    task.status = TaskStatus.QUEUED
+                    task.started_at = None
+                    self.update_task(task)
+                    self._running_tasks.pop(task.id, None)
                     await asyncio.sleep(5)
                     continue
 
@@ -675,15 +725,19 @@ class DurableTaskQueue:
                 return None
 
             with self._get_conn() as conn:
-                row = conn.execute("""
+                rows = conn.execute("""
                     SELECT * FROM tasks
                     WHERE status = 'queued'
                     ORDER BY priority DESC, created_at ASC
-                    LIMIT 1
-                """).fetchone()
+                    LIMIT 50
+                """).fetchall()
 
-                if row:
+                for row in rows:
                     task = self._row_to_task(row)
+                    # Skip tasks whose pinned backend is unavailable to avoid starvation.
+                    backend = self.get_available_backend_for_task(task)
+                    if not backend:
+                        continue
                     task.status = TaskStatus.RUNNING
                     task.started_at = datetime.utcnow()
                     self.update_task(task)

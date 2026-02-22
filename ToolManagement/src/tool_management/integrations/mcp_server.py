@@ -436,6 +436,20 @@ class MCPServer:
                             "type": "string",
                             "description": "Idempotency key for write operations to prevent duplicate side effects"
                         },
+                        "priority": {
+                            "type": "string",
+                            "description": "Queue priority: p0|p1|p2|p3 (or critical|high|normal|background)",
+                            "default": "p1"
+                        },
+                        "dedupe_window_seconds": {
+                            "type": "integer",
+                            "description": "Deduplicate identical requests in this window",
+                            "default": 60
+                        },
+                        "dedupe_key": {
+                            "type": "string",
+                            "description": "Optional explicit dedupe key"
+                        },
                         "max_output_chars": {
                             "type": "integer",
                             "description": "Maximum output size in characters (default 32000). Outputs exceeding this are truncated.",
@@ -469,7 +483,10 @@ class MCPServer:
                                         "enum": ["auto", "sync", "stream", "job"],
                                         "default": "auto"
                                     },
-                                    "idempotency_key": {"type": "string"}
+                                    "idempotency_key": {"type": "string"},
+                                    "priority": {"type": "string", "default": "p1"},
+                                    "dedupe_window_seconds": {"type": "integer", "default": 60},
+                                    "dedupe_key": {"type": "string"}
                                 }
                             },
                             "description": "Tool calls to execute"
@@ -646,6 +663,20 @@ class MCPServer:
                             "type": "number",
                             "description": "Max execution time in seconds",
                             "default": 300
+                        },
+                        "priority": {
+                            "type": "string",
+                            "description": "Queue priority tier",
+                            "default": "p1"
+                        },
+                        "dedupe_window_seconds": {
+                            "type": "integer",
+                            "description": "Deduplicate identical requests in this window",
+                            "default": 60
+                        },
+                        "dedupe_key": {
+                            "type": "string",
+                            "description": "Optional explicit dedupe key"
                         }
                     },
                     "required": ["tool_name", "arguments"]
@@ -894,6 +925,9 @@ class MCPServer:
                 timeout_ms = int(tool_args.get("timeout_ms", 30000))
                 sync_timeout_ms = int(tool_args.get("sync_timeout_ms", 5000))
                 idempotency_key = tool_args.get("idempotency_key")
+                priority = tool_args.get("priority", "p1")
+                dedupe_window_seconds = int(tool_args.get("dedupe_window_seconds", 60))
+                dedupe_key = tool_args.get("dedupe_key")
                 early_stop = tool_args.get("early_stop")
 
                 # Per-call output limits forwarded to job executor
@@ -918,6 +952,9 @@ class MCPServer:
                         "timeout_ms": timeout_ms,
                         "sync_timeout_ms": sync_timeout_ms,
                         "idempotency_key": idempotency_key,
+                        "priority": priority,
+                        "dedupe_window_seconds": dedupe_window_seconds,
+                        "dedupe_key": dedupe_key,
                         "early_stop": early_stop,
                     },
                 )
@@ -943,6 +980,8 @@ class MCPServer:
                                         ),
                                         "poll_url": exec_data.get("poll_url"),
                                         "stream_url": exec_data.get("stream_url"),
+                                        "deduplicated": exec_data.get("deduplicated", False),
+                                        "priority": exec_data.get("priority"),
                                     }, indent=2)
                                 }
                             ],
@@ -960,6 +999,8 @@ class MCPServer:
                                     "result": exec_data.get("result"),
                                     "latency_ms": exec_data.get("latency_ms"),
                                     "idempotent_replay": exec_data.get("idempotent_replay", False),
+                                    "deduplicated": exec_data.get("deduplicated", False),
+                                    "priority": exec_data.get("priority"),
                                 }, indent=2)
                             }
                         ],
@@ -1443,12 +1484,18 @@ class MCPServer:
                 target_tool = tool_args.get("tool_name") or tool_args.get("tool")
                 arguments = tool_args.get("arguments", {})
                 timeout = tool_args.get("timeout", 300)
+                priority = tool_args.get("priority", "p1")
+                dedupe_window_seconds = int(tool_args.get("dedupe_window_seconds", 60))
+                dedupe_key = tool_args.get("dedupe_key")
                 response = await client.post(
                     f"{API_BASE_URL}/api/v1/jobs/submit",
                     json={
                         "tool": target_tool,
                         "arguments": arguments,
                         "timeout": timeout,
+                        "priority": priority,
+                        "dedupe_window_seconds": dedupe_window_seconds,
+                        "dedupe_key": dedupe_key,
                     },
                     timeout=10.0,
                 )

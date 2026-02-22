@@ -52,6 +52,17 @@ class ExecuteRequest(BaseModel):
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
+    priority: Optional[str] = Field(
+        default="p1",
+        description="Queue priority: p0|p1|p2|p3 (or critical|high|normal|background)",
+    )
+    dedupe_window_seconds: int = Field(
+        default=60,
+        ge=0,
+        le=3600,
+        description="Deduplicate identical job requests in this window",
+    )
+    dedupe_key: Optional[str] = None
     detach: bool = False
     client_id: Optional[str] = None
 
@@ -68,6 +79,8 @@ class ExecuteResponse(BaseModel):
     poll_url: Optional[str] = None
     stream_url: Optional[str] = None
     idempotent_replay: bool = False
+    deduplicated: bool = False
+    priority: Optional[int] = None
 
 
 class BatchCall(BaseModel):
@@ -78,6 +91,9 @@ class BatchCall(BaseModel):
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
+    priority: Optional[str] = "p1"
+    dedupe_window_seconds: int = Field(default=60, ge=0, le=3600)
+    dedupe_key: Optional[str] = None
     stream: bool = False
 
 
@@ -183,6 +199,9 @@ async def _submit_job(
     tool_name: str,
     arguments: Dict[str, Any],
     timeout_ms: int,
+    priority: Optional[str] = None,
+    dedupe_window_seconds: int = 0,
+    dedupe_key: Optional[str] = None,
     client_id: Optional[str] = None,
 ):
     try:
@@ -194,6 +213,9 @@ async def _submit_job(
         tool_name=tool_name,
         inputs={**arguments, "_timeout": timeout_ms / 1000.0},
         client_id=client_id,
+        priority=priority,
+        dedupe_window_seconds=dedupe_window_seconds,
+        dedupe_key=dedupe_key,
     )
     return execution
 
@@ -374,12 +396,17 @@ async def execute(request: ExecuteRequest):
         requested_mode = "stream"
 
     if requested_mode == "stream":
+        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
             timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
             client_id=request.client_id,
         )
+        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         if request.detach:
             executor = get_streaming_executor()
             await executor.detach_execution(execution.execution_id)
@@ -389,6 +416,8 @@ async def execute(request: ExecuteRequest):
                 execution_mode="job",
                 call_id=execution.execution_id,
                 job_id=execution.execution_id,
+                deduplicated=deduplicated,
+                priority=execution.queue_priority,
                 poll_url=f"/api/v1/jobs/{execution.execution_id}",
                 stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
             )
@@ -404,18 +433,25 @@ async def execute(request: ExecuteRequest):
         )
 
     if requested_mode == "job":
+        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
             timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
             client_id=request.client_id,
         )
+        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
             tool=tool_name,
             execution_mode="job",
             call_id=execution.execution_id,
             job_id=execution.execution_id,
+            deduplicated=deduplicated,
+            priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
         )
@@ -432,18 +468,25 @@ async def execute(request: ExecuteRequest):
     # auto mode: choose from measured latency class, then attempt sync with timeout escalation.
     latency_class = _latency_class_for_tool(tool_name)
     if latency_class == "slow":
+        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
             timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
             client_id=request.client_id,
         )
+        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
             tool=tool_name,
             execution_mode="job",
             call_id=execution.execution_id,
             job_id=execution.execution_id,
+            deduplicated=deduplicated,
+            priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
         )
@@ -460,18 +503,25 @@ async def execute(request: ExecuteRequest):
         )
         return _to_collected_response(tool_name, "sync", result)
     except asyncio.TimeoutError:
+        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
             timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
             client_id=request.client_id,
         )
+        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
             tool=tool_name,
             execution_mode="job",
             call_id=execution.execution_id,
             job_id=execution.execution_id,
+            deduplicated=deduplicated,
+            priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
             error=_structured_error(
@@ -520,9 +570,10 @@ async def control_call(call_id: str, request: ControlRequest):
 
     if action == "priority":
         level = request.level or "normal"
+        reprioritized = executor.reprioritize_execution(call_id, level)
         executor.update_control_state(call_id, {"priority": level})
         await executor.emit_signal(call_id, "priority_updated", {"level": level})
-        return {"call_id": call_id, "action": action, "accepted": True, "level": level}
+        return {"call_id": call_id, "action": action, "accepted": reprioritized, "level": level}
 
     if action == "narrow":
         filter_payload = request.filter or {}
@@ -554,6 +605,9 @@ async def execute_batch(request: BatchExecuteRequest):
                         timeout_ms=call.timeout_ms,
                         sync_timeout_ms=call.sync_timeout_ms,
                         idempotency_key=call.idempotency_key,
+                        priority=call.priority,
+                        dedupe_window_seconds=call.dedupe_window_seconds,
+                        dedupe_key=call.dedupe_key,
                     )
                 )
             )
@@ -596,6 +650,9 @@ async def execute_batch(request: BatchExecuteRequest):
                         timeout_ms=call.timeout_ms,
                         sync_timeout_ms=call.sync_timeout_ms,
                         idempotency_key=call.idempotency_key,
+                        priority=call.priority,
+                        dedupe_window_seconds=call.dedupe_window_seconds,
+                        dedupe_key=call.dedupe_key,
                     )
                 )
                 if isinstance(raw, ExecuteResponse):
