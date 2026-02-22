@@ -208,6 +208,59 @@ class ExecutionStore:
                     FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS execution_policy_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_id TEXT UNIQUE NOT NULL,
+                    execution_id TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    tool_name TEXT,
+                    requested_mode TEXT,
+                    selected_mode TEXT,
+                    backend_id TEXT,
+                    latency_class TEXT,
+                    confidence REAL DEFAULT 0.0,
+                    latency_budget_ms REAL,
+                    cost_budget REAL,
+                    reliability_target REAL,
+                    scores_json TEXT,
+                    reasons_json TEXT,
+                    constraints_json TEXT,
+                    model_version TEXT,
+                    created_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS workflow_gate_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    execution_id TEXT NOT NULL,
+                    step_key TEXT,
+                    gate_type TEXT NOT NULL,
+                    gate_action TEXT NOT NULL,
+                    actor TEXT,
+                    status TEXT,
+                    reason TEXT,
+                    payload_json TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    created_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recommendation_id TEXT NOT NULL,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    context_json TEXT,
+                    recommendation_json TEXT,
+                    chosen_tool TEXT,
+                    accepted INTEGER DEFAULT 0,
+                    outcome_status TEXT,
+                    latency_ms REAL,
+                    error TEXT,
+                    metadata_json TEXT,
+                    created_at REAL NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_kind ON workflow_executions(workflow_kind);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_updated ON workflow_executions(updated_at DESC);
@@ -228,6 +281,14 @@ class ExecutionStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_execution ON workflow_side_effects(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_trace ON workflow_side_effects(trace_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_created ON workflow_side_effects(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_policy_decisions_tool ON execution_policy_decisions(tool_name);
+                CREATE INDEX IF NOT EXISTS idx_policy_decisions_trace ON execution_policy_decisions(trace_id);
+                CREATE INDEX IF NOT EXISTS idx_policy_decisions_created ON execution_policy_decisions(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workflow_gate_execution ON workflow_gate_decisions(execution_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_gate_trace ON workflow_gate_decisions(trace_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_gate_created ON workflow_gate_decisions(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_id ON recommendation_feedback(recommendation_id);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_created ON recommendation_feedback(created_at DESC);
                 """
             )
 
@@ -276,6 +337,7 @@ class ExecutionStore:
         # All migrations must be idempotent and safe to run multiple times.
         migrations = [
             ("2026_02_22_side_effect_journal", self._migration_side_effect_journal),
+            ("2026_02_22_policy_decisions_and_gates", self._migration_policy_decisions_and_gates),
         ]
         for migration_name, migration_fn in migrations:
             if self._migration_applied(conn, migration_name):
@@ -315,6 +377,73 @@ class ExecutionStore:
             CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_execution ON workflow_side_effects(execution_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_trace ON workflow_side_effects(trace_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_created ON workflow_side_effects(created_at DESC);
+            """
+        )
+
+    def _migration_policy_decisions_and_gates(self, conn: sqlite3.Connection):
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS execution_policy_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id TEXT UNIQUE NOT NULL,
+                execution_id TEXT,
+                trace_id TEXT,
+                session_id TEXT,
+                tool_name TEXT,
+                requested_mode TEXT,
+                selected_mode TEXT,
+                backend_id TEXT,
+                latency_class TEXT,
+                confidence REAL DEFAULT 0.0,
+                latency_budget_ms REAL,
+                cost_budget REAL,
+                reliability_target REAL,
+                scores_json TEXT,
+                reasons_json TEXT,
+                constraints_json TEXT,
+                model_version TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_gate_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                execution_id TEXT NOT NULL,
+                step_key TEXT,
+                gate_type TEXT NOT NULL,
+                gate_action TEXT NOT NULL,
+                actor TEXT,
+                status TEXT,
+                reason TEXT,
+                payload_json TEXT,
+                trace_id TEXT,
+                session_id TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recommendation_id TEXT NOT NULL,
+                trace_id TEXT,
+                session_id TEXT,
+                context_json TEXT,
+                recommendation_json TEXT,
+                chosen_tool TEXT,
+                accepted INTEGER DEFAULT 0,
+                outcome_status TEXT,
+                latency_ms REAL,
+                error TEXT,
+                metadata_json TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_policy_decisions_tool ON execution_policy_decisions(tool_name);
+            CREATE INDEX IF NOT EXISTS idx_policy_decisions_trace ON execution_policy_decisions(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_policy_decisions_created ON execution_policy_decisions(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_workflow_gate_execution ON workflow_gate_decisions(execution_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_gate_trace ON workflow_gate_decisions(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_gate_created ON workflow_gate_decisions(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_id ON recommendation_feedback(recommendation_id);
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_created ON recommendation_feedback(created_at DESC);
             """
         )
 
@@ -1721,6 +1850,347 @@ class ExecutionStore:
             "edges": edges,
         }
 
+    def append_policy_decision(
+        self,
+        *,
+        decision_id: str,
+        execution_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        requested_mode: Optional[str] = None,
+        selected_mode: Optional[str] = None,
+        backend_id: Optional[str] = None,
+        latency_class: Optional[str] = None,
+        confidence: float = 0.0,
+        latency_budget_ms: Optional[float] = None,
+        cost_budget: Optional[float] = None,
+        reliability_target: Optional[float] = None,
+        scores: Optional[Dict[str, Any]] = None,
+        reasons: Optional[List[Any]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        model_version: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        ts = created_at if created_at is not None else time.time()
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO execution_policy_decisions (
+                        decision_id, execution_id, trace_id, session_id, tool_name,
+                        requested_mode, selected_mode, backend_id, latency_class,
+                        confidence, latency_budget_ms, cost_budget, reliability_target,
+                        scores_json, reasons_json, constraints_json, model_version, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(decision_id) DO UPDATE SET
+                        execution_id = COALESCE(excluded.execution_id, execution_policy_decisions.execution_id),
+                        trace_id = COALESCE(excluded.trace_id, execution_policy_decisions.trace_id),
+                        session_id = COALESCE(excluded.session_id, execution_policy_decisions.session_id),
+                        tool_name = COALESCE(excluded.tool_name, execution_policy_decisions.tool_name),
+                        requested_mode = COALESCE(excluded.requested_mode, execution_policy_decisions.requested_mode),
+                        selected_mode = COALESCE(excluded.selected_mode, execution_policy_decisions.selected_mode),
+                        backend_id = COALESCE(excluded.backend_id, execution_policy_decisions.backend_id),
+                        latency_class = COALESCE(excluded.latency_class, execution_policy_decisions.latency_class),
+                        confidence = COALESCE(excluded.confidence, execution_policy_decisions.confidence),
+                        latency_budget_ms = COALESCE(excluded.latency_budget_ms, execution_policy_decisions.latency_budget_ms),
+                        cost_budget = COALESCE(excluded.cost_budget, execution_policy_decisions.cost_budget),
+                        reliability_target = COALESCE(excluded.reliability_target, execution_policy_decisions.reliability_target),
+                        scores_json = COALESCE(excluded.scores_json, execution_policy_decisions.scores_json),
+                        reasons_json = COALESCE(excluded.reasons_json, execution_policy_decisions.reasons_json),
+                        constraints_json = COALESCE(excluded.constraints_json, execution_policy_decisions.constraints_json),
+                        model_version = COALESCE(excluded.model_version, execution_policy_decisions.model_version)
+                    """,
+                    (
+                        decision_id,
+                        execution_id,
+                        trace_id,
+                        session_id,
+                        tool_name,
+                        requested_mode,
+                        selected_mode,
+                        backend_id,
+                        latency_class,
+                        float(confidence or 0.0),
+                        latency_budget_ms,
+                        cost_budget,
+                        reliability_target,
+                        json.dumps(scores or {}, default=str),
+                        json.dumps(reasons or [], default=str),
+                        json.dumps(constraints or {}, default=str),
+                        model_version,
+                        ts,
+                    ),
+                )
+        return {
+            "decision_id": decision_id,
+            "execution_id": execution_id,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "tool_name": tool_name,
+            "requested_mode": requested_mode,
+            "selected_mode": selected_mode,
+            "backend_id": backend_id,
+            "latency_class": latency_class,
+            "confidence": float(confidence or 0.0),
+            "created_at": ts,
+        }
+
+    def update_policy_decision_execution_id(self, decision_id: str, execution_id: str) -> bool:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE execution_policy_decisions
+                    SET execution_id = ?
+                    WHERE decision_id = ?
+                    """,
+                    (execution_id, decision_id),
+                )
+                row = conn.execute(
+                    "SELECT 1 FROM execution_policy_decisions WHERE decision_id = ? LIMIT 1",
+                    (decision_id,),
+                ).fetchone()
+        return bool(row)
+
+    def list_policy_decisions(
+        self,
+        *,
+        hours: int = 24,
+        tool_name: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        since_ts = time.time() - max(1, int(hours)) * 3600
+        query = "SELECT * FROM execution_policy_decisions WHERE created_at >= ?"
+        params: List[Any] = [since_ts]
+        if tool_name:
+            query += " AND tool_name = ?"
+            params.append(tool_name)
+        if trace_id:
+            query += " AND trace_id = ?"
+            params.append(trace_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        decisions: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["scores"] = self._safe_json_loads(data.get("scores_json"), {})
+            data["reasons"] = self._safe_json_loads(data.get("reasons_json"), [])
+            data["constraints"] = self._safe_json_loads(data.get("constraints_json"), {})
+            decisions.append(data)
+        return decisions
+
+    def append_workflow_gate_decision(
+        self,
+        *,
+        execution_id: str,
+        gate_type: str,
+        gate_action: str,
+        step_key: Optional[str] = None,
+        actor: Optional[str] = None,
+        status: Optional[str] = None,
+        reason: Optional[str] = None,
+        payload: Any = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        ts = created_at if created_at is not None else time.time()
+        payload_json = json.dumps(payload, default=str) if payload is not None else None
+
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO workflow_gate_decisions (
+                        execution_id, step_key, gate_type, gate_action, actor, status,
+                        reason, payload_json, trace_id, session_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        execution_id,
+                        step_key,
+                        gate_type,
+                        gate_action,
+                        actor,
+                        status,
+                        reason,
+                        payload_json,
+                        trace_id,
+                        session_id,
+                        ts,
+                    ),
+                )
+
+        return {
+            "execution_id": execution_id,
+            "step_key": step_key,
+            "gate_type": gate_type,
+            "gate_action": gate_action,
+            "actor": actor,
+            "status": status,
+            "reason": reason,
+            "payload": payload,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "created_at": ts,
+        }
+
+    def list_workflow_gate_decisions(
+        self,
+        *,
+        execution_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM workflow_gate_decisions"
+        clauses: List[str] = []
+        params: List[Any] = []
+        if execution_id:
+            clauses.append("execution_id = ?")
+            params.append(execution_id)
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        decisions: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = self._safe_json_loads(data.get("payload_json"), None)
+            decisions.append(data)
+        return decisions
+
+    def append_recommendation_feedback(
+        self,
+        *,
+        recommendation_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        recommendation: Optional[Dict[str, Any]] = None,
+        chosen_tool: Optional[str] = None,
+        accepted: bool = False,
+        outcome_status: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        ts = created_at if created_at is not None else time.time()
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO recommendation_feedback (
+                        recommendation_id, trace_id, session_id, context_json, recommendation_json,
+                        chosen_tool, accepted, outcome_status, latency_ms, error, metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        recommendation_id,
+                        trace_id,
+                        session_id,
+                        json.dumps(context or {}, default=str),
+                        json.dumps(recommendation or {}, default=str),
+                        chosen_tool,
+                        1 if accepted else 0,
+                        outcome_status,
+                        latency_ms,
+                        error,
+                        json.dumps(metadata or {}, default=str),
+                        ts,
+                    ),
+                )
+        return {
+            "recommendation_id": recommendation_id,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "chosen_tool": chosen_tool,
+            "accepted": bool(accepted),
+            "outcome_status": outcome_status,
+            "latency_ms": latency_ms,
+            "error": error,
+            "created_at": ts,
+        }
+
+    def get_recommendation_feedback_analytics(self, *, hours: int = 24, limit: int = 25) -> Dict[str, Any]:
+        since_ts = time.time() - max(1, int(hours)) * 3600
+        with self._conn() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) AS accepted,
+                    SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END) AS rejected,
+                    AVG(latency_ms) AS avg_latency_ms
+                FROM recommendation_feedback
+                WHERE created_at >= ?
+                """,
+                (since_ts,),
+            ).fetchone()
+            top_tools = conn.execute(
+                """
+                SELECT chosen_tool, COUNT(*) AS uses
+                FROM recommendation_feedback
+                WHERE created_at >= ? AND chosen_tool IS NOT NULL AND chosen_tool != ''
+                GROUP BY chosen_tool
+                ORDER BY uses DESC
+                LIMIT ?
+                """,
+                (since_ts, max(1, int(limit))),
+            ).fetchall()
+            status_rows = conn.execute(
+                """
+                SELECT COALESCE(outcome_status, 'unknown') AS outcome_status, COUNT(*) AS count
+                FROM recommendation_feedback
+                WHERE created_at >= ?
+                GROUP BY outcome_status
+                ORDER BY count DESC
+                """,
+                (since_ts,),
+            ).fetchall()
+
+        total = int(totals["total"] if totals and totals["total"] is not None else 0)
+        accepted = int(totals["accepted"] if totals and totals["accepted"] is not None else 0)
+        rejected = int(totals["rejected"] if totals and totals["rejected"] is not None else 0)
+        return {
+            "window_hours": max(1, int(hours)),
+            "totals": {
+                "feedback": total,
+                "accepted": accepted,
+                "rejected": rejected,
+                "acceptance_rate": (float(accepted) / total) if total else 0.0,
+                "avg_latency_ms": float(totals["avg_latency_ms"] or 0.0) if totals else 0.0,
+            },
+            "top_chosen_tools": [
+                {"tool_name": row["chosen_tool"], "uses": int(row["uses"])}
+                for row in top_tools
+            ],
+            "outcome_status": {
+                row["outcome_status"]: int(row["count"])
+                for row in status_rows
+            },
+        }
+
     def get_storage_stats(self) -> Dict[str, Any]:
         with self._conn() as conn:
             table_counts = {}
@@ -1733,6 +2203,9 @@ class ExecutionStore:
                 "workflow_artifacts",
                 "workflow_side_effects",
                 "workflow_definitions",
+                "execution_policy_decisions",
+                "workflow_gate_decisions",
+                "recommendation_feedback",
             ]
             for table in tables:
                 row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()

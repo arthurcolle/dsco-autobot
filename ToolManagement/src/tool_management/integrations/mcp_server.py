@@ -432,6 +432,19 @@ class MCPServer:
                             "description": "Auto-mode sync attempt budget before escalation to job",
                             "default": 5000
                         },
+                        "policy_constraints": {
+                            "type": "object",
+                            "description": "Optional constraints for adaptive execution policy selection.",
+                            "properties": {
+                                "latency_budget_ms": {"type": "number"},
+                                "cost_budget": {"type": "number"},
+                                "reliability_target": {"type": "number"},
+                                "prefer_streaming": {"type": "boolean"},
+                                "allow_sync": {"type": "boolean"},
+                                "allow_stream": {"type": "boolean"},
+                                "allow_job": {"type": "boolean"}
+                            }
+                        },
                         "idempotency_key": {
                             "type": "string",
                             "description": "Idempotency key for write operations to prevent duplicate side effects"
@@ -808,6 +821,112 @@ class MCPServer:
                 }
             },
             {
+                "name": "get_execution_policy_decisions",
+                "description": "List durable execution policy decisions (selected mode, confidence, constraints, reasons).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "tool_name": {"type": "string"},
+                        "trace_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 200}
+                    }
+                }
+            },
+            {
+                "name": "get_execution_policy_analytics",
+                "description": "Summarize policy decision mode mix, confidence, and top tools.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "limit": {"type": "integer", "default": 500}
+                    }
+                }
+            },
+            {
+                "name": "recommend_tools",
+                "description": "Recommend tools for a task with transparent scoring and execution-mode hints.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "intent": {"type": "string", "description": "query|store|publish|analyze|manage"},
+                        "backend_id": {"type": "string"},
+                        "category": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "max_latency_ms": {"type": "number"},
+                        "require_streaming": {"type": "boolean", "default": False},
+                        "include_dependencies": {"type": "boolean", "default": True},
+                        "limit": {"type": "integer", "default": 8}
+                    }
+                }
+            },
+            {
+                "name": "record_recommendation_feedback",
+                "description": "Persist recommendation acceptance/rejection feedback and downstream outcome data.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "recommendation_id": {"type": "string"},
+                        "chosen_tool": {"type": "string"},
+                        "accepted": {"type": "boolean", "default": False},
+                        "outcome_status": {"type": "string"},
+                        "latency_ms": {"type": "number"},
+                        "error": {"type": "string"},
+                        "context": {"type": "object"},
+                        "recommendation": {"type": "object"},
+                        "metadata": {"type": "object"},
+                        "trace_id": {"type": "string"},
+                        "session_id": {"type": "string"}
+                    },
+                    "required": ["recommendation_id"]
+                }
+            },
+            {
+                "name": "get_recommendation_feedback_analytics",
+                "description": "Get recommendation feedback analytics (acceptance rate, top chosen tools, outcome statuses).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "limit": {"type": "integer", "default": 25}
+                    }
+                }
+            },
+            {
+                "name": "record_workflow_gate_decision",
+                "description": "Record a workflow gate decision (proceed/skip/abort/fork/rewind) for a workflow execution.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "execution_id": {"type": "string"},
+                        "step_key": {"type": "string"},
+                        "gate_type": {"type": "string", "default": "agent_approval"},
+                        "action": {"type": "string", "default": "proceed"},
+                        "actor": {"type": "string", "default": "agent"},
+                        "status": {"type": "string", "default": "accepted"},
+                        "reason": {"type": "string"},
+                        "payload": {"type": "object"},
+                        "trace_id": {"type": "string"},
+                        "session_id": {"type": "string"}
+                    },
+                    "required": ["execution_id"]
+                }
+            },
+            {
+                "name": "list_workflow_gate_decisions",
+                "description": "List workflow gate decisions for one execution or an entire trace.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "execution_id": {"type": "string"},
+                        "trace_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 500}
+                    }
+                }
+            },
+            {
                 "name": "export_tool_catalog",
                 "description": "Export tool catalog artifacts for clients. format=mcp|openapi|schemas.",
                 "inputSchema": {
@@ -1037,6 +1156,7 @@ class MCPServer:
                 timeout_ms = int(tool_args.get("timeout_ms", 30000))
                 sync_timeout_ms = int(tool_args.get("sync_timeout_ms", 5000))
                 idempotency_key = tool_args.get("idempotency_key")
+                policy_constraints = tool_args.get("policy_constraints")
                 priority = tool_args.get("priority", "p1")
                 dedupe_window_seconds = int(tool_args.get("dedupe_window_seconds", 60))
                 dedupe_key = tool_args.get("dedupe_key")
@@ -1063,6 +1183,7 @@ class MCPServer:
                         "stream": False,
                         "timeout_ms": timeout_ms,
                         "sync_timeout_ms": sync_timeout_ms,
+                        "policy_constraints": policy_constraints,
                         "idempotency_key": idempotency_key,
                         "priority": priority,
                         "dedupe_window_seconds": dedupe_window_seconds,
@@ -1094,6 +1215,7 @@ class MCPServer:
                                         "stream_url": exec_data.get("stream_url"),
                                         "deduplicated": exec_data.get("deduplicated", False),
                                         "priority": exec_data.get("priority"),
+                                        "policy_decision": exec_data.get("policy_decision"),
                                     }, indent=2)
                                 }
                             ],
@@ -1113,6 +1235,7 @@ class MCPServer:
                                     "idempotent_replay": exec_data.get("idempotent_replay", False),
                                     "deduplicated": exec_data.get("deduplicated", False),
                                     "priority": exec_data.get("priority"),
+                                    "policy_decision": exec_data.get("policy_decision"),
                                 }, indent=2)
                             }
                         ],
@@ -2011,6 +2134,275 @@ class MCPServer:
                     "isError": True,
                 }
 
+        elif tool_name == "get_execution_policy_decisions":
+            try:
+                client = get_http_client()
+                params = {
+                    "hours": int(tool_args.get("hours", 24)),
+                    "limit": int(tool_args.get("limit", 200)),
+                }
+                if tool_args.get("tool_name"):
+                    params["tool_name"] = str(tool_args.get("tool_name"))
+                if tool_args.get("trace_id"):
+                    params["trace_id"] = str(tool_args.get("trace_id"))
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/policy-decisions",
+                    params=params,
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_policy_decisions failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_policy_decisions failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_execution_policy_analytics":
+            try:
+                client = get_http_client()
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/policy-decisions/analytics",
+                    params={
+                        "hours": int(tool_args.get("hours", 24)),
+                        "limit": int(tool_args.get("limit", 500)),
+                    },
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_policy_analytics failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_policy_analytics failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "recommend_tools":
+            try:
+                client = get_http_client()
+                payload = {
+                    "query": tool_args.get("query"),
+                    "intent": tool_args.get("intent"),
+                    "backend_id": tool_args.get("backend_id"),
+                    "category": tool_args.get("category"),
+                    "tags": tool_args.get("tags", []),
+                    "max_latency_ms": tool_args.get("max_latency_ms"),
+                    "require_streaming": bool(tool_args.get("require_streaming", False)),
+                    "include_dependencies": bool(tool_args.get("include_dependencies", True)),
+                    "limit": int(tool_args.get("limit", 8)),
+                    "trace_id": tool_args.get("trace_id"),
+                    "session_id": tool_args.get("session_id"),
+                }
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/tools/recommendations",
+                    json=payload,
+                    timeout=15.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"recommend_tools failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"recommend_tools failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "record_recommendation_feedback":
+            try:
+                client = get_http_client()
+                payload = {
+                    "recommendation_id": tool_args.get("recommendation_id"),
+                    "context": tool_args.get("context", {}),
+                    "recommendation": tool_args.get("recommendation", {}),
+                    "chosen_tool": tool_args.get("chosen_tool"),
+                    "accepted": bool(tool_args.get("accepted", False)),
+                    "outcome_status": tool_args.get("outcome_status"),
+                    "latency_ms": tool_args.get("latency_ms"),
+                    "error": tool_args.get("error"),
+                    "metadata": tool_args.get("metadata", {}),
+                    "trace_id": tool_args.get("trace_id"),
+                    "session_id": tool_args.get("session_id"),
+                }
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/tools/recommendations/feedback",
+                    json=payload,
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"record_recommendation_feedback failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"record_recommendation_feedback failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_recommendation_feedback_analytics":
+            try:
+                client = get_http_client()
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/recommendations/analytics",
+                    params={
+                        "hours": int(tool_args.get("hours", 24)),
+                        "limit": int(tool_args.get("limit", 25)),
+                    },
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_recommendation_feedback_analytics failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_recommendation_feedback_analytics failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "record_workflow_gate_decision":
+            try:
+                execution_id = tool_args.get("execution_id")
+                if not execution_id:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({"error": "execution_id is required"})}],
+                        "isError": True,
+                    }
+                client = get_http_client()
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/compose/executions/{execution_id}/gates",
+                    json={
+                        "step_key": tool_args.get("step_key"),
+                        "gate_type": tool_args.get("gate_type", "agent_approval"),
+                        "action": tool_args.get("action", "proceed"),
+                        "actor": tool_args.get("actor", "agent"),
+                        "status": tool_args.get("status", "accepted"),
+                        "reason": tool_args.get("reason"),
+                        "payload": tool_args.get("payload", {}),
+                        "trace_id": tool_args.get("trace_id"),
+                        "session_id": tool_args.get("session_id"),
+                    },
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"record_workflow_gate_decision failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"record_workflow_gate_decision failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "list_workflow_gate_decisions":
+            try:
+                client = get_http_client()
+                execution_id = tool_args.get("execution_id")
+                trace_id = tool_args.get("trace_id")
+                limit = int(tool_args.get("limit", 500))
+                if execution_id:
+                    response = await client.get(
+                        f"{API_BASE_URL}/api/v1/compose/executions/{execution_id}/gates",
+                        params={"limit": limit},
+                        timeout=10.0,
+                    )
+                elif trace_id:
+                    response = await client.get(
+                        f"{API_BASE_URL}/api/v1/compose/traces/{trace_id}/gates",
+                        params={"limit": limit},
+                        timeout=10.0,
+                    )
+                else:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({
+                            "error": "execution_id or trace_id is required"
+                        })}],
+                        "isError": True,
+                    }
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"list_workflow_gate_decisions failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"list_workflow_gate_decisions failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
         elif tool_name == "export_tool_catalog":
             try:
                 client = get_http_client()
@@ -2074,6 +2466,13 @@ class MCPServer:
                             "get_tool_usage_timeseries",
                             "get_tool_dependencies",
                             "infer_tool_dependencies",
+                            "get_execution_policy_decisions",
+                            "get_execution_policy_analytics",
+                            "recommend_tools",
+                            "record_recommendation_feedback",
+                            "get_recommendation_feedback_analytics",
+                            "record_workflow_gate_decision",
+                            "list_workflow_gate_decisions",
                             "export_tool_catalog",
                         ]
                     }, indent=2)

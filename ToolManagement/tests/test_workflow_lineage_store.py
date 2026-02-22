@@ -440,3 +440,75 @@ def test_payload_governance_truncates_large_artifacts_and_side_effects(tmp_path,
     assert run["artifacts"][0]["metadata"]["truncated"] is True
     assert run["side_effects"][0]["request"]["_truncated"] is True
     assert run["side_effects"][0]["response"]["_truncated"] is True
+
+
+def test_policy_gate_and_recommendation_feedback_storage(tmp_path):
+    store = ExecutionStore(db_path=str(tmp_path / "policy_gate_feedback.db"))
+    now = time.time()
+
+    # Policy decision lifecycle
+    store.append_policy_decision(
+        decision_id="pd_1",
+        tool_name="search",
+        requested_mode="auto",
+        selected_mode="sync",
+        backend_id="distributed-search-mcp",
+        latency_class="fast",
+        confidence=0.84,
+        scores={"sync": 2.1, "stream": 1.0, "job": -0.2},
+        reasons=["latency_class_fast_prefers_sync"],
+        constraints={"allow_sync": True, "allow_stream": True, "allow_job": True},
+        created_at=now,
+    )
+    linked = store.update_policy_decision_execution_id("pd_1", "exec_policy_1")
+    assert linked is True
+
+    decisions = store.list_policy_decisions(hours=24, limit=10)
+    assert len(decisions) == 1
+    assert decisions[0]["decision_id"] == "pd_1"
+    assert decisions[0]["execution_id"] == "exec_policy_1"
+    assert decisions[0]["scores"]["sync"] > decisions[0]["scores"]["job"]
+
+    # Workflow gate decisions
+    gate = store.append_workflow_gate_decision(
+        execution_id="exec_policy_1",
+        step_key="s1",
+        gate_type="agent_approval",
+        gate_action="proceed",
+        actor="agent",
+        status="accepted",
+        reason="enough evidence",
+        payload={"confidence": 0.91},
+        trace_id="tr_policy_1",
+        session_id="sess_policy_1",
+        created_at=now,
+    )
+    assert gate["gate_action"] == "proceed"
+
+    gates = store.list_workflow_gate_decisions(execution_id="exec_policy_1", limit=10)
+    assert len(gates) == 1
+    assert gates[0]["payload"]["confidence"] == 0.91
+
+    # Recommendation feedback + analytics
+    store.append_recommendation_feedback(
+        recommendation_id="rec_1",
+        context={"task": "weather"},
+        recommendation={"top": "search"},
+        chosen_tool="distributed-search-mcp:search",
+        accepted=True,
+        outcome_status="completed",
+        latency_ms=880.0,
+        metadata={"source": "test"},
+        trace_id="tr_policy_1",
+        session_id="sess_policy_1",
+        created_at=now,
+    )
+    feedback_analytics = store.get_recommendation_feedback_analytics(hours=24)
+    assert feedback_analytics["totals"]["feedback"] == 1
+    assert feedback_analytics["totals"]["accepted"] == 1
+    assert feedback_analytics["top_chosen_tools"][0]["tool_name"] == "distributed-search-mcp:search"
+
+    storage = store.get_storage_stats()
+    assert storage["table_counts"]["execution_policy_decisions"] == 1
+    assert storage["table_counts"]["workflow_gate_decisions"] == 1
+    assert storage["table_counts"]["recommendation_feedback"] == 1

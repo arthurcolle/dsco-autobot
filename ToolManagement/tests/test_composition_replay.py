@@ -241,3 +241,51 @@ def test_replay_allow_executes_and_records_side_effects(tmp_path, monkeypatch):
     )
     assert replay_execution is not None
     assert len(replay_execution["side_effects"]) >= 1
+
+
+def test_workflow_gate_decisions_are_recorded_and_listed(tmp_path, monkeypatch):
+    client, _store, _calls = _build_client(tmp_path, monkeypatch)
+
+    workflow = {
+        "id": "wf_gate_1",
+        "name": "wf_gate",
+        "steps": [
+            {"id": "s1", "name": "step_one", "mode": "passthrough", "tool": "echo"},
+            {"id": "s2", "name": "step_two", "mode": "passthrough", "tool": "echo"},
+        ],
+    }
+
+    run = client.post(
+        "/api/v1/compose/execute",
+        json={"workflow": workflow, "inputs": {"input": "hello"}, "trace_id": "tr_gate_1"},
+    )
+    assert run.status_code == 200
+    execution_id = run.json()["execution_id"]
+
+    decision = client.post(
+        f"/api/v1/compose/executions/{execution_id}/gates",
+        json={
+            "step_key": "s1",
+            "gate_type": "agent_approval",
+            "action": "proceed",
+            "actor": "agent",
+            "status": "accepted",
+            "reason": "first result looked sufficient",
+            "payload": {"top_result": "https://example.com"},
+        },
+    )
+    assert decision.status_code == 200
+    decision_payload = decision.json()
+    assert decision_payload["record"]["gate_action"] == "proceed"
+    assert decision_payload["record"]["step_key"] == "s1"
+
+    by_execution = client.get(f"/api/v1/compose/executions/{execution_id}/gates")
+    assert by_execution.status_code == 200
+    by_execution_payload = by_execution.json()
+    assert by_execution_payload["count"] == 1
+    assert by_execution_payload["gates"][0]["gate_type"] == "agent_approval"
+
+    by_trace = client.get("/api/v1/compose/traces/tr_gate_1/gates")
+    assert by_trace.status_code == 200
+    by_trace_payload = by_trace.json()
+    assert by_trace_payload["count"] >= 1

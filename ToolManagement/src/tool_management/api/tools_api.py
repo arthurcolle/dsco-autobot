@@ -152,6 +152,34 @@ class InferDependenciesRequest(BaseModel):
     persist: bool = True
 
 
+class ToolRecommendationRequest(BaseModel):
+    query: Optional[str] = Field(default=None, description="Natural-language objective")
+    intent: Optional[str] = Field(default=None, description="query|store|publish|analyze|manage")
+    backend_id: Optional[str] = None
+    category: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    max_latency_ms: Optional[float] = Field(default=None, ge=0.0)
+    require_streaming: bool = False
+    include_dependencies: bool = True
+    limit: int = Field(default=8, ge=1, le=50)
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class RecommendationFeedbackRequest(BaseModel):
+    recommendation_id: str = Field(..., description="Recommendation request identifier")
+    context: Dict[str, Any] = Field(default_factory=dict)
+    recommendation: Dict[str, Any] = Field(default_factory=dict)
+    chosen_tool: Optional[str] = None
+    accepted: bool = False
+    outcome_status: Optional[str] = Field(default=None, description="completed|failed|cancelled|timeout")
+    latency_ms: Optional[float] = Field(default=None, ge=0.0)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
 # ==================== Tool Execution ====================
 
 async def execute_tool(call: ToolCall) -> ToolResult:
@@ -369,6 +397,54 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             error=str(e),
             latency_ms=(time.time() - start) * 1000
         )
+
+
+_INTENT_HINTS: Dict[str, List[str]] = {
+    "query": ["search", "read", "list", "query", "find", "lookup", "retrieve"],
+    "store": ["store", "save", "record", "memory", "belief", "insert", "upsert"],
+    "publish": ["publish", "event", "draft", "substack", "notify", "webhook"],
+    "analyze": ["analyze", "synthesize", "deep", "summary", "compare", "embed"],
+    "manage": ["register", "sync", "list", "get", "update", "admin", "control"],
+}
+
+
+def _tokenize(text: Optional[str]) -> List[str]:
+    if not text:
+        return []
+    return [token.strip().lower() for token in text.replace("/", " ").replace("_", " ").split() if token.strip()]
+
+
+def _text_relevance_score(query: Optional[str], candidate_text: str) -> float:
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return 0.0
+    lowered = candidate_text.lower()
+    matches = sum(1 for token in query_tokens if token in lowered)
+    return float(matches) / max(1, len(query_tokens))
+
+
+def _intent_score(intent: Optional[str], candidate_text: str) -> float:
+    if not intent:
+        return 0.0
+    normalized = intent.strip().lower()
+    keywords = _INTENT_HINTS.get(normalized, [normalized])
+    lowered = candidate_text.lower()
+    hits = sum(1 for keyword in keywords if keyword in lowered)
+    if not keywords:
+        return 0.0
+    return float(hits) / float(len(keywords))
+
+
+def _execution_mode_hint(avg_latency_ms: float, require_streaming: bool) -> str:
+    if require_streaming:
+        return "stream"
+    if avg_latency_ms <= 0:
+        return "auto"
+    if avg_latency_ms < 2000:
+        return "sync"
+    if avg_latency_ms <= 30000:
+        return "stream"
+    return "job"
 
 
 # ==================== API Endpoints ====================
@@ -752,10 +828,177 @@ async def get_analytics_overview(
             limit=chain_limit,
             min_chain_length=2,
         )
+        response["recommendation_feedback"] = execution_store.get_recommendation_feedback_analytics(hours=hours)
     except Exception as exc:
         response["execution_analytics_error"] = str(exc)
 
     return response
+
+
+@router.post("/recommendations")
+async def recommend_tools(request: ToolRecommendationRequest):
+    """
+    Recommend tools with transparent scoring for MCP and general clients.
+
+    Ranking combines intent relevance, text relevance, reliability, usage, and latency.
+    """
+    store = get_tool_store()
+    candidate_limit = max(50, min(500, request.limit * 20))
+    query_text = (request.query or "").strip()
+    intent = (request.intent or "").strip().lower() or None
+    tags_filter = [tag for tag in request.tags if str(tag).strip()]
+
+    candidates, _total = store.query_tools(
+        search=query_text or None,
+        backend_id=request.backend_id,
+        category=request.category,
+        tags=tags_filter or None,
+        sort_by="call_count",
+        sort_order="desc",
+        limit=candidate_limit,
+        offset=0,
+    )
+
+    scored_rows: List[Dict[str, Any]] = []
+    for row in candidates:
+        name = str(row.get("name") or "")
+        description = str(row.get("description") or "")
+        tool_id = str(row.get("tool_id") or "")
+        call_count = int(row.get("call_count") or 0)
+        error_count = int(row.get("error_count") or 0)
+        avg_latency_ms = float(row.get("avg_latency_ms") or 0.0)
+        error_rate = (float(error_count) / call_count) if call_count else 0.0
+        reliability = 1.0 - error_rate
+
+        searchable_text = f"{name} {description} {tool_id}"
+        score_components = {
+            "text_relevance": _text_relevance_score(query_text, searchable_text),
+            "intent_relevance": _intent_score(intent, searchable_text),
+            "reliability": max(0.0, min(1.0, reliability)),
+            "usage_strength": min(1.0, call_count / 100.0),
+            "latency_fit": 1.0 if avg_latency_ms <= 0 else max(0.0, min(1.0, 1.0 - (avg_latency_ms / 30000.0))),
+        }
+
+        if request.max_latency_ms is not None and avg_latency_ms > 0 and avg_latency_ms > request.max_latency_ms:
+            score_components["latency_fit"] *= 0.25
+
+        if request.require_streaming and avg_latency_ms > 0:
+            if avg_latency_ms < 2000:
+                score_components["latency_fit"] *= 0.8
+            elif avg_latency_ms <= 30000:
+                score_components["latency_fit"] = min(1.0, score_components["latency_fit"] + 0.2)
+
+        weighted_score = (
+            (0.30 * score_components["text_relevance"]) +
+            (0.22 * score_components["intent_relevance"]) +
+            (0.18 * score_components["reliability"]) +
+            (0.15 * score_components["usage_strength"]) +
+            (0.15 * score_components["latency_fit"])
+        )
+        weighted_score = max(0.0, min(1.0, weighted_score))
+
+        reason_bits: List[str] = []
+        if score_components["text_relevance"] >= 0.5:
+            reason_bits.append("query_match")
+        if score_components["intent_relevance"] >= 0.3:
+            reason_bits.append("intent_match")
+        if reliability >= 0.9 and call_count > 0:
+            reason_bits.append("high_reliability")
+        if avg_latency_ms > 0 and avg_latency_ms < 2000:
+            reason_bits.append("low_latency")
+        if call_count >= 10:
+            reason_bits.append("proven_usage")
+        if request.require_streaming:
+            reason_bits.append("streaming_requested")
+
+        scored_rows.append(
+            {
+                "tool_id": tool_id,
+                "name": name,
+                "backend_id": row.get("backend_id"),
+                "category": row.get("category"),
+                "description": description,
+                "call_count": call_count,
+                "error_count": error_count,
+                "error_rate": error_rate,
+                "avg_latency_ms": avg_latency_ms,
+                "score": weighted_score,
+                "confidence": min(1.0, 0.35 + (weighted_score * 0.6) + min(0.05, call_count / 1000.0)),
+                "score_components": score_components,
+                "recommended_execution_mode": _execution_mode_hint(avg_latency_ms, request.require_streaming),
+                "reasons": reason_bits,
+            }
+        )
+
+    scored_rows.sort(key=lambda item: (item["score"], item["call_count"]), reverse=True)
+    selected = scored_rows[: request.limit]
+
+    dependency_index: Dict[str, List[Dict[str, Any]]] = {}
+    if request.include_dependencies and selected:
+        dependencies = store.list_tool_dependencies(limit=2000)
+        for edge in dependencies:
+            source_id = edge.get("source_tool_id")
+            if not source_id:
+                continue
+            dependency_index.setdefault(source_id, []).append(edge)
+
+    recommendation_id = f"rec_{uuid4().hex}"
+    recommendations: List[Dict[str, Any]] = []
+    for idx, row in enumerate(selected, start=1):
+        tool_dependencies = dependency_index.get(row["tool_id"], [])[:10]
+        recommendations.append(
+            {
+                "rank": idx,
+                **row,
+                "dependencies": tool_dependencies,
+            }
+        )
+
+    return {
+        "recommendation_id": recommendation_id,
+        "generated_at": datetime.utcnow().isoformat(),
+        "query": request.query,
+        "intent": intent,
+        "filters": {
+            "backend_id": request.backend_id,
+            "category": request.category,
+            "tags": tags_filter,
+            "max_latency_ms": request.max_latency_ms,
+            "require_streaming": request.require_streaming,
+        },
+        "count": len(recommendations),
+        "recommendations": recommendations,
+    }
+
+
+@router.post("/recommendations/feedback")
+async def record_recommendation_feedback(request: RecommendationFeedbackRequest):
+    """Persist recommendation outcome feedback for improving future routing."""
+    execution_store = get_execution_store()
+    record = execution_store.append_recommendation_feedback(
+        recommendation_id=request.recommendation_id,
+        context=request.context,
+        recommendation=request.recommendation,
+        chosen_tool=request.chosen_tool,
+        accepted=request.accepted,
+        outcome_status=request.outcome_status,
+        latency_ms=request.latency_ms,
+        error=request.error,
+        metadata=request.metadata,
+        trace_id=request.trace_id,
+        session_id=request.session_id,
+    )
+    return {"status": "recorded", "feedback": record}
+
+
+@router.get("/recommendations/analytics")
+async def get_recommendation_feedback_analytics(
+    hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=25, ge=1, le=200),
+):
+    """Get recommendation acceptance/rejection analytics from durable feedback data."""
+    execution_store = get_execution_store()
+    return execution_store.get_recommendation_feedback_analytics(hours=hours, limit=limit)
 
 
 @router.post("/query")

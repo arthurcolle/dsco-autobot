@@ -1318,6 +1318,90 @@ async def get_trace_side_effects(
     }
 
 
+class WorkflowGateDecisionRequest(BaseModel):
+    step_key: Optional[str] = Field(default=None, description="Workflow step identifier")
+    gate_type: str = Field(default="agent_approval", description="Gate type: auto|agent_approval|quality_check|branch")
+    action: str = Field(default="proceed", description="Gate decision action: proceed|skip|abort|fork|rewind")
+    actor: Optional[str] = Field(default="agent", description="Decision actor (agent|user|system)")
+    status: Optional[str] = Field(default="accepted", description="Decision status")
+    reason: Optional[str] = Field(default=None, description="Human-readable decision reason")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Additional decision payload")
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+@router.post("/executions/{execution_id}/gates")
+async def record_workflow_gate_decision(
+    execution_id: str,
+    request: WorkflowGateDecisionRequest,
+):
+    """Record a durable workflow gate decision for replayability and auditability."""
+    store = get_execution_store()
+    execution = store.get_workflow_execution(
+        execution_id,
+        include_steps=False,
+        include_events=False,
+        include_artifacts=False,
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+
+    record = store.append_workflow_gate_decision(
+        execution_id=execution_id,
+        step_key=request.step_key,
+        gate_type=request.gate_type,
+        gate_action=request.action,
+        actor=request.actor,
+        status=request.status,
+        reason=request.reason,
+        payload=request.payload,
+        trace_id=request.trace_id or execution.get("trace_id"),
+        session_id=request.session_id or execution.get("session_id"),
+    )
+    return {
+        "execution_id": execution_id,
+        "record": record,
+    }
+
+
+@router.get("/executions/{execution_id}/gates")
+async def get_execution_gate_decisions(
+    execution_id: str,
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    """List durable workflow gate decisions for one execution."""
+    store = get_execution_store()
+    execution = store.get_workflow_execution(
+        execution_id,
+        include_steps=False,
+        include_events=False,
+        include_artifacts=False,
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+    records = store.list_workflow_gate_decisions(execution_id=execution_id, limit=limit)
+    return {
+        "execution_id": execution_id,
+        "count": len(records),
+        "gates": records,
+    }
+
+
+@router.get("/traces/{trace_id}/gates")
+async def get_trace_gate_decisions(
+    trace_id: str,
+    limit: int = Query(default=1000, ge=1, le=10000),
+):
+    """List durable workflow gate decisions for a distributed trace."""
+    store = get_execution_store()
+    records = store.list_workflow_gate_decisions(trace_id=trace_id, limit=limit)
+    return {
+        "trace_id": trace_id,
+        "count": len(records),
+        "gates": records,
+    }
+
+
 @router.get("/storage")
 async def get_composition_storage_stats():
     """Get durable storage stats for workflow lineage datasets."""

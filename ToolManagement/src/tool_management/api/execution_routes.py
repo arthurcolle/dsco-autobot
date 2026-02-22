@@ -17,13 +17,14 @@ import time
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .tools_api import ToolCall, ToolResult, execute_tool as execute_single_tool
+from ..core import PolicyConstraints, choose_execution_mode
 from ..core.streaming import EventType, get_streaming_executor
-from ..persistence import get_tool_store
+from ..persistence import get_execution_store, get_tool_store
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,16 @@ class EarlyStopConfig(BaseModel):
     cost_budget: Optional[float] = Field(default=None, ge=0.0)
 
 
+class PolicyConstraintsConfig(BaseModel):
+    latency_budget_ms: Optional[float] = Field(default=None, ge=0.0)
+    cost_budget: Optional[float] = Field(default=None, ge=0.0)
+    reliability_target: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    prefer_streaming: bool = False
+    allow_sync: bool = True
+    allow_stream: bool = True
+    allow_job: bool = True
+
+
 class ExecuteRequest(BaseModel):
     tool_name: Optional[str] = Field(default=None, description="Tool name or backend:tool")
     tool: Optional[str] = Field(default=None, description="Alias of tool_name")
@@ -50,6 +61,7 @@ class ExecuteRequest(BaseModel):
     execution_mode: ExecutionMode = "auto"
     stream: bool = Field(default=True, description="When true, return SSE stream by default")
     early_stop: Optional[EarlyStopConfig] = None
+    policy_constraints: Optional[PolicyConstraintsConfig] = None
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
@@ -95,6 +107,7 @@ class ExecuteResponse(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
+    policy_decision: Optional[Dict[str, Any]] = None
 
 
 class BatchCall(BaseModel):
@@ -102,6 +115,7 @@ class BatchCall(BaseModel):
     tool: Optional[str] = None
     arguments: Dict[str, Any] = Field(default_factory=dict)
     execution_mode: ExecutionMode = "auto"
+    policy_constraints: Optional[PolicyConstraintsConfig] = None
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
@@ -135,6 +149,11 @@ class ControlRequest(BaseModel):
     filter: Optional[Dict[str, Any]] = None
 
 
+class PolicyDecisionQueryResponse(BaseModel):
+    count: int
+    decisions: List[Dict[str, Any]]
+
+
 def _resolve_tool_name(tool_name: Optional[str], tool: Optional[str]) -> str:
     resolved = tool_name or tool
     if not resolved:
@@ -144,6 +163,85 @@ def _resolve_tool_name(tool_name: Optional[str], tool: Optional[str]) -> str:
 
 def _resolve_trace_id(trace_id: Optional[str]) -> str:
     return trace_id or f"tr_{uuid4().hex}"
+
+
+def _policy_constraints_from_request(request: ExecuteRequest) -> PolicyConstraints:
+    if request.policy_constraints is None:
+        return PolicyConstraints()
+    payload = request.policy_constraints
+    return PolicyConstraints(
+        latency_budget_ms=payload.latency_budget_ms,
+        cost_budget=payload.cost_budget,
+        reliability_target=payload.reliability_target,
+        prefer_streaming=payload.prefer_streaming,
+        allow_sync=payload.allow_sync,
+        allow_stream=payload.allow_stream,
+        allow_job=payload.allow_job,
+    )
+
+
+def _record_policy_decision(
+    *,
+    decision_payload: Dict[str, Any],
+    trace_id: Optional[str],
+    session_id: Optional[str],
+    tool_name: str,
+):
+    try:
+        store = get_execution_store()
+        constraints = decision_payload.get("constraints") or {}
+        store.append_policy_decision(
+            decision_id=decision_payload["decision_id"],
+            trace_id=trace_id,
+            session_id=session_id,
+            tool_name=tool_name,
+            requested_mode=decision_payload.get("requested_mode"),
+            selected_mode=decision_payload.get("selected_mode"),
+            backend_id=decision_payload.get("backend_id"),
+            latency_class=decision_payload.get("latency_class"),
+            confidence=float(decision_payload.get("confidence") or 0.0),
+            latency_budget_ms=constraints.get("latency_budget_ms"),
+            cost_budget=constraints.get("cost_budget"),
+            reliability_target=constraints.get("reliability_target"),
+            scores=decision_payload.get("scores") or {},
+            reasons=decision_payload.get("reasons") or [],
+            constraints=constraints,
+            model_version=decision_payload.get("model_version"),
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to persist policy decision ({tool_name}): {exc}")
+
+
+def _update_policy_decision(
+    *,
+    decision_payload: Optional[Dict[str, Any]],
+    execution_id: Optional[str] = None,
+    selected_mode: Optional[str] = None,
+    reason: Optional[str] = None,
+):
+    if not decision_payload:
+        return
+    decision_id = decision_payload.get("decision_id")
+    if not decision_id:
+        return
+    try:
+        store = get_execution_store()
+        if execution_id:
+            store.update_policy_decision_execution_id(decision_id, execution_id)
+        if selected_mode or reason:
+            reasons = list(decision_payload.get("reasons") or [])
+            if reason:
+                reasons.append(reason)
+            if selected_mode:
+                decision_payload["selected_mode"] = selected_mode
+            decision_payload["reasons"] = reasons
+            store.append_policy_decision(
+                decision_id=decision_id,
+                selected_mode=decision_payload.get("selected_mode"),
+                reasons=reasons,
+            )
+    except Exception as exc:
+        logger.warning(f"Failed to update policy decision ({decision_id}): {exc}")
 
 
 def _structured_error(
@@ -291,6 +389,7 @@ def _to_collected_response(
     trace_id: Optional[str] = None,
     session_id: Optional[str] = None,
     parent_execution_id: Optional[str] = None,
+    policy_decision: Optional[Dict[str, Any]] = None,
 ) -> ExecuteResponse:
     if result.success:
         return ExecuteResponse(
@@ -305,6 +404,7 @@ def _to_collected_response(
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
+            policy_decision=policy_decision,
         )
     return ExecuteResponse(
         status="error",
@@ -322,6 +422,7 @@ def _to_collected_response(
         trace_id=trace_id,
         session_id=session_id,
         parent_execution_id=parent_execution_id,
+        policy_decision=policy_decision,
     )
 
 
@@ -332,6 +433,7 @@ async def _stream_execution(
     trace_id: Optional[str] = None,
     session_id: Optional[str] = None,
     parent_execution_id: Optional[str] = None,
+    policy_decision: Optional[Dict[str, Any]] = None,
 ):
     try:
         executor = get_streaming_executor()
@@ -354,6 +456,7 @@ async def _stream_execution(
             "trace_id": trace_id,
             "session_id": session_id,
             "parent_execution_id": parent_execution_id,
+            "policy_decision": policy_decision,
         },
     )
 
@@ -460,8 +563,33 @@ async def execute(request: ExecuteRequest):
     requested_mode: ExecutionMode = request.execution_mode
     if request.stream:
         requested_mode = "stream"
+    constraints = _policy_constraints_from_request(request)
+    policy_decision = choose_execution_mode(
+        tool_name=tool_name,
+        requested_mode=requested_mode,
+        tool_store=get_tool_store(),
+        constraints=constraints,
+    ).to_dict()
+    _record_policy_decision(
+        decision_payload=policy_decision,
+        trace_id=trace_id,
+        session_id=session_id,
+        tool_name=tool_name,
+    )
 
-    if requested_mode == "stream":
+    selected_mode = str(policy_decision.get("selected_mode") or "sync")
+    auto_requested = request.execution_mode == "auto" and not request.stream
+
+    # Non-streaming clients cannot consume SSE directly; degrade stream to job handle.
+    if selected_mode == "stream" and not request.stream:
+        selected_mode = "job"
+        _update_policy_decision(
+            decision_payload=policy_decision,
+            selected_mode="job",
+            reason="stream_selected_but_client_requested_collected_response",
+        )
+
+    async def submit_job_response(*, status: str = "submitted", error: Optional[Dict[str, Any]] = None) -> ExecuteResponse:
         request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
@@ -476,6 +604,53 @@ async def execute(request: ExecuteRequest):
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
+        )
+        _update_policy_decision(
+            decision_payload=policy_decision,
+            execution_id=execution.execution_id,
+        )
+        execution_trace_id = execution.trace_id or trace_id
+        execution_session_id = execution.session_id or session_id
+        execution_parent_id = execution.parent_execution_id or parent_execution_id
+        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
+        return ExecuteResponse(
+            status=status,
+            tool=tool_name,
+            execution_mode="job",
+            call_id=execution.execution_id,
+            job_id=execution.execution_id,
+            deduplicated=deduplicated,
+            priority=execution.queue_priority,
+            poll_url=f"/api/v1/jobs/{execution.execution_id}",
+            stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
+            error=error,
+            policy_decision=policy_decision,
+        )
+
+    if selected_mode == "stream":
+        request_started_at = time.time()
+        execution = await _submit_job(
+            tool_name=tool_name,
+            arguments=request.arguments,
+            timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
+            client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+        )
+        _update_policy_decision(
+            decision_payload=policy_decision,
+            execution_id=execution.execution_id,
         )
         execution_trace_id = execution.trace_id or trace_id
         execution_session_id = execution.session_id or session_id
@@ -499,6 +674,7 @@ async def execute(request: ExecuteRequest):
                 trace_id=execution_trace_id,
                 session_id=execution_session_id,
                 parent_execution_id=execution_parent_id,
+                policy_decision=policy_decision,
             )
 
         return StreamingResponse(
@@ -509,6 +685,7 @@ async def execute(request: ExecuteRequest):
                 trace_id=execution_trace_id,
                 session_id=execution_session_id,
                 parent_execution_id=execution_parent_id,
+                policy_decision=policy_decision,
             ),
             media_type="text/event-stream",
             headers={
@@ -518,163 +695,66 @@ async def execute(request: ExecuteRequest):
             },
         )
 
-    if requested_mode == "job":
-        request_started_at = time.time()
-        execution = await _submit_job(
-            tool_name=tool_name,
-            arguments=request.arguments,
-            timeout_ms=request.timeout_ms,
-            priority=request.priority,
-            dedupe_window_seconds=request.dedupe_window_seconds,
-            dedupe_key=request.dedupe_key,
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            client_id=request.client_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-        execution_trace_id = execution.trace_id or trace_id
-        execution_session_id = execution.session_id or session_id
-        execution_parent_id = execution.parent_execution_id or parent_execution_id
-        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
-        return ExecuteResponse(
-            status="submitted",
-            tool=tool_name,
-            execution_mode="job",
-            call_id=execution.execution_id,
-            job_id=execution.execution_id,
-            deduplicated=deduplicated,
-            priority=execution.queue_priority,
-            poll_url=f"/api/v1/jobs/{execution.execution_id}",
-            stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            trace_id=execution_trace_id,
-            session_id=execution_session_id,
-            parent_execution_id=execution_parent_id,
-        )
+    if selected_mode == "job":
+        return await submit_job_response(status="submitted")
 
-    if requested_mode == "sync":
-        result = await _execute_sync(
-            tool_name=tool_name,
-            arguments=request.arguments,
-            timeout_ms=request.timeout_ms,
-            idempotency_key=request.idempotency_key,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-        return _to_collected_response(
-            tool_name,
-            "sync",
-            result,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-
-    # auto mode: choose from measured latency class, then attempt sync with timeout escalation.
-    latency_class = _latency_class_for_tool(tool_name)
-    if latency_class == "slow":
-        request_started_at = time.time()
-        execution = await _submit_job(
-            tool_name=tool_name,
-            arguments=request.arguments,
-            timeout_ms=request.timeout_ms,
-            priority=request.priority,
-            dedupe_window_seconds=request.dedupe_window_seconds,
-            dedupe_key=request.dedupe_key,
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            client_id=request.client_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-        execution_trace_id = execution.trace_id or trace_id
-        execution_session_id = execution.session_id or session_id
-        execution_parent_id = execution.parent_execution_id or parent_execution_id
-        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
-        return ExecuteResponse(
-            status="submitted",
-            tool=tool_name,
-            execution_mode="job",
-            call_id=execution.execution_id,
-            job_id=execution.execution_id,
-            deduplicated=deduplicated,
-            priority=execution.queue_priority,
-            poll_url=f"/api/v1/jobs/{execution.execution_id}",
-            stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            trace_id=execution_trace_id,
-            session_id=execution_session_id,
-            parent_execution_id=execution_parent_id,
-        )
-
-    try:
-        result = await asyncio.wait_for(
-            _execute_sync(
-                tool_name=tool_name,
-                arguments=request.arguments,
-                timeout_ms=request.timeout_ms,
-                idempotency_key=request.idempotency_key,
+    # Sync mode (explicit or policy-selected). Auto mode gets timeout escalation.
+    if auto_requested:
+        try:
+            result = await asyncio.wait_for(
+                _execute_sync(
+                    tool_name=tool_name,
+                    arguments=request.arguments,
+                    timeout_ms=request.timeout_ms,
+                    idempotency_key=request.idempotency_key,
+                    trace_id=trace_id,
+                    session_id=session_id,
+                    parent_execution_id=parent_execution_id,
+                ),
+                timeout=request.sync_timeout_ms / 1000.0,
+            )
+            return _to_collected_response(
+                tool_name,
+                "sync",
+                result,
                 trace_id=trace_id,
                 session_id=session_id,
                 parent_execution_id=parent_execution_id,
-            ),
-            timeout=request.sync_timeout_ms / 1000.0,
-        )
-        return _to_collected_response(
-            tool_name,
-            "sync",
-            result,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-    except asyncio.TimeoutError:
-        request_started_at = time.time()
-        execution = await _submit_job(
-            tool_name=tool_name,
-            arguments=request.arguments,
-            timeout_ms=request.timeout_ms,
-            priority=request.priority,
-            dedupe_window_seconds=request.dedupe_window_seconds,
-            dedupe_key=request.dedupe_key,
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            client_id=request.client_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
-        execution_trace_id = execution.trace_id or trace_id
-        execution_session_id = execution.session_id or session_id
-        execution_parent_id = execution.parent_execution_id or parent_execution_id
-        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
-        return ExecuteResponse(
-            status="submitted",
-            tool=tool_name,
-            execution_mode="job",
-            call_id=execution.execution_id,
-            job_id=execution.execution_id,
-            deduplicated=deduplicated,
-            priority=execution.queue_priority,
-            poll_url=f"/api/v1/jobs/{execution.execution_id}",
-            stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
-            callback_url=request.callback_url,
-            callback_events=request.callback_events,
-            trace_id=execution_trace_id,
-            session_id=execution_session_id,
-            parent_execution_id=execution_parent_id,
-            error=_structured_error(
-                "SYNC_TIMEOUT_ESCALATED",
-                f"Sync execution exceeded {request.sync_timeout_ms}ms and was promoted to job",
-                retryable=False,
-            ),
-        )
+                policy_decision=policy_decision,
+            )
+        except asyncio.TimeoutError:
+            _update_policy_decision(
+                decision_payload=policy_decision,
+                selected_mode="job",
+                reason="sync_timeout_promoted_to_job",
+            )
+            return await submit_job_response(
+                status="submitted",
+                error=_structured_error(
+                    "SYNC_TIMEOUT_ESCALATED",
+                    f"Sync execution exceeded {request.sync_timeout_ms}ms and was promoted to job",
+                    retryable=False,
+                ),
+            )
+
+    result = await _execute_sync(
+        tool_name=tool_name,
+        arguments=request.arguments,
+        timeout_ms=request.timeout_ms,
+        idempotency_key=request.idempotency_key,
+        trace_id=trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
+    )
+    return _to_collected_response(
+        tool_name,
+        "sync",
+        result,
+        trace_id=trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
+        policy_decision=policy_decision,
+    )
 
 
 @router.post("/calls/{call_id}/control")
@@ -732,6 +812,56 @@ async def control_call(call_id: str, request: ControlRequest):
     raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
 
 
+@router.get("/policy-decisions", response_model=PolicyDecisionQueryResponse)
+async def list_policy_decisions(
+    hours: int = Query(default=24, ge=1, le=720),
+    tool_name: Optional[str] = Query(default=None),
+    trace_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    store = get_execution_store()
+    decisions = store.list_policy_decisions(
+        hours=hours,
+        tool_name=tool_name,
+        trace_id=trace_id,
+        limit=limit,
+    )
+    return {"count": len(decisions), "decisions": decisions}
+
+
+@router.get("/policy-decisions/analytics")
+async def get_policy_decision_analytics(
+    hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    store = get_execution_store()
+    decisions = store.list_policy_decisions(hours=hours, limit=limit)
+    mode_mix: Dict[str, int] = {}
+    latency_mix: Dict[str, int] = {}
+    tool_mix: Dict[str, int] = {}
+    avg_confidence = 0.0
+
+    for decision in decisions:
+        selected = str(decision.get("selected_mode") or "unknown")
+        latency_class = str(decision.get("latency_class") or "unknown")
+        tool = str(decision.get("tool_name") or "unknown")
+        mode_mix[selected] = mode_mix.get(selected, 0) + 1
+        latency_mix[latency_class] = latency_mix.get(latency_class, 0) + 1
+        tool_mix[tool] = tool_mix.get(tool, 0) + 1
+        avg_confidence += float(decision.get("confidence") or 0.0)
+
+    total = len(decisions)
+    top_tools = sorted(tool_mix.items(), key=lambda item: item[1], reverse=True)[:25]
+    return {
+        "window_hours": hours,
+        "count": total,
+        "avg_confidence": (avg_confidence / total) if total else 0.0,
+        "selected_mode_mix": mode_mix,
+        "latency_class_mix": latency_mix,
+        "top_tools": [{"tool_name": name, "decisions": count} for name, count in top_tools],
+    }
+
+
 @router.post("/execute/batch", response_model=BatchExecuteResponse)
 async def execute_batch(request: BatchExecuteRequest):
     if request.execution not in ("parallel", "sequential"):
@@ -749,6 +879,7 @@ async def execute_batch(request: BatchExecuteRequest):
                         tool=call.tool,
                         arguments=call.arguments,
                         execution_mode=call.execution_mode,
+                        policy_constraints=call.policy_constraints,
                         stream=False,
                         timeout_ms=call.timeout_ms,
                         sync_timeout_ms=call.sync_timeout_ms,
@@ -802,19 +933,20 @@ async def execute_batch(request: BatchExecuteRequest):
                         tool=call.tool,
                         arguments=call.arguments,
                         execution_mode=call.execution_mode,
+                        policy_constraints=call.policy_constraints,
                         stream=False,
                         timeout_ms=call.timeout_ms,
                         sync_timeout_ms=call.sync_timeout_ms,
                         idempotency_key=call.idempotency_key,
-                priority=call.priority,
-                dedupe_window_seconds=call.dedupe_window_seconds,
-                dedupe_key=call.dedupe_key,
-                callback_url=call.callback_url,
-                callback_events=call.callback_events,
-                trace_id=call.trace_id,
-                session_id=call.session_id,
-                parent_execution_id=call.parent_execution_id,
-            )
+                        priority=call.priority,
+                        dedupe_window_seconds=call.dedupe_window_seconds,
+                        dedupe_key=call.dedupe_key,
+                        callback_url=call.callback_url,
+                        callback_events=call.callback_events,
+                        trace_id=call.trace_id,
+                        session_id=call.session_id,
+                        parent_execution_id=call.parent_execution_id,
+                    )
                 )
                 if isinstance(raw, ExecuteResponse):
                     results.append(raw)
