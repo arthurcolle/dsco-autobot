@@ -13,8 +13,10 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from uuid import uuid4
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
@@ -261,6 +263,26 @@ class ExecutionStore:
                     created_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS follow_up_actions (
+                    follow_up_id TEXT PRIMARY KEY,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    source_type TEXT,
+                    source_id TEXT,
+                    action_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    priority TEXT NOT NULL DEFAULT 'normal',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    dedupe_key TEXT,
+                    payload_json TEXT,
+                    metadata_json TEXT,
+                    due_at REAL,
+                    completed_at REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS execution_group_states (
                     convergence_key TEXT PRIMARY KEY,
                     tool_name TEXT NOT NULL,
@@ -314,6 +336,10 @@ class ExecutionStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_gate_created ON workflow_gate_decisions(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_id ON recommendation_feedback(recommendation_id);
                 CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_created ON recommendation_feedback(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_follow_up_actions_status ON follow_up_actions(status);
+                CREATE INDEX IF NOT EXISTS idx_follow_up_actions_created ON follow_up_actions(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_follow_up_actions_trace ON follow_up_actions(trace_id);
+                CREATE INDEX IF NOT EXISTS idx_follow_up_actions_dedupe ON follow_up_actions(dedupe_key);
                 CREATE INDEX IF NOT EXISTS idx_execution_group_states_tool ON execution_group_states(tool_name);
                 CREATE INDEX IF NOT EXISTS idx_execution_group_states_updated ON execution_group_states(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_execution_group_members_group ON execution_group_members(convergence_key);
@@ -367,6 +393,7 @@ class ExecutionStore:
         migrations = [
             ("2026_02_22_side_effect_journal", self._migration_side_effect_journal),
             ("2026_02_22_policy_decisions_and_gates", self._migration_policy_decisions_and_gates),
+            ("2026_02_22_follow_up_actions", self._migration_follow_up_actions),
         ]
         for migration_name, migration_fn in migrations:
             if self._migration_applied(conn, migration_name):
@@ -473,6 +500,36 @@ class ExecutionStore:
             CREATE INDEX IF NOT EXISTS idx_workflow_gate_created ON workflow_gate_decisions(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_id ON recommendation_feedback(recommendation_id);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_created ON recommendation_feedback(created_at DESC);
+            """
+        )
+
+    def _migration_follow_up_actions(self, conn: sqlite3.Connection):
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS follow_up_actions (
+                follow_up_id TEXT PRIMARY KEY,
+                trace_id TEXT,
+                session_id TEXT,
+                source_type TEXT,
+                source_id TEXT,
+                action_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                priority TEXT NOT NULL DEFAULT 'normal',
+                status TEXT NOT NULL DEFAULT 'open',
+                dedupe_key TEXT,
+                payload_json TEXT,
+                metadata_json TEXT,
+                due_at REAL,
+                completed_at REAL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_follow_up_actions_status ON follow_up_actions(status);
+            CREATE INDEX IF NOT EXISTS idx_follow_up_actions_created ON follow_up_actions(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_follow_up_actions_trace ON follow_up_actions(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_follow_up_actions_dedupe ON follow_up_actions(dedupe_key);
             """
         )
 
@@ -810,6 +867,56 @@ class ExecutionStore:
     def _stable_fingerprint(value: Any) -> str:
         payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _extract_item_score(cls, item: Any) -> float:
+        if isinstance(item, dict):
+            for key in ("score", "relevance", "confidence", "quality", "weighted_score", "rank_score"):
+                value = item.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+            nested = item.get("metrics")
+            if isinstance(nested, dict):
+                for key in ("score", "relevance", "confidence", "quality"):
+                    value = nested.get(key)
+                    if isinstance(value, (int, float)):
+                        return float(value)
+        return 0.0
+
+    @classmethod
+    def _extract_item_timestamp(cls, item: Any) -> Optional[float]:
+        if not isinstance(item, dict):
+            return None
+        for key in ("timestamp", "ts", "time", "created_at", "updated_at", "published_at"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    continue
+                try:
+                    return float(text)
+                except Exception:
+                    pass
+                try:
+                    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+        return None
+
+    @classmethod
+    def _extract_item_key(cls, item: Any, key_field: Optional[str] = None) -> str:
+        if isinstance(item, dict):
+            if key_field:
+                value = item.get(key_field)
+                if value is not None:
+                    return str(value)
+            for key in ("id", "url", "key", "name", "title", "hash"):
+                value = item.get(key)
+                if value is not None:
+                    return str(value)
+        return cls._stable_fingerprint(item)
 
     @staticmethod
     def _int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -2258,6 +2365,362 @@ class ExecutionStore:
             },
         }
 
+    @staticmethod
+    def _normalize_follow_up_priority(priority: Optional[str]) -> str:
+        value = str(priority or "normal").strip().lower()
+        if value in {"p0", "critical", "urgent"}:
+            return "critical"
+        if value in {"p1", "high"}:
+            return "high"
+        if value in {"p2", "normal", "medium"}:
+            return "normal"
+        if value in {"p3", "low", "background"}:
+            return "low"
+        return "normal"
+
+    @staticmethod
+    def _normalize_follow_up_status(status: Optional[str]) -> str:
+        value = str(status or "open").strip().lower()
+        if value in {"open", "pending", "queued"}:
+            return "open"
+        if value in {"in_progress", "running", "active"}:
+            return "in_progress"
+        if value in {"completed", "done", "resolved"}:
+            return "completed"
+        if value in {"dismissed", "cancelled", "ignored"}:
+            return "dismissed"
+        if value in {"failed", "error"}:
+            return "failed"
+        return "open"
+
+    @classmethod
+    def _row_to_follow_up_action(cls, row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        data = dict(row)
+        data["payload"] = cls._safe_json_loads(data.get("payload_json"), {})
+        data["metadata"] = cls._safe_json_loads(data.get("metadata_json"), {})
+        data["priority"] = cls._normalize_follow_up_priority(data.get("priority"))
+        data["status"] = cls._normalize_follow_up_status(data.get("status"))
+        return data
+
+    def append_follow_up_action(
+        self,
+        *,
+        action_type: str,
+        title: str,
+        description: Optional[str] = None,
+        priority: str = "normal",
+        status: str = "open",
+        source_type: Optional[str] = None,
+        source_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        due_at: Optional[float] = None,
+        dedupe_key: Optional[str] = None,
+        dedupe_window_seconds: int = 0,
+        follow_up_id: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        normalized_action_type = str(action_type or "").strip().lower()
+        if not normalized_action_type:
+            raise ValueError("action_type is required")
+        normalized_title = str(title or "").strip()
+        if not normalized_title:
+            raise ValueError("title is required")
+
+        now = float(created_at if created_at is not None else time.time())
+        normalized_priority = self._normalize_follow_up_priority(priority)
+        normalized_status = self._normalize_follow_up_status(status)
+        normalized_follow_up_id = str(follow_up_id or f"fu_{uuid4().hex}").strip()
+        if not normalized_follow_up_id:
+            raise ValueError("follow_up_id is required")
+        normalized_dedupe_key = str(dedupe_key or "").strip() or None
+        dedupe_window_seconds = max(0, int(dedupe_window_seconds))
+
+        with self._lock:
+            with self._conn() as conn:
+                if normalized_dedupe_key and dedupe_window_seconds > 0:
+                    cutoff = now - dedupe_window_seconds
+                    existing = conn.execute(
+                        """
+                        SELECT *
+                        FROM follow_up_actions
+                        WHERE dedupe_key = ?
+                          AND created_at >= ?
+                          AND status IN ('open', 'in_progress')
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (normalized_dedupe_key, cutoff),
+                    ).fetchone()
+                    if existing:
+                        conn.execute(
+                            """
+                            UPDATE follow_up_actions
+                            SET updated_at = ?
+                            WHERE follow_up_id = ?
+                            """,
+                            (now, existing["follow_up_id"]),
+                        )
+                        refreshed = conn.execute(
+                            """
+                            SELECT *
+                            FROM follow_up_actions
+                            WHERE follow_up_id = ?
+                            LIMIT 1
+                            """,
+                            (existing["follow_up_id"],),
+                        ).fetchone()
+                        row = self._row_to_follow_up_action(refreshed)
+                        return row or {}
+
+                conn.execute(
+                    """
+                    INSERT INTO follow_up_actions (
+                        follow_up_id, trace_id, session_id, source_type, source_id,
+                        action_type, title, description, priority, status, dedupe_key,
+                        payload_json, metadata_json, due_at, completed_at, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_follow_up_id,
+                        trace_id,
+                        session_id,
+                        source_type,
+                        source_id,
+                        normalized_action_type,
+                        normalized_title,
+                        description,
+                        normalized_priority,
+                        normalized_status,
+                        normalized_dedupe_key,
+                        json.dumps(payload or {}, default=str),
+                        json.dumps(metadata or {}, default=str),
+                        due_at,
+                        now if normalized_status in {"completed", "dismissed"} else None,
+                        now,
+                        now,
+                    ),
+                )
+                created = conn.execute(
+                    """
+                    SELECT *
+                    FROM follow_up_actions
+                    WHERE follow_up_id = ?
+                    LIMIT 1
+                    """,
+                    (normalized_follow_up_id,),
+                ).fetchone()
+
+        row = self._row_to_follow_up_action(created)
+        return row or {}
+
+    def get_follow_up_action(self, follow_up_id: str) -> Optional[Dict[str, Any]]:
+        key = str(follow_up_id or "").strip()
+        if not key:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM follow_up_actions
+                WHERE follow_up_id = ?
+                LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+        return self._row_to_follow_up_action(row)
+
+    def list_follow_up_actions(
+        self,
+        *,
+        status: Optional[str] = None,
+        priority: Optional[str] = None,
+        action_type: Optional[str] = None,
+        source_type: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM follow_up_actions"
+        clauses: List[str] = []
+        params: List[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(self._normalize_follow_up_status(status))
+        if priority:
+            clauses.append("priority = ?")
+            params.append(self._normalize_follow_up_priority(priority))
+        if action_type:
+            clauses.append("action_type = ?")
+            params.append(str(action_type).strip().lower())
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(str(source_type).strip().lower())
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_follow_up_action(row) for row in rows if row is not None]
+
+    def update_follow_up_action_status(
+        self,
+        *,
+        follow_up_id: str,
+        status: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        completed_at: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        key = str(follow_up_id or "").strip()
+        if not key:
+            return None
+        normalized_status = self._normalize_follow_up_status(status)
+        now = time.time()
+        resolved_completed_at = completed_at
+        if normalized_status in {"completed", "dismissed"} and resolved_completed_at is None:
+            resolved_completed_at = now
+
+        with self._lock:
+            with self._conn() as conn:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM follow_up_actions
+                    WHERE follow_up_id = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+                if not existing:
+                    return None
+
+                merged_metadata = self._safe_json_loads(existing["metadata_json"], {})
+                if not isinstance(merged_metadata, dict):
+                    merged_metadata = {}
+                if isinstance(metadata, dict):
+                    merged_metadata.update(metadata)
+
+                conn.execute(
+                    """
+                    UPDATE follow_up_actions
+                    SET status = ?, metadata_json = ?, completed_at = COALESCE(?, completed_at), updated_at = ?
+                    WHERE follow_up_id = ?
+                    """,
+                    (
+                        normalized_status,
+                        json.dumps(merged_metadata, default=str),
+                        resolved_completed_at,
+                        now,
+                        key,
+                    ),
+                )
+                refreshed = conn.execute(
+                    """
+                    SELECT *
+                    FROM follow_up_actions
+                    WHERE follow_up_id = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+
+        return self._row_to_follow_up_action(refreshed)
+
+    def get_follow_up_action_analytics(self, *, hours: int = 24, limit: int = 25) -> Dict[str, Any]:
+        since_ts = time.time() - max(1, int(hours)) * 3600
+        now = time.time()
+        with self._conn() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_count,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                    SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissed_count,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN due_at IS NOT NULL AND due_at < ? AND status IN ('open', 'in_progress') THEN 1 ELSE 0 END) AS overdue_count
+                FROM follow_up_actions
+                WHERE created_at >= ?
+                """,
+                (now, since_ts),
+            ).fetchone()
+            by_type_rows = conn.execute(
+                """
+                SELECT action_type, COUNT(*) AS count
+                FROM follow_up_actions
+                WHERE created_at >= ?
+                GROUP BY action_type
+                ORDER BY count DESC
+                LIMIT ?
+                """,
+                (since_ts, max(1, int(limit))),
+            ).fetchall()
+            by_priority_rows = conn.execute(
+                """
+                SELECT priority, COUNT(*) AS count
+                FROM follow_up_actions
+                WHERE created_at >= ?
+                GROUP BY priority
+                ORDER BY count DESC
+                """,
+                (since_ts,),
+            ).fetchall()
+
+        total_count = int(totals["total"] if totals and totals["total"] is not None else 0)
+        return {
+            "window_hours": max(1, int(hours)),
+            "totals": {
+                "actions": total_count,
+                "open": int(totals["open_count"] if totals and totals["open_count"] is not None else 0),
+                "in_progress": int(
+                    totals["in_progress_count"] if totals and totals["in_progress_count"] is not None else 0
+                ),
+                "completed": int(
+                    totals["completed_count"] if totals and totals["completed_count"] is not None else 0
+                ),
+                "dismissed": int(
+                    totals["dismissed_count"] if totals and totals["dismissed_count"] is not None else 0
+                ),
+                "failed": int(totals["failed_count"] if totals and totals["failed_count"] is not None else 0),
+                "overdue": int(totals["overdue_count"] if totals and totals["overdue_count"] is not None else 0),
+            },
+            "by_action_type": [
+                {"action_type": row["action_type"], "count": int(row["count"])}
+                for row in by_type_rows
+            ],
+            "by_priority": {
+                row["priority"]: int(row["count"])
+                for row in by_priority_rows
+            },
+        }
+
+    def cleanup_old_follow_up_actions(self, max_age_seconds: int = 86400 * 30) -> int:
+        cutoff = time.time() - max(1, int(max_age_seconds))
+        with self._lock:
+            with self._conn() as conn:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM follow_up_actions
+                    WHERE updated_at < ?
+                      AND status IN ('completed', 'dismissed', 'failed')
+                    """,
+                    (cutoff,),
+                )
+                return int(getattr(cursor, "rowcount", 0) or 0)
+
     @classmethod
     def _merge_execution_group_items(
         cls,
@@ -2266,9 +2729,11 @@ class ExecutionStore:
         *,
         reducer: str,
         max_items: int,
+        reducer_config: Optional[Dict[str, Any]] = None,
     ) -> tuple[List[Any], int]:
         base_items = existing_items if isinstance(existing_items, list) else []
         incoming = chunk if isinstance(chunk, list) else [chunk]
+        reducer_config = dict(reducer_config or {})
 
         normalized_reducer = str(reducer or "append_unique").strip().lower()
         if normalized_reducer == "latest":
@@ -2280,6 +2745,104 @@ class ExecutionStore:
             if max_items > 0 and len(merged) > max_items:
                 merged = merged[-max_items:]
             return merged, len(incoming)
+
+        if normalized_reducer == "top_k":
+            k = int(reducer_config.get("k") or reducer_config.get("top_k") or max_items)
+            k = max(1, min(max_items, k))
+            merged = list(base_items) + list(incoming)
+            merged.sort(
+                key=lambda item: (
+                    cls._extract_item_score(item),
+                    cls._extract_item_timestamp(item) or 0.0,
+                ),
+                reverse=True,
+            )
+            return merged[:k], len(incoming)
+
+        if normalized_reducer == "windowed":
+            window_seconds = float(reducer_config.get("window_seconds") or reducer_config.get("window") or 3600.0)
+            now_ts = float(reducer_config.get("now_ts") or time.time())
+            cutoff = now_ts - max(1.0, window_seconds)
+            merged = list(base_items) + list(incoming)
+            filtered: List[Any] = []
+            for item in merged:
+                item_ts = cls._extract_item_timestamp(item)
+                if item_ts is None or item_ts >= cutoff:
+                    filtered.append(item)
+            if max_items > 0 and len(filtered) > max_items:
+                filtered = filtered[-max_items:]
+            return filtered, len(incoming)
+
+        if normalized_reducer == "score_weighted":
+            key_field = reducer_config.get("key_field")
+            default_weight = float(reducer_config.get("default_weight") or 1.0)
+            buckets: Dict[str, Dict[str, Any]] = {}
+
+            def _ingest(item: Any):
+                if isinstance(item, dict) and {
+                    "key",
+                    "weighted_score",
+                    "weight_sum",
+                    "count",
+                    "item",
+                }.issubset(set(item.keys())):
+                    key = str(item.get("key"))
+                    weighted_score = float(item.get("weighted_score") or 0.0)
+                    weight_sum = float(item.get("weight_sum") or 0.0)
+                    count = int(item.get("count") or 0)
+                    payload = item.get("item")
+                else:
+                    key = cls._extract_item_key(item, key_field=key_field)
+                    score = cls._extract_item_score(item)
+                    weight = default_weight
+                    if isinstance(item, dict):
+                        raw_weight = item.get("weight")
+                        if isinstance(raw_weight, (int, float)):
+                            weight = max(0.0001, float(raw_weight))
+                    weighted_score = score
+                    weight_sum = weight
+                    count = 1
+                    payload = item
+
+                bucket = buckets.get(key)
+                if not bucket:
+                    buckets[key] = {
+                        "key": key,
+                        "weighted_score_sum": weighted_score * max(weight_sum, 0.0001),
+                        "weight_sum": max(weight_sum, 0.0001),
+                        "count": max(1, count),
+                        "item": payload,
+                    }
+                    return
+                bucket["weighted_score_sum"] = float(bucket["weighted_score_sum"]) + (
+                    weighted_score * max(weight_sum, 0.0001)
+                )
+                bucket["weight_sum"] = float(bucket["weight_sum"]) + max(weight_sum, 0.0001)
+                bucket["count"] = int(bucket["count"]) + max(1, count)
+                bucket["item"] = payload
+
+            for item in base_items:
+                _ingest(item)
+            for item in incoming:
+                _ingest(item)
+
+            weighted_items: List[Dict[str, Any]] = []
+            for bucket in buckets.values():
+                weight_sum = max(0.0001, float(bucket["weight_sum"]))
+                weighted_score = float(bucket["weighted_score_sum"]) / weight_sum
+                weighted_items.append(
+                    {
+                        "key": bucket["key"],
+                        "weighted_score": weighted_score,
+                        "weight_sum": weight_sum,
+                        "count": int(bucket["count"]),
+                        "item": bucket["item"],
+                    }
+                )
+            weighted_items.sort(key=lambda entry: float(entry.get("weighted_score") or 0.0), reverse=True)
+            if max_items > 0 and len(weighted_items) > max_items:
+                weighted_items = weighted_items[:max_items]
+            return weighted_items, len(incoming)
 
         # Default reducer: append_unique
         merged = list(base_items)
@@ -2308,6 +2871,7 @@ class ExecutionStore:
         session_id: Optional[str] = None,
         reducer: str = "append_unique",
         max_items: int = 2000,
+        reducer_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         key = str(convergence_key or "").strip()
         if not key:
@@ -2337,6 +2901,7 @@ class ExecutionStore:
                         chunk,
                         reducer=normalized_reducer,
                         max_items=max_items,
+                        reducer_config=reducer_config,
                     )
                     chunk_count = int(row["chunk_count"] or 0) + 1
                     state = dict(existing_state)
@@ -2350,6 +2915,8 @@ class ExecutionStore:
                             "last_added": added,
                         }
                     )
+                    if reducer_config:
+                        stats["reducer_config"] = reducer_config
                     state["stats"] = stats
                     conn.execute(
                         """
@@ -2383,6 +2950,7 @@ class ExecutionStore:
                         chunk,
                         reducer=normalized_reducer,
                         max_items=max_items,
+                        reducer_config=reducer_config,
                     )
                     state = {
                         "items": merged_items,
@@ -2391,6 +2959,7 @@ class ExecutionStore:
                             "unique_items": len(merged_items),
                             "last_reducer": normalized_reducer,
                             "last_added": added,
+                            "reducer_config": reducer_config or {},
                         },
                     }
                     conn.execute(
@@ -2504,6 +3073,138 @@ class ExecutionStore:
             results.append(data)
         return results
 
+    def compact_execution_group_state(
+        self,
+        *,
+        convergence_key: str,
+        max_items: Optional[int] = None,
+        max_age_seconds: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        key = str(convergence_key or "").strip()
+        if not key:
+            return None
+        max_items = int(max_items) if max_items is not None else None
+        if max_items is not None:
+            max_items = max(1, max_items)
+        age_seconds = float(max_age_seconds) if max_age_seconds is not None else None
+        now = time.time()
+        cutoff = now - age_seconds if age_seconds and age_seconds > 0 else None
+
+        with self._lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM execution_group_states
+                    WHERE convergence_key = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+                if not row:
+                    return None
+                data = dict(row)
+                state = self._safe_json_loads(data.get("state_json"), {}) or {}
+                items = state.get("items", [])
+                if not isinstance(items, list):
+                    items = []
+
+                if cutoff is not None:
+                    filtered: List[Any] = []
+                    for item in items:
+                        item_ts = self._extract_item_timestamp(item)
+                        if item_ts is None or item_ts >= cutoff:
+                            filtered.append(item)
+                    items = filtered
+
+                if max_items is not None and len(items) > max_items:
+                    items = items[-max_items:]
+
+                state["items"] = items
+                stats = state.get("stats") if isinstance(state.get("stats"), dict) else {}
+                stats["unique_items"] = len(items)
+                stats["last_compacted_at"] = now
+                if max_items is not None:
+                    stats["compacted_max_items"] = max_items
+                if cutoff is not None:
+                    stats["compacted_max_age_seconds"] = age_seconds
+                state["stats"] = stats
+
+                conn.execute(
+                    """
+                    UPDATE execution_group_states
+                    SET state_json = ?, updated_at = ?
+                    WHERE convergence_key = ?
+                    """,
+                    (json.dumps(state, default=str), now, key),
+                )
+
+                refreshed = conn.execute(
+                    """
+                    SELECT *
+                    FROM execution_group_states
+                    WHERE convergence_key = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+        if not refreshed:
+            return None
+        result = dict(refreshed)
+        result["state"] = self._safe_json_loads(result.get("state_json"), {})
+        return result
+
+    def compact_execution_group_states(
+        self,
+        *,
+        limit: int = 500,
+        max_items: Optional[int] = None,
+        max_age_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        rows = self.list_execution_group_states(limit=max(1, int(limit)))
+        compacted = 0
+        for row in rows:
+            key = str(row.get("convergence_key") or "").strip()
+            if not key:
+                continue
+            refreshed = self.compact_execution_group_state(
+                convergence_key=key,
+                max_items=max_items,
+                max_age_seconds=max_age_seconds,
+            )
+            if refreshed:
+                compacted += 1
+        return {
+            "requested": len(rows),
+            "compacted": compacted,
+        }
+
+    def cleanup_old_execution_group_states(self, max_age_seconds: int = 86400) -> int:
+        cutoff = time.time() - max(1, int(max_age_seconds))
+        with self._lock:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT convergence_key
+                    FROM execution_group_states
+                    WHERE updated_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                keys = [str(row["convergence_key"]) for row in rows]
+                if not keys:
+                    return 0
+                placeholders = ", ".join("?" for _ in keys)
+                conn.execute(
+                    f"DELETE FROM execution_group_members WHERE convergence_key IN ({placeholders})",
+                    keys,
+                )
+                conn.execute(
+                    f"DELETE FROM execution_group_states WHERE convergence_key IN ({placeholders})",
+                    keys,
+                )
+                return len(keys)
+
     def delete_execution_group_state(self, convergence_key: str) -> bool:
         key = str(convergence_key or "").strip()
         if not key:
@@ -2535,6 +3236,7 @@ class ExecutionStore:
                 "execution_policy_decisions",
                 "workflow_gate_decisions",
                 "recommendation_feedback",
+                "follow_up_actions",
                 "execution_group_states",
                 "execution_group_members",
             ]
@@ -2558,7 +3260,9 @@ class ExecutionStore:
                     COALESCE((SELECT SUM(LENGTH(payload_json)) FROM workflow_artifacts), 0) AS artifact_payload_bytes,
                     COALESCE((SELECT SUM(LENGTH(request_json)) FROM workflow_side_effects), 0) AS side_effect_request_bytes,
                     COALESCE((SELECT SUM(LENGTH(response_json)) FROM workflow_side_effects), 0) AS side_effect_response_bytes,
-                    COALESCE((SELECT SUM(LENGTH(state_json)) FROM execution_group_states), 0) AS execution_group_state_bytes
+                    COALESCE((SELECT SUM(LENGTH(state_json)) FROM execution_group_states), 0) AS execution_group_state_bytes,
+                    COALESCE((SELECT SUM(LENGTH(payload_json)) FROM follow_up_actions), 0) AS follow_up_payload_bytes,
+                    COALESCE((SELECT SUM(LENGTH(metadata_json)) FROM follow_up_actions), 0) AS follow_up_metadata_bytes
                 """
             ).fetchone()
 
@@ -2589,6 +3293,8 @@ class ExecutionStore:
                 "side_effect_request_bytes": int(workflow_payload_bytes["side_effect_request_bytes"] or 0),
                 "side_effect_response_bytes": int(workflow_payload_bytes["side_effect_response_bytes"] or 0),
                 "execution_group_state_bytes": int(workflow_payload_bytes["execution_group_state_bytes"] or 0),
+                "follow_up_payload_bytes": int(workflow_payload_bytes["follow_up_payload_bytes"] or 0),
+                "follow_up_metadata_bytes": int(workflow_payload_bytes["follow_up_metadata_bytes"] or 0),
             },
         }
 

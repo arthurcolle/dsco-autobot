@@ -2591,6 +2591,8 @@ class SimpleComposition(BaseModel):
     # Optional configuration
     timeout_seconds: float = 300.0
     parallel_limit: int = 5
+    parallel_dedupe: bool = True
+    parallel_dedupe_on_tool: bool = True
     idempotency_key: Optional[str] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -2662,6 +2664,9 @@ async def compose_simple(composition: SimpleComposition):
             "arguments": composition.arguments,
             "inputs": composition.inputs,
             "write_policy": composition.write_policy,
+            "parallel_limit": composition.parallel_limit,
+            "parallel_dedupe": composition.parallel_dedupe,
+            "parallel_dedupe_on_tool": composition.parallel_dedupe_on_tool,
         }
     )
     existing = _find_idempotent_workflow_result(
@@ -2717,6 +2722,8 @@ async def compose_simple(composition: SimpleComposition):
             "arguments": composition.arguments,
             "timeout_seconds": composition.timeout_seconds,
             "parallel_limit": composition.parallel_limit,
+            "parallel_dedupe": composition.parallel_dedupe,
+            "parallel_dedupe_on_tool": composition.parallel_dedupe_on_tool,
             "write_policy": composition.write_policy,
             "request_hash": request_hash,
             "idempotency_key": composition.idempotency_key,
@@ -3073,24 +3080,58 @@ async def _execute_simple_composition(
 
     elif workflow_type == WorkflowType.PARALLEL:
         # Parallel: Run all tools concurrently, merge results
-        tasks = []
+        branch_specs: List[Dict[str, Any]] = []
+        branch_to_canonical: List[int] = []
+        canonical_by_fingerprint: Dict[str, int] = {}
+        canonical_branches: List[Dict[str, Any]] = []
+
         for i, tool_name in enumerate(tools):
             args = {**arguments[i], **inputs} if isinstance(inputs, dict) else arguments[i]
-            tasks.append(
-                _execute_simple_tool_call(
+            fingerprint_payload = {
+                "tool": tool_name if composition.parallel_dedupe_on_tool else "__any_tool__",
+                "args": args,
+            }
+            fingerprint = _stable_hash(fingerprint_payload)
+            spec = {
+                "index": i,
+                "tool_name": tool_name,
+                "args": args,
+                "fingerprint": fingerprint,
+            }
+            branch_specs.append(spec)
+
+            if composition.parallel_dedupe and fingerprint in canonical_by_fingerprint:
+                branch_to_canonical.append(canonical_by_fingerprint[fingerprint])
+                continue
+
+            canonical_idx = len(canonical_branches)
+            canonical_by_fingerprint[fingerprint] = canonical_idx
+            branch_to_canonical.append(canonical_idx)
+            canonical_branches.append(spec)
+
+        parallel_limit = max(1, min(int(composition.parallel_limit or 1), max(1, len(canonical_branches))))
+        semaphore = asyncio.Semaphore(parallel_limit)
+
+        async def _run_canonical(spec: Dict[str, Any]) -> Any:
+            async with semaphore:
+                return await _execute_simple_tool_call(
                     recorder=recorder,
-                    step_key=f"parallel:{i}",
-                    step_name=f"parallel_{tool_name}_{i}",
-                    step_index=i,
-                    tool_name=tool_name,
+                    step_key=f"parallel:{spec['index']}",
+                    step_name=f"parallel_{spec['tool_name']}_{spec['index']}",
+                    step_index=int(spec["index"]),
+                    tool_name=str(spec["tool_name"]),
                     mode=workflow_type.value,
-                    args=args,
-                    metadata={"position": i},
+                    args=spec["args"],
+                    metadata={
+                        "position": int(spec["index"]),
+                        "parallel_dedupe": bool(composition.parallel_dedupe),
+                    },
                 )
-            )
+
+        tasks = [asyncio.create_task(_run_canonical(spec)) for spec in canonical_branches]
 
         try:
-            results = await asyncio.wait_for(
+            canonical_results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=300.0,
             )
@@ -3098,17 +3139,65 @@ async def _execute_simple_composition(
             timeout_message = "Parallel phase exceeded 300s timeout"
             if recorder:
                 recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "parallel"})
-            results = [TimeoutError(timeout_message) for _ in tools]
+            canonical_results = [TimeoutError(timeout_message) for _ in canonical_branches]
+
+        if recorder:
+            deduped_count = len(branch_specs) - len(canonical_branches)
+            recorder.event(
+                "simple_parallel_dedupe",
+                data={
+                    "enabled": bool(composition.parallel_dedupe),
+                    "total_branches": len(branch_specs),
+                    "canonical_branches": len(canonical_branches),
+                    "deduped_branches": max(0, deduped_count),
+                    "parallel_limit": parallel_limit,
+                },
+            )
+
+        # Fan results out to all logical branches, reusing canonical results where deduped.
+        results: List[Any] = []
+        for canonical_idx in branch_to_canonical:
+            if 0 <= canonical_idx < len(canonical_results):
+                results.append(canonical_results[canonical_idx])
+            else:
+                results.append(RuntimeError("missing parallel branch result"))
 
         # Merge results
         merged = {}
+        indexed_results: List[Dict[str, Any]] = []
         for i, result in enumerate(results):
+            value = {"error": str(result)} if isinstance(result, Exception) else result
             if isinstance(result, Exception):
-                merged[tools[i]] = {"error": str(result)}
-            else:
-                merged[tools[i]] = result
+                value = {"error": str(result)}
 
-        return {"parallel_results": merged}
+            # Preserve all branches even when tool names repeat.
+            if tools[i] in merged:
+                if not isinstance(merged[tools[i]], list):
+                    merged[tools[i]] = [merged[tools[i]]]
+                merged[tools[i]].append(value)
+            else:
+                merged[tools[i]] = value
+
+            indexed_results.append(
+                {
+                    "index": i,
+                    "tool": tools[i],
+                    "canonical_index": branch_to_canonical[i],
+                    "result": value,
+                }
+            )
+
+        return {
+            "parallel_results": merged,
+            "parallel_results_by_index": indexed_results,
+            "parallel_dedupe": {
+                "enabled": bool(composition.parallel_dedupe),
+                "total_branches": len(branch_specs),
+                "canonical_branches": len(canonical_branches),
+                "deduped_branches": max(0, len(branch_specs) - len(canonical_branches)),
+                "branch_to_canonical": branch_to_canonical,
+            },
+        }
 
     elif workflow_type == WorkflowType.SEGMENT_PROCESS:
         # Segment-Process: segment → process each → aggregate

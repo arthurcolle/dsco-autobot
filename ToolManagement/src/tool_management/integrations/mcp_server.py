@@ -479,7 +479,7 @@ class MCPServer:
             },
             {
                 "name": "batch_execute",
-                "description": "Execute multiple independent tool calls in one request. Supports parallel or sequential execution and returns results in input order.",
+                "description": "Execute multiple independent tool calls in one request with preflight dedupe and canonical fanout controls. Returns results in input order.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -508,6 +508,42 @@ class MCPServer:
                             "type": "string",
                             "enum": ["parallel", "sequential"],
                             "default": "parallel"
+                        },
+                        "max_parallel": {
+                            "type": "integer",
+                            "description": "Maximum in-flight canonical calls for parallel execution",
+                            "default": 16
+                        },
+                        "dedupe_calls": {
+                            "type": "boolean",
+                            "description": "Deduplicate equivalent batch calls before dispatch",
+                            "default": True
+                        },
+                        "dedupe_on_tool": {
+                            "type": "boolean",
+                            "description": "Include tool identity in dedupe fingerprint",
+                            "default": True
+                        },
+                        "max_canonical_calls": {
+                            "type": "integer",
+                            "description": "Optional cap on unique canonical calls after dedupe"
+                        },
+                        "overflow_policy": {
+                            "type": "string",
+                            "enum": ["reject", "truncate"],
+                            "description": "Behavior when canonical calls exceed max_canonical_calls",
+                            "default": "reject"
+                        },
+                        "auto_follow_up": {
+                            "type": "boolean",
+                            "description": "Persist follow-up actions when risky fanout patterns are detected",
+                            "default": True
+                        },
+                        "trace_id": {
+                            "type": "string"
+                        },
+                        "session_id": {
+                            "type": "string"
                         }
                     },
                     "required": ["calls"]
@@ -842,6 +878,67 @@ class MCPServer:
                         "hours": {"type": "integer", "default": 24},
                         "limit": {"type": "integer", "default": 500}
                     }
+                }
+            },
+            {
+                "name": "generate_execution_follow_ups",
+                "description": "Generate durable follow-up actions from execution-group merge pressure and reintegration risk.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "limit": {"type": "integer", "default": 50},
+                        "merge_pressure_threshold": {"type": "number", "default": 2.0},
+                        "items_threshold": {"type": "integer", "default": 200},
+                        "max_items_target": {"type": "integer", "default": 120},
+                        "include_compaction_actions": {"type": "boolean", "default": True},
+                        "include_reducer_actions": {"type": "boolean", "default": True},
+                        "include_fanout_actions": {"type": "boolean", "default": True},
+                        "auto_persist": {"type": "boolean", "default": True},
+                        "dedupe_window_seconds": {"type": "integer", "default": 3600},
+                        "trace_id": {"type": "string"},
+                        "session_id": {"type": "string"}
+                    }
+                }
+            },
+            {
+                "name": "list_execution_follow_ups",
+                "description": "List durable follow-up actions for autonomous operations, filtered by status/priority/type/trace.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "priority": {"type": "string"},
+                        "action_type": {"type": "string"},
+                        "source_type": {"type": "string"},
+                        "trace_id": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 200}
+                    }
+                }
+            },
+            {
+                "name": "get_execution_follow_up_analytics",
+                "description": "Get follow-up action analytics including open/in-progress/completed mix and overdue counts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "limit": {"type": "integer", "default": 25}
+                    }
+                }
+            },
+            {
+                "name": "update_execution_follow_up_status",
+                "description": "Update a follow-up action status (open|in_progress|completed|dismissed|failed) and attach metadata.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "follow_up_id": {"type": "string"},
+                        "status": {"type": "string", "default": "completed"},
+                        "metadata": {"type": "object"}
+                    },
+                    "required": ["follow_up_id"]
                 }
             },
             {
@@ -1282,6 +1379,14 @@ class MCPServer:
                     json={
                         "calls": tool_args.get("calls", []),
                         "execution": tool_args.get("execution", "parallel"),
+                        "max_parallel": tool_args.get("max_parallel"),
+                        "dedupe_calls": bool(tool_args.get("dedupe_calls", True)),
+                        "dedupe_on_tool": bool(tool_args.get("dedupe_on_tool", True)),
+                        "max_canonical_calls": tool_args.get("max_canonical_calls"),
+                        "overflow_policy": tool_args.get("overflow_policy", "reject"),
+                        "auto_follow_up": bool(tool_args.get("auto_follow_up", True)),
+                        "trace_id": tool_args.get("trace_id"),
+                        "session_id": tool_args.get("session_id"),
                     },
                     timeout=35.0,
                 )
@@ -2201,6 +2306,151 @@ class MCPServer:
                     "isError": True,
                 }
 
+        elif tool_name == "generate_execution_follow_ups":
+            try:
+                client = get_http_client()
+                payload = {
+                    "hours": int(tool_args.get("hours", 24)),
+                    "limit": int(tool_args.get("limit", 50)),
+                    "merge_pressure_threshold": float(tool_args.get("merge_pressure_threshold", 2.0)),
+                    "items_threshold": int(tool_args.get("items_threshold", 200)),
+                    "max_items_target": int(tool_args.get("max_items_target", 120)),
+                    "include_compaction_actions": bool(tool_args.get("include_compaction_actions", True)),
+                    "include_reducer_actions": bool(tool_args.get("include_reducer_actions", True)),
+                    "include_fanout_actions": bool(tool_args.get("include_fanout_actions", True)),
+                    "auto_persist": bool(tool_args.get("auto_persist", True)),
+                    "dedupe_window_seconds": int(tool_args.get("dedupe_window_seconds", 3600)),
+                    "trace_id": tool_args.get("trace_id"),
+                    "session_id": tool_args.get("session_id"),
+                }
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/follow-ups/generate",
+                    json=payload,
+                    timeout=15.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"generate_execution_follow_ups failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"generate_execution_follow_ups failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "list_execution_follow_ups":
+            try:
+                client = get_http_client()
+                params = {"limit": int(tool_args.get("limit", 200))}
+                for key in ("status", "priority", "action_type", "source_type", "trace_id", "session_id"):
+                    value = tool_args.get(key)
+                    if value:
+                        params[key] = str(value)
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/follow-ups",
+                    params=params,
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"list_execution_follow_ups failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"list_execution_follow_ups failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_execution_follow_up_analytics":
+            try:
+                client = get_http_client()
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/follow-ups/analytics",
+                    params={
+                        "hours": int(tool_args.get("hours", 24)),
+                        "limit": int(tool_args.get("limit", 25)),
+                    },
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_follow_up_analytics failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_execution_follow_up_analytics failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "update_execution_follow_up_status":
+            try:
+                follow_up_id = str(tool_args.get("follow_up_id") or "").strip()
+                if not follow_up_id:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({
+                            "error": "follow_up_id is required"
+                        }, indent=2)}],
+                        "isError": True,
+                    }
+                client = get_http_client()
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/follow-ups/{follow_up_id}/status",
+                    json={
+                        "status": tool_args.get("status", "completed"),
+                        "metadata": tool_args.get("metadata", {}),
+                    },
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"update_execution_follow_up_status failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"update_execution_follow_up_status failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
         elif tool_name == "recommend_tools":
             try:
                 client = get_http_client()
@@ -2468,6 +2718,10 @@ class MCPServer:
                             "infer_tool_dependencies",
                             "get_execution_policy_decisions",
                             "get_execution_policy_analytics",
+                            "generate_execution_follow_ups",
+                            "list_execution_follow_ups",
+                            "get_execution_follow_up_analytics",
+                            "update_execution_follow_up_status",
                             "recommend_tools",
                             "record_recommendation_feedback",
                             "get_recommendation_feedback_analytics",

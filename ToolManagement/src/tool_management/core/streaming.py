@@ -284,6 +284,8 @@ class StreamingExecutor:
         dedupe_key: Optional[str] = None,
         convergence_key: Optional[str] = None,
         fanout_budget: Optional[int] = None,
+        group_reducer: Optional[str] = None,
+        group_reducer_config: Optional[Dict[str, Any]] = None,
         callback_url: Optional[str] = None,
         callback_events: Optional[List[str]] = None,
     ) -> StreamingExecution:
@@ -309,6 +311,20 @@ class StreamingExecutor:
             convergence_key
             if convergence_key is not None
             else (inputs.get("_convergence_key") if isinstance(inputs, dict) else None)
+        )
+        normalized_group_reducer = str(
+            group_reducer
+            if group_reducer is not None
+            else (inputs.get("_group_reducer") if isinstance(inputs, dict) else "append_unique")
+        ).strip().lower() or "append_unique"
+        resolved_group_reducer_config = (
+            dict(group_reducer_config)
+            if isinstance(group_reducer_config, dict)
+            else (
+                dict(inputs.get("_group_reducer_config"))
+                if isinstance(inputs, dict) and isinstance(inputs.get("_group_reducer_config"), dict)
+                else {}
+            )
         )
         effective_fanout_budget = self._resolve_fanout_budget(
             fanout_budget
@@ -401,6 +417,9 @@ class StreamingExecutor:
             execution.control_state["fanout_budget"] = effective_fanout_budget
         if normalized_convergence_key:
             execution.control_state["convergence_key"] = normalized_convergence_key
+            execution.control_state["group_reducer"] = normalized_group_reducer
+            if resolved_group_reducer_config:
+                execution.control_state["group_reducer_config"] = resolved_group_reducer_config
         if callback_url:
             execution.control_state["callback_url"] = callback_url
             execution.control_state["callback_events"] = self._normalize_callback_events(callback_events)
@@ -916,6 +935,9 @@ class StreamingExecutor:
         if self._execution_store:
             try:
                 self._execution_store.cleanup_old(max_age_seconds=max_age_seconds)
+                group_ttl = int(os.getenv("EXECUTION_GROUP_TTL_SECONDS", "0"))
+                if group_ttl > 0:
+                    self._execution_store.cleanup_old_execution_group_states(max_age_seconds=group_ttl)
             except Exception as exc:
                 logger.debug(f"Durable execution cleanup failed: {exc}")
 
@@ -950,6 +972,11 @@ class StreamingExecutor:
         if not convergence_key:
             return
         reducer = str(execution.control_state.get("group_reducer") or "append_unique").strip().lower()
+        reducer_config = (
+            execution.control_state.get("group_reducer_config")
+            if isinstance(execution.control_state.get("group_reducer_config"), dict)
+            else {}
+        )
         max_items = max(1, int(os.getenv("STREAMING_GROUP_MAX_ITEMS", "2000")))
         try:
             snapshot = self._execution_store.upsert_execution_group_chunk(
@@ -961,9 +988,12 @@ class StreamingExecutor:
                 session_id=execution.session_id,
                 reducer=reducer,
                 max_items=max_items,
+                reducer_config=reducer_config,
             )
             execution.control_state["group_convergence_key"] = convergence_key
             execution.control_state["group_reducer"] = reducer
+            if reducer_config:
+                execution.control_state["group_reducer_config"] = reducer_config
             execution.control_state["group_chunk_count"] = int(snapshot.get("chunk_count") or 0)
             state = snapshot.get("state") if isinstance(snapshot.get("state"), dict) else {}
             items = state.get("items") if isinstance(state.get("items"), list) else []

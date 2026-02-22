@@ -323,3 +323,60 @@ def test_workflow_gate_default_skip_skips_step_execution(tmp_path, monkeypatch):
 
     # Step one is skipped by gate default action; only step two executes a tool call.
     assert len(calls) == 1
+
+
+def test_simple_parallel_branch_dedupe_reuses_canonical_execution(tmp_path, monkeypatch):
+    client, _store, calls = _build_client(tmp_path, monkeypatch)
+
+    payload = {
+        "workflow_type": "parallel",
+        "tools": ["search", "search", "read"],
+        "arguments": [
+            {"query": "same"},
+            {"query": "same"},
+            {"url": "https://example.com"},
+        ],
+        "inputs": {},
+        "parallel_dedupe": True,
+        "parallel_limit": 5,
+    }
+    response = client.post("/api/v1/compose/compose-simple", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    result = data["result"]
+    dedupe = result["parallel_dedupe"]
+    assert dedupe["enabled"] is True
+    assert dedupe["total_branches"] == 3
+    assert dedupe["canonical_branches"] == 2
+    assert dedupe["deduped_branches"] == 1
+    # Only 2 canonical executions should occur (search + read).
+    assert len(calls) == 2
+
+
+def test_simple_parallel_branch_dedupe_can_be_disabled(tmp_path, monkeypatch):
+    client, _store, calls = _build_client(tmp_path, monkeypatch)
+
+    payload = {
+        "workflow_type": "parallel",
+        "tools": ["search", "search", "read"],
+        "arguments": [
+            {"query": "same"},
+            {"query": "same"},
+            {"url": "https://example.com"},
+        ],
+        "inputs": {},
+        "parallel_dedupe": False,
+        "parallel_limit": 5,
+    }
+    response = client.post("/api/v1/compose/compose-simple", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    result = data["result"]
+    dedupe = result["parallel_dedupe"]
+    assert dedupe["enabled"] is False
+    assert dedupe["canonical_branches"] == 3
+    assert dedupe["deduped_branches"] == 0
+    # Dedupe disabled => all branches execute.
+    assert len(calls) == 3

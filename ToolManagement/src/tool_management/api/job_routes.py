@@ -50,6 +50,11 @@ class JobSubmitRequest(BaseModel):
         le=100000,
         description="Optional max in-flight jobs in the derived fanout scope",
     )
+    group_reducer: Optional[str] = Field(
+        default=None,
+        description="Reducer strategy for convergence groups (append_unique|append|latest|top_k|windowed|score_weighted)",
+    )
+    group_reducer_config: Dict[str, Any] = Field(default_factory=dict)
     callback_url: Optional[str] = Field(
         default=None,
         description="Optional webhook URL for async job notifications",
@@ -254,6 +259,8 @@ async def submit_job(request: JobSubmitRequest):
                 "_parent_execution_id": request.parent_execution_id,
                 "_convergence_key": request.convergence_key,
                 "_fanout_budget": request.fanout_budget,
+                "_group_reducer": request.group_reducer,
+                "_group_reducer_config": request.group_reducer_config,
             },
             client_id=request.client_id,
             trace_id=trace_id,
@@ -264,6 +271,8 @@ async def submit_job(request: JobSubmitRequest):
             dedupe_key=request.dedupe_key,
             convergence_key=request.convergence_key,
             fanout_budget=request.fanout_budget,
+            group_reducer=request.group_reducer,
+            group_reducer_config=request.group_reducer_config,
             callback_url=request.callback_url,
             callback_events=request.callback_events,
         )

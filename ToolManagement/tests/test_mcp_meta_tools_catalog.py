@@ -16,3 +16,7 @@ async def test_meta_tools_include_policy_recommendation_and_gate_controls():
     assert "get_recommendation_feedback_analytics" in names
     assert "record_workflow_gate_decision" in names
     assert "list_workflow_gate_decisions" in names
+    assert "generate_execution_follow_ups" in names
+    assert "list_execution_follow_ups" in names
+    assert "get_execution_follow_up_analytics" in names
+    assert "update_execution_follow_up_status" in names

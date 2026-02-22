@@ -284,7 +284,7 @@ async def mcp_health():
         "registry_tools": len(registry),
         "backend_tools": total_backend_tools,
         "total_tools": len(registry) + total_backend_tools,
-        "meta_tools": 29,  # Includes discovery, execution, policy/gate telemetry, recommendations, analytics, backend health, and export meta-tools.
+        "meta_tools": 33,  # Includes discovery, execution, policy/gate telemetry, follow-up actions, recommendations, analytics, backend health, and export meta-tools.
         "active_sessions": len(mcp_server.sessions),
         "backends": healthy_backends
     }
