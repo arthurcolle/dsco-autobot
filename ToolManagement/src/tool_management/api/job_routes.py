@@ -40,6 +40,14 @@ class JobSubmitRequest(BaseModel):
         default=None,
         description="Optional explicit dedupe key; defaults to hash(tool+arguments)",
     )
+    callback_url: Optional[str] = Field(
+        default=None,
+        description="Optional webhook URL for async job notifications",
+    )
+    callback_events: List[str] = Field(
+        default_factory=lambda: ["complete", "error"],
+        description="Webhook events: progress|complete|error|cancelled|all",
+    )
     client_id: Optional[str] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -64,6 +72,7 @@ class JobStatusResponse(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
+    callback: Dict[str, Any] = Field(default_factory=dict)
     timestamps: Dict[str, Optional[float]] = Field(default_factory=dict)
 
 
@@ -74,6 +83,8 @@ class JobSubmitResponse(BaseModel):
     priority: int = 0
     poll_url: str
     stream_url: str
+    callback_url: Optional[str] = None
+    callback_events: List[str] = Field(default_factory=list)
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
@@ -147,6 +158,16 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
         trace_id=ex.trace_id,
         session_id=ex.session_id,
         parent_execution_id=ex.parent_execution_id,
+        callback={
+            "url": ex.control_state.get("callback_url"),
+            "events": ex.control_state.get("callback_events", []),
+            "last_event": ex.control_state.get("last_webhook_event"),
+            "last_status_code": ex.control_state.get("last_webhook_status_code"),
+            "last_success": ex.control_state.get("last_webhook_success"),
+            "last_error": ex.control_state.get("last_webhook_error"),
+            "last_attempt_at": ex.control_state.get("last_webhook_at"),
+            "attempts": ex.control_state.get("webhook_attempts", 0),
+        },
         timestamps={
             "queued_at": ex.queued_at,
             "started_at": ex.started_at,
@@ -189,6 +210,8 @@ async def submit_job(request: JobSubmitRequest):
         priority=request.priority,
         dedupe_window_seconds=request.dedupe_window_seconds,
         dedupe_key=request.dedupe_key,
+        callback_url=request.callback_url,
+        callback_events=request.callback_events,
     )
     submit_count = int(execution.control_state.get("submit_count", 1))
 
@@ -199,6 +222,8 @@ async def submit_job(request: JobSubmitRequest):
         priority=execution.queue_priority,
         poll_url=f"/api/v1/jobs/{execution.execution_id}",
         stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+        callback_url=request.callback_url,
+        callback_events=request.callback_events,
         trace_id=execution.trace_id,
         session_id=execution.session_id,
         parent_execution_id=execution.parent_execution_id,

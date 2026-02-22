@@ -258,6 +258,8 @@ class StreamingExecutor:
         priority: int | str | None = None,
         dedupe_window_seconds: int = 0,
         dedupe_key: Optional[str] = None,
+        callback_url: Optional[str] = None,
+        callback_events: Optional[List[str]] = None,
     ) -> StreamingExecution:
         """
         Start a streaming execution.
@@ -328,6 +330,9 @@ class StreamingExecutor:
             execution.control_state["session_id"] = execution.session_id
         if execution.parent_execution_id:
             execution.control_state["parent_execution_id"] = execution.parent_execution_id
+        if callback_url:
+            execution.control_state["callback_url"] = callback_url
+            execution.control_state["callback_events"] = self._normalize_callback_events(callback_events)
         execution._event_persistor = self._persist_event
 
         self._executions[execution.execution_id] = execution
@@ -760,6 +765,7 @@ class StreamingExecutor:
 
     def _persist_event(self, execution: StreamingExecution, event: ToolEvent):
         if not self._execution_store:
+            self._schedule_webhook(execution, event)
             return
         self._execution_store.append_event(
             execution_id=execution.execution_id,
@@ -773,6 +779,7 @@ class StreamingExecutor:
             error=event.error,
         )
         self._persist_execution(execution, last_event=event)
+        self._schedule_webhook(execution, event)
 
     def _persist_execution(self, execution: StreamingExecution, last_event: Optional[ToolEvent] = None):
         if not self._execution_store:
@@ -864,6 +871,125 @@ class StreamingExecutor:
 
         self._executions[execution.execution_id] = execution
         return execution
+
+    def _normalize_callback_events(self, callback_events: Optional[List[str]]) -> List[str]:
+        if not callback_events:
+            return ["complete", "error"]
+        normalized: List[str] = []
+        for raw in callback_events:
+            value = str(raw).strip().lower()
+            if not value:
+                continue
+            if value in {"completed", "completion"}:
+                value = "complete"
+            if value not in {"progress", "complete", "error", "cancelled", "all"}:
+                continue
+            if value not in normalized:
+                normalized.append(value)
+        return normalized or ["complete", "error"]
+
+    def _map_event_to_callback(self, event_type: EventType) -> Optional[str]:
+        if event_type in {EventType.PROGRESS, EventType.PARTIAL}:
+            return "progress"
+        if event_type == EventType.COMPLETED:
+            return "complete"
+        if event_type == EventType.ERROR:
+            return "error"
+        if event_type == EventType.CANCELLED:
+            return "cancelled"
+        return None
+
+    def _schedule_webhook(self, execution: StreamingExecution, event: ToolEvent):
+        callback_url = str(execution.control_state.get("callback_url") or "").strip()
+        if not callback_url:
+            return
+
+        callback_event = self._map_event_to_callback(event.type)
+        if not callback_event:
+            return
+
+        subscribed_events = self._normalize_callback_events(execution.control_state.get("callback_events"))
+        if "all" not in subscribed_events and callback_event not in subscribed_events:
+            return
+
+        now = time.time()
+        if callback_event == "progress":
+            progress_interval = float(os.getenv("JOB_WEBHOOK_PROGRESS_INTERVAL_SECONDS", "2.0"))
+            last_progress_at = float(execution.control_state.get("last_progress_webhook_at") or 0.0)
+            if (now - last_progress_at) < max(0.0, progress_interval):
+                return
+            execution.control_state["last_progress_webhook_at"] = now
+
+        payload = {
+            "event": callback_event,
+            "event_type": event.type.value,
+            "job_id": execution.execution_id,
+            "call_id": execution.execution_id,
+            "tool": execution.tool_name,
+            "status": execution.status,
+            "progress": execution.progress,
+            "trace_id": execution.trace_id,
+            "session_id": execution.session_id,
+            "parent_execution_id": execution.parent_execution_id,
+            "timestamp": event.timestamp,
+            "message": event.message,
+            "data": event.data,
+            "error": event.error,
+        }
+
+        try:
+            asyncio.get_running_loop().create_task(
+                self._post_webhook(callback_url, payload, execution, callback_event)
+            )
+        except RuntimeError:
+            # No running loop (e.g., synchronous shutdown path) - skip webhook delivery.
+            return
+
+    async def _post_webhook(
+        self,
+        callback_url: str,
+        payload: Dict[str, Any],
+        execution: StreamingExecution,
+        callback_event: str,
+    ):
+        import httpx
+
+        timeout_seconds = float(os.getenv("JOB_WEBHOOK_TIMEOUT_SECONDS", "5.0"))
+        max_attempts = max(1, int(os.getenv("JOB_WEBHOOK_RETRY_ATTEMPTS", "2")))
+        backoff_seconds = max(0.0, float(os.getenv("JOB_WEBHOOK_RETRY_BACKOFF_SECONDS", "1.0")))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    response = await client.post(callback_url, json=payload)
+
+                execution.control_state["last_webhook_event"] = callback_event
+                execution.control_state["last_webhook_status_code"] = int(response.status_code)
+                execution.control_state["last_webhook_at"] = time.time()
+                execution.control_state["webhook_attempts"] = (
+                    int(execution.control_state.get("webhook_attempts", 0)) + 1
+                )
+                if 200 <= response.status_code < 300:
+                    execution.control_state["last_webhook_success"] = True
+                    execution.control_state.pop("last_webhook_error", None)
+                    self._persist_execution(execution)
+                    return
+
+                execution.control_state["last_webhook_success"] = False
+                execution.control_state["last_webhook_error"] = f"HTTP {response.status_code}"
+                self._persist_execution(execution)
+            except Exception as exc:
+                execution.control_state["last_webhook_event"] = callback_event
+                execution.control_state["last_webhook_at"] = time.time()
+                execution.control_state["last_webhook_success"] = False
+                execution.control_state["last_webhook_error"] = str(exc)
+                execution.control_state["webhook_attempts"] = (
+                    int(execution.control_state.get("webhook_attempts", 0)) + 1
+                )
+                self._persist_execution(execution)
+
+            if attempt < max_attempts and backoff_seconds > 0:
+                await asyncio.sleep(backoff_seconds * attempt)
 
     def _normalize_priority(self, priority: int | str | None) -> int:
         if priority is None:

@@ -65,6 +65,11 @@ class ExecuteRequest(BaseModel):
     )
     dedupe_key: Optional[str] = None
     detach: bool = False
+    callback_url: Optional[str] = None
+    callback_events: List[str] = Field(
+        default_factory=lambda: ["complete", "error"],
+        description="Webhook callback events: progress|complete|error|cancelled|all",
+    )
     client_id: Optional[str] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -85,6 +90,8 @@ class ExecuteResponse(BaseModel):
     idempotent_replay: bool = False
     deduplicated: bool = False
     priority: Optional[int] = None
+    callback_url: Optional[str] = None
+    callback_events: List[str] = Field(default_factory=list)
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
@@ -101,6 +108,8 @@ class BatchCall(BaseModel):
     priority: Optional[str] = "p1"
     dedupe_window_seconds: int = Field(default=60, ge=0, le=3600)
     dedupe_key: Optional[str] = None
+    callback_url: Optional[str] = None
+    callback_events: List[str] = Field(default_factory=list)
     stream: bool = False
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -220,6 +229,8 @@ async def _submit_job(
     trace_id: Optional[str] = None,
     session_id: Optional[str] = None,
     parent_execution_id: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    callback_events: Optional[List[str]] = None,
 ):
     try:
         executor = get_streaming_executor()
@@ -242,6 +253,8 @@ async def _submit_job(
         priority=priority,
         dedupe_window_seconds=dedupe_window_seconds,
         dedupe_key=dedupe_key,
+        callback_url=callback_url,
+        callback_events=callback_events,
     )
     return execution
 
@@ -457,6 +470,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             client_id=request.client_id,
             trace_id=trace_id,
             session_id=session_id,
@@ -479,6 +494,8 @@ async def execute(request: ExecuteRequest):
                 priority=execution.queue_priority,
                 poll_url=f"/api/v1/jobs/{execution.execution_id}",
                 stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+                callback_url=request.callback_url,
+                callback_events=request.callback_events,
                 trace_id=execution_trace_id,
                 session_id=execution_session_id,
                 parent_execution_id=execution_parent_id,
@@ -510,6 +527,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             client_id=request.client_id,
             trace_id=trace_id,
             session_id=session_id,
@@ -529,6 +548,8 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             trace_id=execution_trace_id,
             session_id=execution_session_id,
             parent_execution_id=execution_parent_id,
@@ -564,6 +585,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             client_id=request.client_id,
             trace_id=trace_id,
             session_id=session_id,
@@ -583,6 +606,8 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             trace_id=execution_trace_id,
             session_id=execution_session_id,
             parent_execution_id=execution_parent_id,
@@ -618,6 +643,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             client_id=request.client_id,
             trace_id=trace_id,
             session_id=session_id,
@@ -637,6 +664,8 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
             trace_id=execution_trace_id,
             session_id=execution_session_id,
             parent_execution_id=execution_parent_id,
@@ -727,6 +756,8 @@ async def execute_batch(request: BatchExecuteRequest):
                         priority=call.priority,
                         dedupe_window_seconds=call.dedupe_window_seconds,
                         dedupe_key=call.dedupe_key,
+                        callback_url=call.callback_url,
+                        callback_events=call.callback_events,
                         trace_id=call.trace_id,
                         session_id=call.session_id,
                         parent_execution_id=call.parent_execution_id,
@@ -775,13 +806,15 @@ async def execute_batch(request: BatchExecuteRequest):
                         timeout_ms=call.timeout_ms,
                         sync_timeout_ms=call.sync_timeout_ms,
                         idempotency_key=call.idempotency_key,
-                        priority=call.priority,
-                        dedupe_window_seconds=call.dedupe_window_seconds,
-                        dedupe_key=call.dedupe_key,
-                        trace_id=call.trace_id,
-                        session_id=call.session_id,
-                        parent_execution_id=call.parent_execution_id,
-                    )
+                priority=call.priority,
+                dedupe_window_seconds=call.dedupe_window_seconds,
+                dedupe_key=call.dedupe_key,
+                callback_url=call.callback_url,
+                callback_events=call.callback_events,
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+                parent_execution_id=call.parent_execution_id,
+            )
                 )
                 if isinstance(raw, ExecuteResponse):
                     results.append(raw)
