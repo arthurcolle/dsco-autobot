@@ -709,6 +709,20 @@ class MCPServer:
                     },
                     "required": ["job_id"]
                 }
+            },
+            {
+                "name": "get_usage_stats",
+                "description": "Get durable execution analytics (volume, latency/progress, status mix) for a lookback window.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {
+                            "type": "integer",
+                            "description": "Lookback window in hours",
+                            "default": 24
+                        }
+                    }
+                }
             }
         ]
 
@@ -1648,6 +1662,52 @@ class MCPServer:
                     "isError": True
                 }
 
+        elif tool_name == "get_usage_stats":
+            # Durable execution analytics
+            try:
+                client = get_http_client()
+                hours = int(tool_args.get("hours", 24))
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/jobs/analytics",
+                    params={"hours": hours},
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json_module.dumps(result, indent=2),
+                            }
+                        ],
+                        "isError": False,
+                    }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"get_usage_stats failed with status {response.status_code}",
+                                "details": response.text[:300],
+                            }, indent=2),
+                        }
+                    ],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps({
+                                "error": f"get_usage_stats failed: {str(e)}"
+                            }, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
         # Unknown meta-tool
         return {
             "content": [
@@ -1669,7 +1729,8 @@ class MCPServer:
                             "query_tools",
                             "submit_job",
                             "get_job_status",
-                            "cancel_job"
+                            "cancel_job",
+                            "get_usage_stats"
                         ]
                     }, indent=2)
                 }

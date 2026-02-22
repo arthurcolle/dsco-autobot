@@ -179,6 +179,30 @@ async def submit_job(request: JobSubmitRequest):
     )
 
 
+@router.get("/analytics")
+async def get_job_analytics(
+    hours: int = Query(24, ge=1, le=720, description="Lookback window in hours"),
+):
+    """Durable execution analytics sourced from persisted job data."""
+    try:
+        executor = get_streaming_executor()
+    except ValueError:
+        raise HTTPException(503, "Streaming executor not initialized")
+
+    store = getattr(executor, "_execution_store", None)
+    if not store:
+        return {
+            "enabled": False,
+            "message": "Durable execution store is disabled",
+            "window_hours": hours,
+        }
+
+    return {
+        "enabled": True,
+        "analytics": store.get_usage_stats(hours=hours),
+    }
+
+
 @router.get("/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(job_id: str):
     """Poll the status of a submitted job."""
@@ -247,7 +271,8 @@ async def list_jobs(
         raise HTTPException(503, "Streaming executor not initialized")
 
     jobs = []
-    for ex in executor._executions.values():
+    executions = executor.list_executions(status=status, limit=limit) if hasattr(executor, "list_executions") else list(executor._executions.values())
+    for ex in executions:
         if status and ex.status != status:
             continue
         jobs.append({

@@ -641,12 +641,25 @@ def create_app() -> FastAPI:
         store = get_tool_store()
         stats = store.get_stats()
         warm_pool_state = getattr(app.state, "warm_pool_state", {"enabled": False})
+        durable_jobs = {"enabled": False}
+        try:
+            from .core.streaming import get_streaming_executor
+            executor = get_streaming_executor()
+            execution_store = getattr(executor, "_execution_store", None)
+            if execution_store:
+                durable_jobs = {
+                    "enabled": True,
+                    "db_path": str(getattr(execution_store, "db_path", "")),
+                }
+        except Exception:
+            pass
         return {
             "status": "healthy",
             "tool_count": stats.get("tool_count", 0),
             "backend_count": stats.get("backend_count", 0),
             "healthy_backends": stats.get("healthy_backends", 0),
             "warm_pool": warm_pool_state,
+            "durable_jobs": durable_jobs,
         }
 
     # Include retrieval routes FIRST (specific paths before wildcards)

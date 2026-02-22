@@ -123,6 +123,7 @@ class StreamingExecution:
     detached: bool = False
     dedupe_key: Optional[str] = None
     control_state: Dict[str, Any] = field(default_factory=dict)
+    _event_persistor: Optional[Callable[["StreamingExecution", ToolEvent], None]] = None
 
     def __post_init__(self):
         # Not paused by default.
@@ -154,6 +155,12 @@ class StreamingExecution:
                 await queue.put(event)
             except Exception:
                 pass
+
+        if self._event_persistor:
+            try:
+                self._event_persistor(self, event)
+            except Exception as exc:
+                logger.debug(f"Failed to persist execution event {self.execution_id}: {exc}")
 
     def cancel(self):
         """Request cancellation."""
@@ -205,6 +212,7 @@ class StreamingExecutor:
         tool_executor: Callable,
         heartbeat_interval: float = 15.0,
         max_concurrent: int = 8,
+        execution_store: Any = None,
     ):
         """
         Initialize executor.
@@ -226,6 +234,15 @@ class StreamingExecutor:
         self._scheduler_task: Optional[asyncio.Task] = None
         self._dedupe_index: Dict[str, tuple[str, float]] = {}
         self._shutdown: bool = False
+        self._execution_store = execution_store
+
+        if self._execution_store is None and os.getenv("ENABLE_DURABLE_EXECUTIONS", "1") == "1":
+            try:
+                from ..persistence import get_execution_store
+                self._execution_store = get_execution_store()
+            except Exception as exc:
+                logger.warning(f"Durable execution store unavailable: {exc}")
+                self._execution_store = None
 
     async def execute(
         self,
@@ -267,6 +284,25 @@ class StreamingExecutor:
                         )
                         existing_execution.control_state["last_dedupe_reuse_at"] = now
                         return existing_execution
+            if self._execution_store:
+                stored = self._execution_store.find_recent_by_dedupe_key(
+                    effective_dedupe_key,
+                    now - dedupe_window_seconds,
+                )
+                if stored:
+                    existing_id = stored.get("execution_id")
+                    if existing_id:
+                        existing_execution = self._executions.get(existing_id) or self._hydrate_execution(existing_id)
+                        if existing_execution and existing_execution.status not in {"error", "cancelled"}:
+                            existing_execution.control_state["submit_count"] = (
+                                int(existing_execution.control_state.get("submit_count", 1)) + 1
+                            )
+                            existing_execution.control_state["deduplicated_requests"] = (
+                                int(existing_execution.control_state.get("deduplicated_requests", 0)) + 1
+                            )
+                            existing_execution.control_state["last_dedupe_reuse_at"] = now
+                            self._persist_execution(existing_execution)
+                            return existing_execution
 
         execution = StreamingExecution(
             tool_name=tool_name,
@@ -277,10 +313,12 @@ class StreamingExecutor:
             dedupe_key=effective_dedupe_key,
         )
         execution.control_state["submit_count"] = 1
+        execution._event_persistor = self._persist_event
 
         self._executions[execution.execution_id] = execution
         if dedupe_window_seconds > 0:
             self._dedupe_index[effective_dedupe_key] = (execution.execution_id, now)
+        self._persist_execution(execution)
 
         # Queue execution and let scheduler honor priority + concurrency.
         heapq.heappush(
@@ -339,6 +377,7 @@ class StreamingExecutor:
         """Run the actual execution with event emission."""
         execution.status = "running"
         execution.started_at = time.time()
+        self._persist_execution(execution)
 
         # Emit started event
         await execution.emit(ToolEvent(
@@ -430,6 +469,7 @@ class StreamingExecutor:
                 pass
             if execution.status in {"completed", "error", "cancelled"}:
                 self._execution_inputs.pop(execution.execution_id, None)
+                self._persist_execution(execution)
             self._active_count = max(0, self._active_count - 1)
             self._queue_event.set()
 
@@ -446,7 +486,10 @@ class StreamingExecutor:
 
     def get_execution(self, execution_id: str) -> Optional[StreamingExecution]:
         """Get an execution by ID."""
-        return self._executions.get(execution_id)
+        execution = self._executions.get(execution_id)
+        if execution:
+            return execution
+        return self._hydrate_execution(execution_id)
 
     def cancel_execution(self, execution_id: str) -> bool:
         """Cancel an execution."""
@@ -459,6 +502,7 @@ class StreamingExecutor:
                 execution.status = "cancelled"
                 execution.completed_at = time.time()
                 self._execution_inputs.pop(execution.execution_id, None)
+                self._persist_execution(execution)
                 try:
                     asyncio.create_task(execution.emit(ToolEvent(
                         type=EventType.CANCELLED,
@@ -555,6 +599,7 @@ class StreamingExecutor:
         new_priority = self._normalize_priority(priority)
         execution.queue_priority = new_priority
         execution.control_state["priority"] = priority
+        self._persist_execution(execution)
         heapq.heappush(
             self._pending_queue,
             (-new_priority, time.time(), execution.execution_id),
@@ -639,7 +684,35 @@ class StreamingExecutor:
             "active_count": self._active_count,
             "queue_depth": len(self._pending_queue),
             "max_concurrent": self.max_concurrent,
+            "durable_store_enabled": bool(self._execution_store),
         }
+
+    def list_executions(self, status: Optional[str] = None, limit: int = 100) -> List[StreamingExecution]:
+        """List executions from memory plus durable storage."""
+        merged: Dict[str, StreamingExecution] = {}
+        for execution in self._executions.values():
+            if status and execution.status != status:
+                continue
+            merged[execution.execution_id] = execution
+
+        if self._execution_store:
+            try:
+                rows = self._execution_store.list_executions(status=status, limit=max(limit, 200))
+                for row in rows:
+                    execution_id = row.get("execution_id")
+                    if not execution_id or execution_id in merged:
+                        continue
+                    hydrated = self._hydrate_execution(execution_id, row=row)
+                    if hydrated:
+                        merged[execution_id] = hydrated
+                    if len(merged) >= limit:
+                        break
+            except Exception as exc:
+                logger.debug(f"Failed to load durable executions: {exc}")
+
+        values = list(merged.values())
+        values.sort(key=lambda e: (e.started_at or e.queued_at or 0), reverse=True)
+        return values[:limit]
 
     def cleanup_old(self, max_age_seconds: int = 3600):
         """Remove old completed executions."""
@@ -662,7 +735,112 @@ class StreamingExecutor:
         for key in stale_keys:
             self._dedupe_index.pop(key, None)
 
+        if self._execution_store:
+            try:
+                self._execution_store.cleanup_old(max_age_seconds=max_age_seconds)
+            except Exception as exc:
+                logger.debug(f"Durable execution cleanup failed: {exc}")
+
         return len(to_remove)
+
+    def _persist_event(self, execution: StreamingExecution, event: ToolEvent):
+        if not self._execution_store:
+            return
+        self._execution_store.append_event(
+            execution_id=execution.execution_id,
+            event_type=event.type.value,
+            timestamp=event.timestamp,
+            progress=event.progress,
+            message=event.message,
+            data=event.data,
+            error=event.error,
+        )
+        self._persist_execution(execution, last_event=event)
+
+    def _persist_execution(self, execution: StreamingExecution, last_event: Optional[ToolEvent] = None):
+        if not self._execution_store:
+            return
+
+        result = None
+        error = execution.error if hasattr(execution, "error") else None
+        last_message = None
+        if last_event:
+            last_message = last_event.message
+            if last_event.type == EventType.COMPLETED:
+                result = last_event.data
+            if last_event.type == EventType.ERROR:
+                error = last_event.error or last_event.message
+            if last_event.type == EventType.CANCELLED and not error:
+                error = "cancelled"
+
+        self._execution_store.upsert_execution(
+            execution_id=execution.execution_id,
+            tool_name=execution.tool_name,
+            client_id=execution.client_id,
+            status=execution.status,
+            progress=execution.progress,
+            queue_priority=execution.queue_priority,
+            dedupe_key=execution.dedupe_key,
+            queued_at=execution.queued_at,
+            started_at=execution.started_at,
+            completed_at=execution.completed_at,
+            last_message=last_message,
+            error=error,
+            result=result,
+            control_state=execution.control_state,
+        )
+
+    def _hydrate_execution(
+        self,
+        execution_id: str,
+        row: Optional[Dict[str, Any]] = None,
+    ) -> Optional[StreamingExecution]:
+        if not self._execution_store:
+            return None
+        if row is None:
+            row = self._execution_store.get_execution(execution_id)
+        if not row:
+            return None
+
+        execution = StreamingExecution(
+            execution_id=row["execution_id"],
+            tool_name=row.get("tool_name", ""),
+            client_id=row.get("client_id"),
+        )
+        execution.status = row.get("status", "pending")
+        execution.progress = float(row.get("progress") or 0.0)
+        execution.queue_priority = int(row.get("queue_priority") or 0)
+        execution.dedupe_key = row.get("dedupe_key")
+        execution.queued_at = row.get("queued_at")
+        execution.started_at = row.get("started_at")
+        execution.completed_at = row.get("completed_at")
+        execution.control_state = row.get("control_state", {}) or {}
+        execution._event_persistor = self._persist_event
+
+        try:
+            persisted_events = self._execution_store.get_events(execution.execution_id)
+            for persisted in persisted_events:
+                event_type_value = persisted.get("event_type", EventType.LOG.value)
+                try:
+                    event_type = EventType(event_type_value)
+                except Exception:
+                    event_type = EventType.LOG
+                execution.events.append(
+                    ToolEvent(
+                        type=event_type,
+                        execution_id=execution.execution_id,
+                        timestamp=float(persisted.get("timestamp") or time.time()),
+                        progress=persisted.get("progress"),
+                        message=persisted.get("message"),
+                        data=persisted.get("data"),
+                        error=persisted.get("error"),
+                    )
+                )
+        except Exception as exc:
+            logger.debug(f"Failed to hydrate events for {execution.execution_id}: {exc}")
+
+        self._executions[execution.execution_id] = execution
+        return execution
 
     def _normalize_priority(self, priority: int | str | None) -> int:
         if priority is None:

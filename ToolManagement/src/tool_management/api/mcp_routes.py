@@ -283,7 +283,7 @@ async def mcp_health():
         "registry_tools": len(registry),
         "backend_tools": total_backend_tools,
         "total_tools": len(registry) + total_backend_tools,
-        "meta_tools": 14,  # Includes discovery, execution, batch, and job-control meta-tools.
+        "meta_tools": 15,  # Includes discovery, execution, batch, job-control, and analytics meta-tools.
         "active_sessions": len(mcp_server.sessions),
         "backends": healthy_backends
     }
