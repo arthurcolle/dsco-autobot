@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
@@ -76,6 +77,16 @@ class ExecuteRequest(BaseModel):
         description="Deduplicate identical job requests in this window",
     )
     dedupe_key: Optional[str] = None
+    convergence_key: Optional[str] = Field(
+        default=None,
+        description="Optional semantic coalescing key to converge similar job submissions",
+    )
+    fanout_budget: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=100000,
+        description="Optional max in-flight jobs for this fanout scope",
+    )
     detach: bool = False
     callback_url: Optional[str] = None
     callback_events: List[str] = Field(
@@ -101,6 +112,8 @@ class ExecuteResponse(BaseModel):
     stream_url: Optional[str] = None
     idempotent_replay: bool = False
     deduplicated: bool = False
+    coalesced: bool = False
+    coalesced_requests: int = 0
     priority: Optional[int] = None
     callback_url: Optional[str] = None
     callback_events: List[str] = Field(default_factory=list)
@@ -122,6 +135,8 @@ class BatchCall(BaseModel):
     priority: Optional[str] = "p1"
     dedupe_window_seconds: int = Field(default=60, ge=0, le=3600)
     dedupe_key: Optional[str] = None
+    convergence_key: Optional[str] = None
+    fanout_budget: Optional[int] = Field(default=None, ge=1, le=100000)
     callback_url: Optional[str] = None
     callback_events: List[str] = Field(default_factory=list)
     stream: bool = False
@@ -133,6 +148,12 @@ class BatchCall(BaseModel):
 class BatchExecuteRequest(BaseModel):
     calls: List[BatchCall]
     execution: BatchExecutionMode = "parallel"
+    max_parallel: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=512,
+        description="Maximum in-flight calls when execution=parallel",
+    )
 
 
 class BatchExecuteResponse(BaseModel):
@@ -323,6 +344,8 @@ async def _submit_job(
     priority: Optional[str] = None,
     dedupe_window_seconds: int = 0,
     dedupe_key: Optional[str] = None,
+    convergence_key: Optional[str] = None,
+    fanout_budget: Optional[int] = None,
     client_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -335,25 +358,44 @@ async def _submit_job(
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    execution = await executor.execute(
-        tool_name=tool_name,
-        inputs={
-            **arguments,
-            "_timeout": timeout_ms / 1000.0,
-            "_trace_id": trace_id,
-            "_session_id": session_id,
-            "_parent_execution_id": parent_execution_id,
-        },
-        client_id=client_id,
-        trace_id=trace_id,
-        session_id=session_id,
-        parent_execution_id=parent_execution_id,
-        priority=priority,
-        dedupe_window_seconds=dedupe_window_seconds,
-        dedupe_key=dedupe_key,
-        callback_url=callback_url,
-        callback_events=callback_events,
-    )
+    try:
+        execution = await executor.execute(
+            tool_name=tool_name,
+            inputs={
+                **arguments,
+                "_timeout": timeout_ms / 1000.0,
+                "_trace_id": trace_id,
+                "_session_id": session_id,
+                "_parent_execution_id": parent_execution_id,
+                "_convergence_key": convergence_key,
+                "_fanout_budget": fanout_budget,
+            },
+            client_id=client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+            priority=priority,
+            dedupe_window_seconds=dedupe_window_seconds,
+            dedupe_key=dedupe_key,
+            convergence_key=convergence_key,
+            fanout_budget=fanout_budget,
+            callback_url=callback_url,
+            callback_events=callback_events,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if message.startswith("FANOUT_LIMIT_EXCEEDED:"):
+            raise HTTPException(
+                status_code=429,
+                detail=_structured_error(
+                    "FANOUT_LIMIT_EXCEEDED",
+                    message,
+                    category="resource_limit",
+                    retryable=True,
+                    retry_after_ms=2000,
+                ),
+            ) from exc
+        raise
     return execution
 
 
@@ -613,7 +655,6 @@ async def execute(request: ExecuteRequest):
         )
 
     async def submit_job_response(*, status: str = "submitted", error: Optional[Dict[str, Any]] = None) -> ExecuteResponse:
-        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
@@ -621,6 +662,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            convergence_key=request.convergence_key,
+            fanout_budget=request.fanout_budget,
             callback_url=request.callback_url,
             callback_events=request.callback_events,
             client_id=request.client_id,
@@ -635,7 +678,10 @@ async def execute(request: ExecuteRequest):
         execution_trace_id = execution.trace_id or trace_id
         execution_session_id = execution.session_id or session_id
         execution_parent_id = execution.parent_execution_id or parent_execution_id
-        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
+        control_state = execution.control_state if isinstance(getattr(execution, "control_state", None), dict) else {}
+        submit_count = int(control_state.get("submit_count", 1))
+        deduplicated = submit_count > 1
+        coalesced_requests = int(control_state.get("coalesced_requests", 0))
         return ExecuteResponse(
             status=status,
             tool=tool_name,
@@ -643,6 +689,8 @@ async def execute(request: ExecuteRequest):
             call_id=execution.execution_id,
             job_id=execution.execution_id,
             deduplicated=deduplicated,
+            coalesced=coalesced_requests > 0,
+            coalesced_requests=coalesced_requests,
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
@@ -656,7 +704,6 @@ async def execute(request: ExecuteRequest):
         )
 
     if selected_mode == "stream":
-        request_started_at = time.time()
         execution = await _submit_job(
             tool_name=tool_name,
             arguments=request.arguments,
@@ -664,6 +711,8 @@ async def execute(request: ExecuteRequest):
             priority=request.priority,
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
+            convergence_key=request.convergence_key,
+            fanout_budget=request.fanout_budget,
             callback_url=request.callback_url,
             callback_events=request.callback_events,
             client_id=request.client_id,
@@ -678,7 +727,10 @@ async def execute(request: ExecuteRequest):
         execution_trace_id = execution.trace_id or trace_id
         execution_session_id = execution.session_id or session_id
         execution_parent_id = execution.parent_execution_id or parent_execution_id
-        deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
+        control_state = execution.control_state if isinstance(getattr(execution, "control_state", None), dict) else {}
+        submit_count = int(control_state.get("submit_count", 1))
+        deduplicated = submit_count > 1
+        coalesced_requests = int(control_state.get("coalesced_requests", 0))
         if request.detach:
             executor = get_streaming_executor()
             await executor.detach_execution(execution.execution_id)
@@ -689,6 +741,8 @@ async def execute(request: ExecuteRequest):
                 call_id=execution.execution_id,
                 job_id=execution.execution_id,
                 deduplicated=deduplicated,
+                coalesced=coalesced_requests > 0,
+                coalesced_requests=coalesced_requests,
                 priority=execution.queue_priority,
                 poll_url=f"/api/v1/jobs/{execution.execution_id}",
                 stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
@@ -896,14 +950,24 @@ async def get_policy_decision_analytics(
 async def execute_batch(request: BatchExecuteRequest):
     if request.execution not in ("parallel", "sequential"):
         raise HTTPException(status_code=400, detail="execution must be parallel or sequential")
+    max_calls = max(1, int(os.getenv("EXECUTE_BATCH_MAX_CALLS", "256")))
+    if len(request.calls) > max_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch request too large: {len(request.calls)} calls (max {max_calls})",
+        )
 
     if request.execution == "parallel":
-        tasks = []
-        for call in request.calls:
+        default_parallel = max(1, int(os.getenv("EXECUTE_BATCH_PARALLEL_LIMIT", "16")))
+        parallel_limit = int(request.max_parallel or default_parallel)
+        parallel_limit = max(1, min(parallel_limit, len(request.calls)))
+        semaphore = asyncio.Semaphore(parallel_limit)
+
+        async def _run_call(call: BatchCall):
             if call.stream:
                 raise HTTPException(status_code=400, detail="Batch calls do not support stream=true")
-            tasks.append(
-                execute(
+            async with semaphore:
+                return await execute(
                     ExecuteRequest(
                         tool_name=call.tool_name,
                         tool=call.tool,
@@ -917,6 +981,8 @@ async def execute_batch(request: BatchExecuteRequest):
                         priority=call.priority,
                         dedupe_window_seconds=call.dedupe_window_seconds,
                         dedupe_key=call.dedupe_key,
+                        convergence_key=call.convergence_key,
+                        fanout_budget=call.fanout_budget,
                         callback_url=call.callback_url,
                         callback_events=call.callback_events,
                         trace_id=call.trace_id,
@@ -924,7 +990,8 @@ async def execute_batch(request: BatchExecuteRequest):
                         parent_execution_id=call.parent_execution_id,
                     )
                 )
-            )
+
+        tasks = [asyncio.create_task(_run_call(call)) for call in request.calls]
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
         results: List[ExecuteResponse] = []
         for call, raw in zip(request.calls, raw_results):
@@ -971,6 +1038,8 @@ async def execute_batch(request: BatchExecuteRequest):
                         priority=call.priority,
                         dedupe_window_seconds=call.dedupe_window_seconds,
                         dedupe_key=call.dedupe_key,
+                        convergence_key=call.convergence_key,
+                        fanout_budget=call.fanout_budget,
                         callback_url=call.callback_url,
                         callback_events=call.callback_events,
                         trace_id=call.trace_id,

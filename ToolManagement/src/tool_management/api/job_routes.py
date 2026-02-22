@@ -40,6 +40,16 @@ class JobSubmitRequest(BaseModel):
         default=None,
         description="Optional explicit dedupe key; defaults to hash(tool+arguments)",
     )
+    convergence_key: Optional[str] = Field(
+        default=None,
+        description="Optional semantic coalescing key to converge similar submissions",
+    )
+    fanout_budget: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=100000,
+        description="Optional max in-flight jobs in the derived fanout scope",
+    )
     callback_url: Optional[str] = Field(
         default=None,
         description="Optional webhook URL for async job notifications",
@@ -66,6 +76,7 @@ class JobStatusResponse(BaseModel):
     queue_priority: int = 0
     submit_count: int = 1
     deduplicated_requests: int = 0
+    coalesced_requests: int = 0
     partial_results: List[Any] = Field(default_factory=list)
     result: Optional[Any] = None
     error: Optional[str] = None
@@ -187,6 +198,7 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
         queue_priority=ex.queue_priority,
         submit_count=int(ex.control_state.get("submit_count", 1)),
         deduplicated_requests=int(ex.control_state.get("deduplicated_requests", 0)),
+        coalesced_requests=int(ex.control_state.get("coalesced_requests", 0)),
         partial_results=partial_results,
         result=result,
         error=error,
@@ -231,25 +243,35 @@ async def submit_job(request: JobSubmitRequest):
         )
 
     trace_id = request.trace_id or f"tr_{uuid4().hex}"
-    execution = await executor.execute(
-        tool_name=request.tool,
-        inputs={
-            **request.arguments,
-            "_timeout": request.timeout,
-            "_trace_id": trace_id,
-            "_session_id": request.session_id,
-            "_parent_execution_id": request.parent_execution_id,
-        },
-        client_id=request.client_id,
-        trace_id=trace_id,
-        session_id=request.session_id,
-        parent_execution_id=request.parent_execution_id,
-        priority=request.priority,
-        dedupe_window_seconds=request.dedupe_window_seconds,
-        dedupe_key=request.dedupe_key,
-        callback_url=request.callback_url,
-        callback_events=request.callback_events,
-    )
+    try:
+        execution = await executor.execute(
+            tool_name=request.tool,
+            inputs={
+                **request.arguments,
+                "_timeout": request.timeout,
+                "_trace_id": trace_id,
+                "_session_id": request.session_id,
+                "_parent_execution_id": request.parent_execution_id,
+                "_convergence_key": request.convergence_key,
+                "_fanout_budget": request.fanout_budget,
+            },
+            client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=request.session_id,
+            parent_execution_id=request.parent_execution_id,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
+            convergence_key=request.convergence_key,
+            fanout_budget=request.fanout_budget,
+            callback_url=request.callback_url,
+            callback_events=request.callback_events,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if message.startswith("FANOUT_LIMIT_EXCEEDED:"):
+            raise HTTPException(status_code=429, detail=message) from exc
+        raise
     submit_count = int(execution.control_state.get("submit_count", 1))
 
     return JobSubmitResponse(

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Depends, BackgroundTasks
@@ -106,6 +107,12 @@ class BatchExecuteRequest(BaseModel):
     inputs: Optional[List[Dict[str, Any]]] = Field(default=None, description="List of input objects")
 
     parallel: bool = Field(default=True, description="Execute in parallel")
+    max_parallel: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=512,
+        description="Maximum in-flight calls when parallel=true",
+    )
     fail_fast: bool = Field(default=False, description="Stop on first error")
 
     def get_calls(self) -> List[BatchToolCall]:
@@ -473,18 +480,29 @@ async def batch_execute(
     quota_manager = get_quota_manager()
 
     calls = request.get_calls()
+    max_calls = max(1, int(os.getenv("GATEWAY_BATCH_MAX_CALLS", "256")))
+    if len(calls) > max_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch request too large: {len(calls)} calls (max {max_calls})",
+        )
 
     if request.parallel:
-        # Parallel execution
-        tasks = [
-            execute_tool(
-                tool_name=call.tool,
-                inputs=call.input,
-                client_id=client_id,
-            )
-            for call in calls
-        ]
+        # Parallel execution with explicit in-flight cap.
+        default_parallel_limit = max(1, int(os.getenv("GATEWAY_BATCH_PARALLEL_LIMIT", "16")))
+        parallel_limit = int(request.max_parallel or default_parallel_limit)
+        parallel_limit = max(1, min(parallel_limit, len(calls) or 1))
+        semaphore = asyncio.Semaphore(parallel_limit)
 
+        async def _run(call: BatchToolCall):
+            async with semaphore:
+                return await execute_tool(
+                    tool_name=call.tool,
+                    inputs=call.input,
+                    client_id=client_id,
+                )
+
+        tasks = [asyncio.create_task(_run(call)) for call in calls]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
         for call, outcome in zip(calls, outcomes):

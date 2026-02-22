@@ -258,6 +258,10 @@ class StreamingExecutor:
         self._dedupe_index: Dict[str, tuple[str, float]] = {}
         self._shutdown: bool = False
         self._execution_store = execution_store
+        self._fanout_default_budget = max(0, int(os.getenv("STREAMING_FANOUT_DEFAULT_BUDGET", "0")))
+        self._fanout_max_active_per_trace = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_TRACE", "256")))
+        self._fanout_max_active_per_session = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_SESSION", "512")))
+        self._fanout_max_active_per_parent = max(0, int(os.getenv("STREAMING_FANOUT_MAX_ACTIVE_PER_PARENT", "256")))
 
         if self._execution_store is None and os.getenv("ENABLE_DURABLE_EXECUTIONS", "1") == "1":
             try:
@@ -278,6 +282,8 @@ class StreamingExecutor:
         priority: int | str | None = None,
         dedupe_window_seconds: int = 0,
         dedupe_key: Optional[str] = None,
+        convergence_key: Optional[str] = None,
+        fanout_budget: Optional[int] = None,
         callback_url: Optional[str] = None,
         callback_events: Optional[List[str]] = None,
     ) -> StreamingExecution:
@@ -294,6 +300,21 @@ class StreamingExecutor:
         """
         normalized_priority = self._normalize_priority(priority)
         now = time.time()
+        resolved_trace_id = trace_id or (inputs.get("_trace_id") if isinstance(inputs, dict) else None)
+        resolved_session_id = session_id or (inputs.get("_session_id") if isinstance(inputs, dict) else None)
+        resolved_parent_execution_id = parent_execution_id or (
+            inputs.get("_parent_execution_id") if isinstance(inputs, dict) else None
+        )
+        normalized_convergence_key = self._normalize_convergence_key(
+            convergence_key
+            if convergence_key is not None
+            else (inputs.get("_convergence_key") if isinstance(inputs, dict) else None)
+        )
+        effective_fanout_budget = self._resolve_fanout_budget(
+            fanout_budget
+            if fanout_budget is not None
+            else (inputs.get("_fanout_budget") if isinstance(inputs, dict) else None)
+        )
         effective_dedupe_key = dedupe_key or self._build_dedupe_key(tool_name, inputs)
         dedupe_window_seconds = max(0, int(dedupe_window_seconds))
         if dedupe_window_seconds > 0:
@@ -304,13 +325,7 @@ class StreamingExecutor:
                 existing_execution = self._executions.get(existing_id)
                 if existing_execution and (now - created_at) <= dedupe_window_seconds:
                     if existing_execution.status not in {"error", "cancelled"}:
-                        existing_execution.control_state["submit_count"] = (
-                            int(existing_execution.control_state.get("submit_count", 1)) + 1
-                        )
-                        existing_execution.control_state["deduplicated_requests"] = (
-                            int(existing_execution.control_state.get("deduplicated_requests", 0)) + 1
-                        )
-                        existing_execution.control_state["last_dedupe_reuse_at"] = now
+                        self._mark_execution_reused(existing_execution, reason="dedupe", timestamp=now)
                         return existing_execution
             if self._execution_store:
                 stored = self._execution_store.find_recent_by_dedupe_key(
@@ -322,22 +337,53 @@ class StreamingExecutor:
                     if existing_id:
                         existing_execution = self._executions.get(existing_id) or self._hydrate_execution(existing_id)
                         if existing_execution and existing_execution.status not in {"error", "cancelled"}:
-                            existing_execution.control_state["submit_count"] = (
-                                int(existing_execution.control_state.get("submit_count", 1)) + 1
-                            )
-                            existing_execution.control_state["deduplicated_requests"] = (
-                                int(existing_execution.control_state.get("deduplicated_requests", 0)) + 1
-                            )
-                            existing_execution.control_state["last_dedupe_reuse_at"] = now
-                            self._persist_execution(existing_execution)
+                            self._mark_execution_reused(existing_execution, reason="dedupe", timestamp=now)
                             return existing_execution
+
+        if normalized_convergence_key:
+            converged = self._find_convergence_execution(
+                tool_name=tool_name,
+                convergence_key=normalized_convergence_key,
+            )
+            if converged:
+                self._mark_execution_reused(converged, reason="coalesced", timestamp=now)
+                return converged
+
+        self._enforce_global_fanout_limits(
+            trace_id=resolved_trace_id,
+            session_id=resolved_session_id,
+            parent_execution_id=resolved_parent_execution_id,
+        )
+
+        fanout_scope_key = self._derive_fanout_scope_key(
+            tool_name=tool_name,
+            trace_id=resolved_trace_id,
+            session_id=resolved_session_id,
+            parent_execution_id=resolved_parent_execution_id,
+            convergence_key=normalized_convergence_key,
+        )
+        if effective_fanout_budget > 0:
+            active_in_scope = self._count_active_executions_for_scope(fanout_scope_key)
+            if active_in_scope >= effective_fanout_budget:
+                if normalized_convergence_key:
+                    converged = self._find_convergence_execution(
+                        tool_name=tool_name,
+                        convergence_key=normalized_convergence_key,
+                    )
+                    if converged:
+                        self._mark_execution_reused(converged, reason="coalesced", timestamp=now)
+                        return converged
+                raise RuntimeError(
+                    "FANOUT_LIMIT_EXCEEDED:"
+                    f"scope={fanout_scope_key},active={active_in_scope},budget={effective_fanout_budget}"
+                )
 
         execution = StreamingExecution(
             tool_name=tool_name,
             client_id=client_id,
-            trace_id=trace_id or (inputs.get("_trace_id") if isinstance(inputs, dict) else None),
-            session_id=session_id or (inputs.get("_session_id") if isinstance(inputs, dict) else None),
-            parent_execution_id=parent_execution_id or (inputs.get("_parent_execution_id") if isinstance(inputs, dict) else None),
+            trace_id=resolved_trace_id,
+            session_id=resolved_session_id,
+            parent_execution_id=resolved_parent_execution_id,
             status="queued",
             queued_at=now,
             queue_priority=normalized_priority,
@@ -350,6 +396,11 @@ class StreamingExecutor:
             execution.control_state["session_id"] = execution.session_id
         if execution.parent_execution_id:
             execution.control_state["parent_execution_id"] = execution.parent_execution_id
+        execution.control_state["fanout_scope_key"] = fanout_scope_key
+        if effective_fanout_budget > 0:
+            execution.control_state["fanout_budget"] = effective_fanout_budget
+        if normalized_convergence_key:
+            execution.control_state["convergence_key"] = normalized_convergence_key
         if callback_url:
             execution.control_state["callback_url"] = callback_url
             execution.control_state["callback_events"] = self._normalize_callback_events(callback_events)
@@ -1134,6 +1185,132 @@ class StreamingExecutor:
             default=str,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _normalize_convergence_key(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _resolve_fanout_budget(self, value: Any) -> int:
+        if value is None:
+            return self._fanout_default_budget
+        try:
+            return max(0, int(value))
+        except Exception:
+            return self._fanout_default_budget
+
+    def _derive_fanout_scope_key(
+        self,
+        *,
+        tool_name: str,
+        trace_id: Optional[str],
+        session_id: Optional[str],
+        parent_execution_id: Optional[str],
+        convergence_key: Optional[str],
+    ) -> str:
+        if convergence_key:
+            return f"tool:{tool_name}|convergence:{convergence_key}"
+        if parent_execution_id:
+            return f"tool:{tool_name}|parent:{parent_execution_id}"
+        if trace_id:
+            return f"tool:{tool_name}|trace:{trace_id}"
+        if session_id:
+            return f"tool:{tool_name}|session:{session_id}"
+        return f"tool:{tool_name}|global"
+
+    def _execution_scope_key(self, execution: StreamingExecution) -> str:
+        stored = execution.control_state.get("fanout_scope_key")
+        if isinstance(stored, str) and stored.strip():
+            return stored
+        convergence_key = self._normalize_convergence_key(execution.control_state.get("convergence_key"))
+        return self._derive_fanout_scope_key(
+            tool_name=execution.tool_name,
+            trace_id=execution.trace_id,
+            session_id=execution.session_id,
+            parent_execution_id=execution.parent_execution_id,
+            convergence_key=convergence_key,
+        )
+
+    def _count_active_where(self, predicate: Callable[[StreamingExecution], bool]) -> int:
+        active_statuses = {"pending", "queued", "running"}
+        count = 0
+        for execution in self._executions.values():
+            if execution.status not in active_statuses:
+                continue
+            if predicate(execution):
+                count += 1
+        return count
+
+    def _count_active_executions_for_scope(self, scope_key: str) -> int:
+        return self._count_active_where(
+            lambda execution: self._execution_scope_key(execution) == scope_key
+        )
+
+    def _enforce_global_fanout_limits(
+        self,
+        *,
+        trace_id: Optional[str],
+        session_id: Optional[str],
+        parent_execution_id: Optional[str],
+    ):
+        if trace_id and self._fanout_max_active_per_trace > 0:
+            active_trace = self._count_active_where(lambda execution: execution.trace_id == trace_id)
+            if active_trace >= self._fanout_max_active_per_trace:
+                raise RuntimeError(
+                    "FANOUT_LIMIT_EXCEEDED:"
+                    f"trace={trace_id},active={active_trace},budget={self._fanout_max_active_per_trace}"
+                )
+
+        if session_id and self._fanout_max_active_per_session > 0:
+            active_session = self._count_active_where(lambda execution: execution.session_id == session_id)
+            if active_session >= self._fanout_max_active_per_session:
+                raise RuntimeError(
+                    "FANOUT_LIMIT_EXCEEDED:"
+                    f"session={session_id},active={active_session},budget={self._fanout_max_active_per_session}"
+                )
+
+        if parent_execution_id and self._fanout_max_active_per_parent > 0:
+            active_parent = self._count_active_where(
+                lambda execution: execution.parent_execution_id == parent_execution_id
+            )
+            if active_parent >= self._fanout_max_active_per_parent:
+                raise RuntimeError(
+                    "FANOUT_LIMIT_EXCEEDED:"
+                    f"parent={parent_execution_id},active={active_parent},budget={self._fanout_max_active_per_parent}"
+                )
+
+    def _find_convergence_execution(self, *, tool_name: str, convergence_key: str) -> Optional[StreamingExecution]:
+        normalized = self._normalize_convergence_key(convergence_key)
+        if not normalized:
+            return None
+
+        active_statuses = {"pending", "queued", "running"}
+        for execution in self._executions.values():
+            if execution.status not in active_statuses:
+                continue
+            if execution.tool_name != tool_name:
+                continue
+            if self._normalize_convergence_key(execution.control_state.get("convergence_key")) == normalized:
+                return execution
+        return None
+
+    def _mark_execution_reused(self, execution: StreamingExecution, *, reason: str, timestamp: Optional[float] = None):
+        ts = float(timestamp if timestamp is not None else time.time())
+        execution.control_state["submit_count"] = int(execution.control_state.get("submit_count", 1)) + 1
+        execution.control_state["last_reused_at"] = ts
+        execution.control_state["last_reuse_reason"] = reason
+        if reason == "dedupe":
+            execution.control_state["deduplicated_requests"] = (
+                int(execution.control_state.get("deduplicated_requests", 0)) + 1
+            )
+            execution.control_state["last_dedupe_reuse_at"] = ts
+        elif reason == "coalesced":
+            execution.control_state["coalesced_requests"] = (
+                int(execution.control_state.get("coalesced_requests", 0)) + 1
+            )
+            execution.control_state["last_coalesced_reuse_at"] = ts
+        self._persist_execution(execution)
 
     def _prune_dedupe_index(self, now: float, window_seconds: int):
         expired = [
