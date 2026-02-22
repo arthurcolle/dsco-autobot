@@ -1303,6 +1303,223 @@ async def execute_tool(request: ToolCallRequest):
     return {"result": result}
 
 
+def _sse_event(event_name: str, data: Dict[str, Any]) -> str:
+    return f"event: {event_name}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@app.post("/execute/stream")
+async def execute_tool_stream(request: ToolCallRequest, raw_request: Request):
+    """Execute a tool with SSE streaming and progressive chunk emission."""
+    if not _server:
+        raise HTTPException(503, "Server not initialized")
+
+    tool = _server._tools.get(request.name)
+    if not tool:
+        raise HTTPException(404, f"Tool not found: {request.name}")
+    if not tool.handler:
+        raise HTTPException(500, f"Tool {request.name} has no handler")
+
+    async def stream_deep_search(call_id: str, started_at: float) -> AsyncGenerator[str, None]:
+        args = dict(request.arguments or {})
+        objective = args.get("objective")
+        if not objective:
+            raise ValueError("objective is required")
+        depth = args.get("depth", "standard")
+        max_sources = args.get("max_sources", 10)
+        queries = _server._generate_research_queries(objective, depth)[:max_sources]
+        sem = asyncio.Semaphore(5)
+
+        async def _search_one(query: str) -> List[Dict[str, Any]]:
+            async with sem:
+                jina_results = await _server._jina_search(query, num_results=3)
+                if jina_results:
+                    return [
+                        {
+                            "query": query,
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                            "description": r.get("description", r.get("content", ""))[:500],
+                            "relevant": True,
+                        }
+                        for r in jina_results
+                    ]
+                return [{"query": query, "note": f"Native search result for: {query}", "relevant": True}]
+
+        tasks = [asyncio.create_task(_search_one(query)) for query in queries]
+        findings: List[Dict[str, Any]] = []
+        completed_queries = 0
+        synthesis = None
+        processor = ProcessorType.TURBO if depth == "thorough" else ProcessorType.LITE
+
+        try:
+            for task in asyncio.as_completed(tasks):
+                if await raw_request.is_disconnected():
+                    for pending in tasks:
+                        if not pending.done():
+                            pending.cancel()
+                    return
+
+                try:
+                    task_results = await task
+                except Exception as exc:
+                    logger.warning(f"Deep search stream query failed: {exc}")
+                    task_results = []
+                completed_queries += 1
+
+                for item in task_results:
+                    findings.append(item)
+                    progress = min(0.85, completed_queries / max(1, len(queries)))
+                    yield _sse_event(
+                        "chunk",
+                        {
+                            "index": len(findings) - 1,
+                            "type": "result",
+                            "data": item,
+                            "progress": progress,
+                        },
+                    )
+
+                if completed_queries >= 2:
+                    yield _sse_event(
+                        "signal",
+                        {
+                            "type": "sufficient",
+                            "reason": f"{completed_queries} query batches completed",
+                            "can_stop": True,
+                        },
+                    )
+
+            if findings:
+                findings_text = "\n".join(
+                    f"- {f.get('title', f.get('query', ''))}: {f.get('description', f.get('note', ''))}"
+                    for f in findings[:20]
+                )
+                llm_result = await _server._call_llm(
+                    prompt=(
+                        f"Research objective: {objective}\n\nFindings:\n{findings_text}\n\n"
+                        "Provide a comprehensive synthesis of these findings."
+                    ),
+                    system="You are a research analyst. Synthesize the provided findings into a clear, structured summary.",
+                    processor=processor,
+                )
+                if llm_result:
+                    synthesis = llm_result
+                    yield _sse_event(
+                        "chunk",
+                        {
+                            "index": len(findings),
+                            "type": "synthesis",
+                            "data": {"synthesis": synthesis},
+                            "progress": 0.95,
+                        },
+                    )
+
+            task_obj = Task(
+                id=str(uuid.uuid4()),
+                processor=processor,
+                input=objective,
+                status=TaskStatus.COMPLETED,
+                result={"findings": findings, "synthesis": synthesis},
+                completed_at=datetime.now(timezone.utc),
+            )
+            _server._tasks[task_obj.id] = task_obj
+
+            result = {
+                "objective": objective,
+                "depth": depth,
+                "queries_generated": len(queries),
+                "findings": findings,
+                "task_id": task_obj.id,
+                "success": True,
+            }
+            if synthesis:
+                result["synthesis"] = synthesis
+
+            yield _sse_event(
+                "done",
+                {
+                    "call_id": call_id,
+                    "duration_ms": (time.time() - started_at) * 1000.0,
+                    "total_chunks": len(findings) + (1 if synthesis else 0),
+                    "stopped_early": False,
+                    "data": result,
+                },
+            )
+        finally:
+            for pending in tasks:
+                if not pending.done():
+                    pending.cancel()
+
+    async def stream_generic(call_id: str, started: float) -> AsyncGenerator[str, None]:
+        result = await tool.handler(request.arguments)
+        chunks = result if isinstance(result, list) else [result]
+        for idx, chunk in enumerate(chunks):
+            if await raw_request.is_disconnected():
+                break
+            yield _sse_event(
+                "chunk",
+                {
+                    "index": idx,
+                    "type": "result",
+                    "data": chunk,
+                    "progress": float(idx + 1) / max(1, len(chunks)),
+                },
+            )
+        yield _sse_event(
+            "done",
+            {
+                "call_id": call_id,
+                "duration_ms": (time.time() - started) * 1000.0,
+                "total_chunks": len(chunks),
+                "stopped_early": False,
+                "data": result,
+            },
+        )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        call_id = f"c_{uuid.uuid4().hex[:12]}"
+        started_at = time.time()
+        yield _sse_event(
+            "meta",
+            {
+                "call_id": call_id,
+                "tool": request.name,
+                "backend": DistributedResearchMCP.SERVICE_ID,
+                "started_at": started_at,
+            },
+        )
+        try:
+            if request.name == "deep_search":
+                async for event in stream_deep_search(call_id, started_at):
+                    yield event
+            else:
+                async for event in stream_generic(call_id, started_at):
+                    yield event
+        except Exception as exc:
+            yield _sse_event(
+                "error",
+                {
+                    "call_id": call_id,
+                    "error": {
+                        "code": "STREAM_EXECUTION_FAILED",
+                        "message": str(exc),
+                        "retryable": True,
+                        "category": "transient",
+                    },
+                },
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/tasks")
 async def list_all_tasks(status: str = "all", limit: int = 20):
     """List all tasks."""

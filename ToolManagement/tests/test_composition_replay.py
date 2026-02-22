@@ -289,3 +289,37 @@ def test_workflow_gate_decisions_are_recorded_and_listed(tmp_path, monkeypatch):
     assert by_trace.status_code == 200
     by_trace_payload = by_trace.json()
     assert by_trace_payload["count"] >= 1
+
+
+def test_workflow_gate_default_skip_skips_step_execution(tmp_path, monkeypatch):
+    client, _store, calls = _build_client(tmp_path, monkeypatch)
+
+    workflow = {
+        "id": "wf_gate_skip_default",
+        "name": "wf_gate_skip_default",
+        "steps": [
+            {
+                "id": "s1",
+                "name": "step_one",
+                "mode": "passthrough",
+                "tool": "echo",
+                "gate_type": "agent_approval",
+                "gate_timeout_seconds": 0,
+                "gate_default_action": "skip",
+            },
+            {"id": "s2", "name": "step_two", "mode": "passthrough", "tool": "echo"},
+        ],
+    }
+
+    run = client.post(
+        "/api/v1/compose/execute",
+        json={"workflow": workflow, "inputs": {"input": "hello"}},
+    )
+    assert run.status_code == 200
+    payload = run.json()
+    assert payload["status"] == "completed"
+    assert payload["step_results"]["s1"]["skipped"] is True
+    assert payload["step_results"]["s2"]["tool"] == "echo"
+
+    # Step one is skipped by gate default action; only step two executes a tool call.
+    assert len(calls) == 1

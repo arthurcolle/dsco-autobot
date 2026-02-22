@@ -73,6 +73,8 @@ class JobStatusResponse(BaseModel):
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
     callback: Dict[str, Any] = Field(default_factory=dict)
+    latest_event_id: Optional[int] = None
+    cancel_ack_ms: Optional[float] = None
     timestamps: Dict[str, Optional[float]] = Field(default_factory=dict)
 
 
@@ -98,18 +100,40 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
     error = None
     stage_messages: List[str] = []
     stage = None
+    eta_hint: Optional[int] = None
+    stages_completed_hint: Optional[List[str]] = None
+    stages_remaining_hint: Optional[List[str]] = None
 
     expected_stages = [
-        "resolving_backend",
-        "invoking_backend",
-        "processing_backend_response",
+        "resolve_backend",
+        "route_backend",
+        "invoke_backend",
+        "process_response",
         "completed",
     ]
+    latest_event_id: Optional[int] = None
 
     for event in ex.events:
+        if event.event_id is not None:
+            latest_event_id = max(int(event.event_id), int(latest_event_id or 0))
         if event.type == EventType.PARTIAL and event.data is not None:
             partial_results.append(event.data)
         elif event.type == EventType.PROGRESS:
+            if isinstance(event.data, dict):
+                payload_stage = event.data.get("stage")
+                if isinstance(payload_stage, str) and payload_stage.strip():
+                    stage = payload_stage
+                    stage_messages.append(payload_stage)
+                payload_completed = event.data.get("stages_completed")
+                if isinstance(payload_completed, list):
+                    stages_completed_hint = [str(v) for v in payload_completed if str(v).strip()]
+                payload_remaining = event.data.get("stages_remaining")
+                if isinstance(payload_remaining, list):
+                    stages_remaining_hint = [str(v) for v in payload_remaining if str(v).strip()]
+                payload_eta = event.data.get("estimated_completion_seconds")
+                if isinstance(payload_eta, (int, float)):
+                    eta_hint = int(payload_eta)
+
             if event.message:
                 stage = event.message
                 stage_messages.append(event.message)
@@ -124,21 +148,32 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
     for msg in stage_messages:
         if msg not in dedup_stages:
             dedup_stages.append(msg)
-    remaining = [s for s in expected_stages if s not in dedup_stages]
+    if stages_completed_hint is not None:
+        dedup_stages = stages_completed_hint
+
+    if ex.status == "completed" and "completed" not in dedup_stages:
+        dedup_stages.append("completed")
+
+    remaining = stages_remaining_hint if stages_remaining_hint is not None else [s for s in expected_stages if s not in dedup_stages]
     if ex.status == "queued" and not stage:
         stage = "queued"
 
-    eta = None
+    eta = eta_hint
     if ex.status == "running":
-        if ex.progress <= 0:
+        if isinstance(eta, int):
+            pass
+        elif ex.progress <= 0:
             eta = None
         else:
             elapsed = max(0.0, (time.time() - (ex.started_at or time.time())))
-            remaining_pct = max(0.0, 100.0 - ex.progress)
-            eta = int((elapsed / max(1.0, ex.progress)) * remaining_pct)
+            progress_fraction = max(0.01, min(0.99, float(ex.progress) / 100.0))
+            total_estimate = elapsed / progress_fraction
+            eta = int(max(0.0, total_estimate - elapsed))
     elif ex.status == "queued":
         # Conservative queueing estimate based on scheduler depth and priority tiers.
         eta = None
+    elif ex.status in {"completed", "error", "cancelled"}:
+        eta = 0
 
     return JobStatusResponse(
         job_id=ex.execution_id,
@@ -168,6 +203,8 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
             "last_attempt_at": ex.control_state.get("last_webhook_at"),
             "attempts": ex.control_state.get("webhook_attempts", 0),
         },
+        latest_event_id=latest_event_id,
+        cancel_ack_ms=ex.control_state.get("cancel_ack_ms"),
         timestamps={
             "queued_at": ex.queued_at,
             "started_at": ex.started_at,
@@ -270,8 +307,21 @@ async def get_job_status(job_id: str):
 
 
 @router.get("/{job_id}/stream")
-async def stream_job_events(job_id: str):
-    """Stream SSE events for a running job (includes history replay)."""
+async def stream_job_events(
+    job_id: str,
+    include_history: bool = Query(True, description="Replay buffered history before live events"),
+    since_event_id: Optional[int] = Query(
+        default=None,
+        ge=0,
+        description="Resume cursor (exclusive): replay only events with event_id > since_event_id",
+    ),
+    since_timestamp: Optional[float] = Query(
+        default=None,
+        ge=0.0,
+        description="Replay only events at/after this unix timestamp",
+    ),
+):
+    """Stream SSE events for a running job with replay/resume cursors."""
     try:
         executor = get_streaming_executor()
     except ValueError:
@@ -282,7 +332,12 @@ async def stream_job_events(job_id: str):
         raise HTTPException(404, f"Job not found: {job_id}")
 
     return StreamingResponse(
-        executor.stream_sse(job_id, include_history=True),
+        executor.stream_sse(
+            job_id,
+            include_history=include_history,
+            since_event_id=since_event_id,
+            since_timestamp=since_timestamp,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -290,6 +345,31 @@ async def stream_job_events(job_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/{job_id}/detach")
+async def detach_job(job_id: str):
+    """Detach a running stream so callers can reconnect later via /jobs/{job_id}/stream."""
+    try:
+        executor = get_streaming_executor()
+    except ValueError:
+        raise HTTPException(503, "Streaming executor not initialized")
+
+    ex = executor.get_execution(job_id)
+    if not ex:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    detached = await executor.detach_execution(job_id)
+    return {
+        "job_id": job_id,
+        "detached": detached,
+        "status": "running_background" if detached else ex.status,
+        "stream_url": f"/api/v1/jobs/{job_id}/stream",
+        "poll_url": f"/api/v1/jobs/{job_id}",
+        "trace_id": ex.trace_id,
+        "session_id": ex.session_id,
+        "parent_execution_id": ex.parent_execution_id,
+    }
 
 
 @router.post("/{job_id}/cancel")

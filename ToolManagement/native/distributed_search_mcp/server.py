@@ -920,6 +920,124 @@ async def execute_tool(request: ToolCallRequest):
     return {"result": result}
 
 
+def _sse_event(event_name: str, data: Dict[str, Any]) -> str:
+    return f"event: {event_name}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _extract_stream_chunks(result: Any) -> List[Any]:
+    if isinstance(result, dict):
+        for key in ("results", "findings", "items", "sources"):
+            value = result.get(key)
+            if isinstance(value, list):
+                return value
+    if isinstance(result, list):
+        return result
+    return [result]
+
+
+@app.post("/execute/stream")
+async def execute_tool_stream(request: ToolCallRequest, raw_request: Request):
+    """Execute a tool with SSE streaming (chunk-by-chunk results where possible)."""
+    if not _server:
+        raise HTTPException(503, "Server not initialized")
+
+    tool = _server._tools.get(request.name)
+    if not tool:
+        raise HTTPException(404, f"Tool not found: {request.name}")
+    if not tool.handler:
+        raise HTTPException(500, f"Tool {request.name} has no handler")
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        call_id = f"c_{uuid.uuid4().hex[:12]}"
+        started_at = time.time()
+        yield _sse_event(
+            "meta",
+            {
+                "call_id": call_id,
+                "tool": request.name,
+                "backend": DistributedSearchMCP.SERVICE_ID,
+                "started_at": started_at,
+            },
+        )
+
+        try:
+            result = await tool.handler(request.arguments)
+            chunks = _extract_stream_chunks(result)
+            total = max(1, len(chunks))
+            sufficiency_sent = False
+
+            for idx, chunk in enumerate(chunks):
+                if await raw_request.is_disconnected():
+                    duration_ms = (time.time() - started_at) * 1000.0
+                    yield _sse_event(
+                        "done",
+                        {
+                            "call_id": call_id,
+                            "duration_ms": duration_ms,
+                            "total_chunks": idx,
+                            "stopped_early": True,
+                        },
+                    )
+                    return
+
+                progress = float(idx + 1) / float(total)
+                yield _sse_event(
+                    "chunk",
+                    {
+                        "index": idx,
+                        "type": "result",
+                        "data": chunk,
+                        "progress": progress,
+                    },
+                )
+
+                if not sufficiency_sent and (idx + 1) >= 3:
+                    sufficiency_sent = True
+                    yield _sse_event(
+                        "signal",
+                        {
+                            "type": "sufficient",
+                            "reason": "3 chunks delivered",
+                            "can_stop": True,
+                        },
+                    )
+
+            duration_ms = (time.time() - started_at) * 1000.0
+            yield _sse_event(
+                "done",
+                {
+                    "call_id": call_id,
+                    "duration_ms": duration_ms,
+                    "total_chunks": len(chunks),
+                    "stopped_early": False,
+                    "data": result,
+                },
+            )
+        except Exception as exc:
+            yield _sse_event(
+                "error",
+                {
+                    "call_id": call_id,
+                    "error": {
+                        "code": "STREAM_EXECUTION_FAILED",
+                        "message": str(exc),
+                        "retryable": True,
+                        "category": "transient",
+                    },
+                },
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/mcp/sse")
 @app.get("/sse")
 async def sse_endpoint(request: Request):

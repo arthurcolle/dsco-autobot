@@ -20,7 +20,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ class ToolEvent:
 
     # Error info
     error: Optional[str] = None
+    event_id: Optional[int] = None
+    replayed: bool = False
 
     def to_sse(self) -> str:
         """Format as Server-Sent Event."""
@@ -66,6 +68,10 @@ class ToolEvent:
             "execution_id": self.execution_id,
             "timestamp": datetime.fromtimestamp(self.timestamp, tz=timezone.utc).isoformat(),
         }
+        if self.event_id is not None:
+            event_data["event_id"] = int(self.event_id)
+        if self.replayed:
+            event_data["replayed"] = True
 
         if self.progress is not None:
             event_data["progress"] = self.progress
@@ -87,6 +93,8 @@ class ToolEvent:
             "message": self.message,
             "data": self.data,
             "error": self.error,
+            "event_id": self.event_id,
+            "replayed": self.replayed,
         }
 
 
@@ -127,6 +135,7 @@ class StreamingExecution:
     dedupe_key: Optional[str] = None
     control_state: Dict[str, Any] = field(default_factory=dict)
     _event_persistor: Optional[Callable[["StreamingExecution", ToolEvent], None]] = None
+    _backend_canceller: Optional[Callable[[], Awaitable[None]]] = None
 
     def __post_init__(self):
         # Not paused by default.
@@ -169,8 +178,19 @@ class StreamingExecution:
         """Request cancellation."""
         self._cancelled = True
         self._cancel_event.set()
+        self.control_state["cancel_requested_at"] = time.time()
+        if self._backend_canceller:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._backend_canceller())
+            except RuntimeError:
+                # Best-effort only when no event loop is active.
+                pass
         if self._task and not self._task.done():
             self._task.cancel()
+
+    def set_backend_canceller(self, canceller: Optional[Callable[[], Awaitable[None]]]):
+        self._backend_canceller = canceller
 
     @property
     def is_cancelled(self) -> bool:
@@ -411,6 +431,11 @@ class StreamingExecutor:
             progress: float = None,
             message: str = None,
             partial_data: Any = None,
+            stage: Optional[str] = None,
+            stages_completed: Optional[List[str]] = None,
+            stages_remaining: Optional[List[str]] = None,
+            estimated_completion_seconds: Optional[int] = None,
+            metadata: Optional[Dict[str, Any]] = None,
         ):
             await execution.wait_if_paused()
             if execution.is_cancelled:
@@ -427,12 +452,24 @@ class StreamingExecutor:
                     message=message,
                     data=partial_data,
                 ))
-            elif progress is not None or message:
+            elif progress is not None or message or stage or stages_completed or stages_remaining:
+                progress_data: Dict[str, Any] = {}
+                if stage:
+                    progress_data["stage"] = stage
+                if stages_completed:
+                    progress_data["stages_completed"] = list(stages_completed)
+                if stages_remaining:
+                    progress_data["stages_remaining"] = list(stages_remaining)
+                if estimated_completion_seconds is not None:
+                    progress_data["estimated_completion_seconds"] = int(estimated_completion_seconds)
+                if metadata:
+                    progress_data["metadata"] = metadata
                 await execution.emit(ToolEvent(
                     type=EventType.PROGRESS,
                     execution_id=execution.execution_id,
                     progress=progress,
                     message=message,
+                    data=progress_data or None,
                 ))
 
         # Start heartbeat task
@@ -442,11 +479,23 @@ class StreamingExecutor:
 
         try:
             # Execute with progress callback
-            result = await self.tool_executor(
-                execution.tool_name,
-                inputs,
-                progress_callback=progress_callback,
-            )
+            try:
+                result = await self.tool_executor(
+                    execution.tool_name,
+                    inputs,
+                    progress_callback=progress_callback,
+                    cancel_event=execution._cancel_event,
+                    execution_id=execution.execution_id,
+                )
+            except TypeError as exc:
+                # Backward compatibility for legacy executors that don't accept new kwargs.
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                result = await self.tool_executor(
+                    execution.tool_name,
+                    inputs,
+                    progress_callback=progress_callback,
+                )
 
             execution.status = "completed"
             execution.completed_at = time.time()
@@ -463,6 +512,12 @@ class StreamingExecutor:
         except asyncio.CancelledError:
             execution.status = "cancelled"
             execution.completed_at = time.time()
+            requested_at = float(execution.control_state.get("cancel_requested_at") or 0.0)
+            if requested_at > 0:
+                execution.control_state["cancel_ack_ms"] = round(
+                    max(0.0, (execution.completed_at - requested_at) * 1000.0),
+                    2,
+                )
 
             await execution.emit(ToolEvent(
                 type=EventType.CANCELLED,
@@ -631,6 +686,8 @@ class StreamingExecutor:
         self,
         execution_id: str,
         include_history: bool = True,
+        since_event_id: Optional[int] = None,
+        since_timestamp: Optional[float] = None,
     ) -> AsyncIterator[ToolEvent]:
         """
         Stream events for an execution.
@@ -638,11 +695,13 @@ class StreamingExecutor:
         Args:
             execution_id: Execution to stream
             include_history: Include events that already occurred
+            since_event_id: Resume cursor (exclusive) for durable history replay
+            since_timestamp: Optional timestamp filter for replay history
 
         Yields:
             ToolEvent objects
         """
-        execution = self._executions.get(execution_id)
+        execution = self._executions.get(execution_id) or self._hydrate_execution(execution_id)
         if not execution:
             return
 
@@ -652,13 +711,52 @@ class StreamingExecutor:
         try:
             # Send historical events
             if include_history:
+                replayed_event_ids: set[int] = set()
+                if self._execution_store:
+                    persisted = self._execution_store.get_events(
+                        execution_id,
+                        limit=10000,
+                        since_event_id=since_event_id,
+                        since_timestamp=since_timestamp,
+                    )
+                    for item in persisted:
+                        event_type_value = item.get("event_type", EventType.LOG.value)
+                        try:
+                            event_type = EventType(event_type_value)
+                        except Exception:
+                            event_type = EventType.LOG
+                        persisted_event = ToolEvent(
+                            type=event_type,
+                            execution_id=execution_id,
+                            timestamp=float(item.get("timestamp") or time.time()),
+                            progress=item.get("progress"),
+                            message=item.get("message"),
+                            data=item.get("data"),
+                            error=item.get("error"),
+                            event_id=int(item.get("id") or 0) or None,
+                            replayed=True,
+                        )
+                        if persisted_event.event_id is not None:
+                            replayed_event_ids.add(int(persisted_event.event_id))
+                        yield persisted_event
+
                 for event in execution.events:
+                    if since_event_id is not None and event.event_id is not None and event.event_id <= since_event_id:
+                        continue
+                    if since_timestamp is not None and float(event.timestamp) < float(since_timestamp):
+                        continue
+                    if event.event_id is not None and int(event.event_id) in replayed_event_ids:
+                        continue
                     yield event
 
             # Stream new events
             while execution.status in {"pending", "queued", "running"} or not queue.empty():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
+                    if since_event_id is not None and event.event_id is not None and event.event_id <= since_event_id:
+                        continue
+                    if since_timestamp is not None and float(event.timestamp) < float(since_timestamp):
+                        continue
                     yield event
 
                     # Stop on terminal events
@@ -678,6 +776,8 @@ class StreamingExecutor:
         self,
         execution_id: str,
         include_history: bool = True,
+        since_event_id: Optional[int] = None,
+        since_timestamp: Optional[float] = None,
     ) -> AsyncIterator[str]:
         """
         Stream events as SSE format.
@@ -685,11 +785,18 @@ class StreamingExecutor:
         Args:
             execution_id: Execution to stream
             include_history: Include historical events
+            since_event_id: Resume cursor (exclusive) for durable replay
+            since_timestamp: Timestamp-based replay cursor
 
         Yields:
             SSE-formatted strings
         """
-        async for event in self.stream_events(execution_id, include_history):
+        async for event in self.stream_events(
+            execution_id,
+            include_history,
+            since_event_id=since_event_id,
+            since_timestamp=since_timestamp,
+        ):
             yield event.to_sse()
 
     def get_stats(self) -> Dict[str, Any]:
@@ -767,7 +874,7 @@ class StreamingExecutor:
         if not self._execution_store:
             self._schedule_webhook(execution, event)
             return
-        self._execution_store.append_event(
+        event_id = self._execution_store.append_event(
             execution_id=execution.execution_id,
             trace_id=execution.trace_id,
             session_id=execution.session_id,
@@ -778,6 +885,8 @@ class StreamingExecutor:
             data=event.data,
             error=event.error,
         )
+        if event_id:
+            event.event_id = int(event_id)
         self._persist_execution(execution, last_event=event)
         self._schedule_webhook(execution, event)
 
@@ -864,6 +973,7 @@ class StreamingExecutor:
                         message=persisted.get("message"),
                         data=persisted.get("data"),
                         error=persisted.get("error"),
+                        event_id=int(persisted.get("id") or 0) or None,
                     )
                 )
         except Exception as exc:
@@ -1062,31 +1172,317 @@ def create_tool_executor_for_jobs():
     import httpx as _httpx
     from uuid import uuid4 as _uuid4
 
-    # Shared long-lived client — NO read timeout, connections stay open indefinitely
     _shared_client = _httpx.AsyncClient(
-        timeout=_httpx.Timeout(None, connect=15.0),  # No read/write/pool timeout
-        limits=_httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        timeout=_httpx.Timeout(None, connect=15.0),
+        limits=_httpx.Limits(max_keepalive_connections=50, max_connections=200),
     )
+
+    _warm_backend_until: Dict[str, float] = {}
+    _backend_latency_ms: Dict[str, float] = {}
+    _backend_failures: Dict[str, int] = {}
+    _warm_ttl_seconds = float(os.getenv("BACKEND_WARM_TTL_SECONDS", "180"))
+    _health_probe_timeout = float(os.getenv("BACKEND_HEALTH_PROBE_TIMEOUT_SECONDS", "2.5"))
+    _stream_backend_default = os.getenv("ENABLE_BACKEND_STREAMING_PATH", "1") == "1"
+
+    def _load_replica_map() -> Dict[str, List[str]]:
+        raw = os.getenv("BACKEND_REPLICA_URLS_JSON", "").strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return {}
+            out: Dict[str, List[str]] = {}
+            for key, value in data.items():
+                if isinstance(value, list):
+                    out[str(key)] = [str(v).rstrip("/") for v in value if str(v).strip()]
+                elif isinstance(value, str):
+                    out[str(key)] = [str(value).rstrip("/")]
+            return out
+        except Exception:
+            return {}
+
+    _replica_map = _load_replica_map()
+
+    def _candidate_urls(backend_id: str, primary_url: str) -> List[str]:
+        urls: List[str] = []
+        primary = str(primary_url).rstrip("/")
+        if primary:
+            urls.append(primary)
+
+        env_key = f"BACKEND_REPLICA_URLS_{backend_id.upper().replace('-', '_')}"
+        env_urls = os.getenv(env_key, "").strip()
+        if env_urls:
+            urls.extend([u.strip().rstrip("/") for u in env_urls.split(",") if u.strip()])
+
+        urls.extend(_replica_map.get(backend_id, []))
+        deduped: List[str] = []
+        for url in urls:
+            if url and url not in deduped:
+                deduped.append(url)
+        return deduped
+
+    async def _probe_backend(url: str) -> Optional[float]:
+        started = time.time()
+        try:
+            response = await _shared_client.get(f"{url}/health", timeout=_health_probe_timeout)
+            if response.status_code == 200:
+                latency_ms = max(1.0, (time.time() - started) * 1000.0)
+                _warm_backend_until[url] = time.time() + _warm_ttl_seconds
+                _backend_latency_ms[url] = latency_ms
+                _backend_failures[url] = 0
+                return latency_ms
+        except Exception:
+            pass
+        _backend_failures[url] = int(_backend_failures.get(url, 0)) + 1
+        return None
+
+    async def _rank_backend_urls(backend_id: str, primary_url: str) -> List[str]:
+        now = time.time()
+        urls = _candidate_urls(backend_id, primary_url)
+        scored: List[tuple[int, float, str]] = []
+        for url in urls:
+            if now > float(_warm_backend_until.get(url, 0.0)):
+                await _probe_backend(url)
+            failures = int(_backend_failures.get(url, 0))
+            latency = float(_backend_latency_ms.get(url, 999999.0))
+            scored.append((failures, latency, url))
+        scored.sort(key=lambda item: (item[0], item[1]))
+        return [url for _, _, url in scored]
+
+    async def _emit_stage(
+        progress_callback: Optional[Callable[..., Awaitable[None]]],
+        *,
+        progress: float,
+        stage: str,
+        stages_completed: List[str],
+        stages_remaining: List[str],
+        eta_seconds: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        if not progress_callback:
+            return
+        await progress_callback(
+            progress=progress,
+            message=stage,
+            stage=stage,
+            stages_completed=stages_completed,
+            stages_remaining=stages_remaining,
+            estimated_completion_seconds=eta_seconds,
+            metadata=metadata,
+        )
+
+    def _normalize_progress(value: Any) -> Optional[float]:
+        if not isinstance(value, (int, float)):
+            return None
+        progress = float(value)
+        if progress <= 1.0:
+            progress *= 100.0
+        return max(0.0, min(100.0, progress))
+
+    async def _stream_backend_execute(
+        *,
+        base_url: str,
+        resolved_name: str,
+        inputs: Dict[str, Any],
+        progress_callback: Optional[Callable[..., Awaitable[None]]],
+        cancel_event: Optional[asyncio.Event],
+        execution_id: Optional[str],
+    ) -> Optional[Any]:
+        stream_url = f"{base_url.rstrip('/')}/execute/stream"
+        headers = {"Accept": "text/event-stream"}
+        call_id: Optional[str] = None
+        chunks: List[Any] = []
+        done_payload: Optional[Dict[str, Any]] = None
+
+        async with _shared_client.stream(
+            "POST",
+            stream_url,
+            json={"name": resolved_name, "arguments": inputs},
+            headers=headers,
+            timeout=None,
+        ) as response:
+            content_type = str(response.headers.get("content-type", "")).lower()
+            if response.status_code == 404:
+                return None
+            if response.status_code >= 400:
+                text = (await response.aread()).decode(errors="ignore")
+                raise RuntimeError(f"Streaming endpoint failed ({response.status_code}): {text[:300]}")
+            if "text/event-stream" not in content_type:
+                return None
+
+            await _emit_stage(
+                progress_callback,
+                progress=45.0,
+                stage="streaming_results",
+                stages_completed=["resolve_backend", "route_backend", "invoke_backend"],
+                stages_remaining=["process_response", "completed"],
+                eta_seconds=10,
+                metadata={"stream_url": stream_url},
+            )
+
+            current_event = "message"
+            data_lines: List[str] = []
+            async for line in response.aiter_lines():
+                if cancel_event and cancel_event.is_set():
+                    if call_id:
+                        try:
+                            await _shared_client.post(
+                                f"{base_url.rstrip('/')}/api/v1/calls/{call_id}/control",
+                                json={"action": "stop"},
+                                timeout=2.0,
+                            )
+                        except Exception:
+                            pass
+                    raise asyncio.CancelledError("Execution cancelled during backend stream")
+
+                if line.startswith("event:"):
+                    current_event = line.split(":", 1)[1].strip() or "message"
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line.split(":", 1)[1].lstrip())
+                    continue
+                if line.strip():
+                    continue
+
+                if not data_lines:
+                    current_event = "message"
+                    continue
+
+                raw_payload = "\n".join(data_lines)
+                data_lines = []
+                try:
+                    payload = json.loads(raw_payload)
+                except Exception:
+                    payload = {"raw": raw_payload}
+
+                if current_event == "meta":
+                    if isinstance(payload, dict):
+                        call_id = payload.get("call_id") or call_id
+                        if progress_callback:
+                            await progress_callback(
+                                progress=50.0,
+                                message="stream_meta_received",
+                                stage="streaming_results",
+                                metadata={
+                                    "backend_call_id": call_id,
+                                    "execution_id": execution_id,
+                                },
+                            )
+                elif current_event in {"chunk", "partial"}:
+                    chunk_payload = payload if isinstance(payload, dict) else {"data": payload}
+                    progress = _normalize_progress(chunk_payload.get("progress"))
+                    data = chunk_payload.get("data", chunk_payload)
+                    chunks.append(data)
+                    if progress_callback:
+                        await progress_callback(
+                            progress=progress,
+                            message="stream_chunk",
+                            partial_data=data,
+                            stage="streaming_results",
+                            metadata={
+                                "chunk_index": len(chunks) - 1,
+                                "backend_call_id": call_id,
+                            },
+                        )
+                elif current_event == "signal":
+                    if progress_callback:
+                        signal_payload = payload if isinstance(payload, dict) else {"payload": payload}
+                        await progress_callback(
+                            message=f"signal:{signal_payload.get('type', 'unknown')}",
+                            stage="streaming_results",
+                            metadata={"signal": signal_payload},
+                        )
+                elif current_event == "heartbeat":
+                    if progress_callback:
+                        await progress_callback(
+                            message="heartbeat",
+                            stage="streaming_results",
+                            metadata={"heartbeat": payload},
+                        )
+                elif current_event == "error":
+                    if isinstance(payload, dict):
+                        err = payload.get("error", payload)
+                        raise RuntimeError(str(err))
+                    raise RuntimeError(str(payload))
+                elif current_event == "done":
+                    done_payload = payload if isinstance(payload, dict) else {"result": payload}
+                    break
+
+                current_event = "message"
+
+        if done_payload is None and not chunks:
+            return None
+        if done_payload is None:
+            return {"chunks": chunks, "count": len(chunks), "success": True}
+        if done_payload.get("data") is not None:
+            return done_payload.get("data")
+        if done_payload.get("result") is not None:
+            return done_payload.get("result")
+        if done_payload.get("all_results") is not None:
+            return done_payload.get("all_results")
+        if chunks:
+            return {"chunks": chunks, "count": len(chunks), "success": True}
+        return done_payload
+
+    async def _emit_synthetic_chunks(
+        result: Any,
+        progress_callback: Optional[Callable[..., Awaitable[None]]],
+    ):
+        if not progress_callback:
+            return
+        if not isinstance(result, dict):
+            return
+        list_payload = None
+        for key in ("results", "findings", "items", "documents", "sources"):
+            value = result.get(key)
+            if isinstance(value, list):
+                list_payload = value
+                break
+        if not list_payload:
+            return
+        total = max(1, len(list_payload))
+        for idx, item in enumerate(list_payload):
+            progress = 75.0 + ((idx + 1) / total) * 20.0
+            await progress_callback(
+                progress=progress,
+                message="synthetic_chunk",
+                partial_data=item,
+                stage="process_response",
+                metadata={"synthetic": True, "chunk_index": idx},
+            )
 
     async def _tool_executor(
         tool_name: str,
         inputs: Dict[str, Any],
         progress_callback: Callable = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        execution_id: Optional[str] = None,
     ) -> Any:
         from ..persistence import get_tool_store
         from .circuit_breaker import get_backend_circuit_breaker
 
-        # Pop internal meta-keys (no longer used for timeout, kept for compat)
-        inputs.pop("_timeout", None)
+        # Pop internal meta-keys (timeout currently handled at outer layer)
+        timeout_hint = inputs.pop("_timeout", None)
+        _ = timeout_hint
         inputs.pop("_max_output_chars", None)
         inputs.pop("_max_links", None)
 
-        # Report dispatch progress
-        if progress_callback:
-            await progress_callback(progress=10, message="resolving_backend")
+        await _emit_stage(
+            progress_callback,
+            progress=10.0,
+            stage="resolve_backend",
+            stages_completed=[],
+            stages_remaining=["route_backend", "invoke_backend", "process_response", "completed"],
+            eta_seconds=20,
+        )
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+        ranked_urls = await _rank_backend_urls(backend_id, backend_url)
+        if not ranked_urls:
+            ranked_urls = [backend_url.rstrip("/")]
+        selected_backend_url = ranked_urls[0]
         tool_id = f"{backend_id}:{resolved_name}"
         breaker = get_backend_circuit_breaker()
         allowed, state = breaker.allow_request(backend_id)
@@ -1097,77 +1493,121 @@ def create_tool_executor_for_jobs():
                 f"CIRCUIT_OPEN: backend {backend_id} temporarily unavailable.{retry_suffix}"
             )
 
-        if progress_callback:
-            await progress_callback(progress=30, message="invoking_backend")
+        await _emit_stage(
+            progress_callback,
+            progress=25.0,
+            stage="route_backend",
+            stages_completed=["resolve_backend"],
+            stages_remaining=["invoke_backend", "process_response", "completed"],
+            eta_seconds=15,
+            metadata={
+                "backend_id": backend_id,
+                "selected_url": selected_backend_url,
+                "candidates": ranked_urls,
+            },
+        )
+
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Execution cancelled before backend invocation")
 
         started = time.time()
-        try:
-            response = await _shared_client.post(
-                f"{backend_url}/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": str(_uuid4()),
-                    "method": "tools/call",
-                    "params": {
-                        "name": resolved_name,
-                        "arguments": inputs,
+        last_error: Optional[Exception] = None
+        result: Any = None
+        for idx, candidate_url in enumerate(ranked_urls):
+            selected_backend_url = candidate_url.rstrip("/")
+            try:
+                await _emit_stage(
+                    progress_callback,
+                    progress=35.0,
+                    stage="invoke_backend",
+                    stages_completed=["resolve_backend", "route_backend"],
+                    stages_remaining=["process_response", "completed"],
+                    eta_seconds=12,
+                    metadata={
+                        "backend_id": backend_id,
+                        "candidate_index": idx,
+                        "candidate_url": selected_backend_url,
                     },
-                },
-            )
-        except Exception as exc:
-            breaker.record_failure(backend_id, error=str(exc))
+                )
+
+                if _stream_backend_default:
+                    streamed = await _stream_backend_execute(
+                        base_url=selected_backend_url,
+                        resolved_name=resolved_name,
+                        inputs=inputs,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                        execution_id=execution_id,
+                    )
+                    if streamed is not None:
+                        result = streamed
+                        break
+
+                if cancel_event and cancel_event.is_set():
+                    raise asyncio.CancelledError("Execution cancelled before MCP fallback")
+
+                response = await _shared_client.post(
+                    f"{selected_backend_url}/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": str(_uuid4()),
+                        "method": "tools/call",
+                        "params": {
+                            "name": resolved_name,
+                            "arguments": inputs,
+                        },
+                    },
+                    timeout=None,
+                )
+
+                await _emit_stage(
+                    progress_callback,
+                    progress=80.0,
+                    stage="process_response",
+                    stages_completed=["resolve_backend", "route_backend", "invoke_backend"],
+                    stages_remaining=["completed"],
+                    eta_seconds=3,
+                    metadata={"backend_id": backend_id, "candidate_url": selected_backend_url},
+                )
+
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Backend {backend_id} returned HTTP {response.status_code}: {response.text[:300]}"
+                    )
+
+                data = response.json()
+                if "error" in data and data["error"]:
+                    raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
+                result = data.get("result")
+                await _emit_synthetic_chunks(result, progress_callback)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _backend_failures[selected_backend_url] = int(_backend_failures.get(selected_backend_url, 0)) + 1
+                last_error = exc
+                if idx == len(ranked_urls) - 1:
+                    break
+
+        latency_ms = (time.time() - started) * 1000
+        if result is None:
+            breaker.record_failure(backend_id, error=str(last_error or "unknown backend error"))
             store.record_call(
                 tool_id,
-                (time.time() - started) * 1000,
+                latency_ms,
                 False,
                 execution_mode="job",
                 trace_id=inputs.get("_trace_id"),
                 session_id=inputs.get("_session_id"),
                 error_code="TRANSPORT_ERROR",
-                error_message=str(exc),
+                error_message=str(last_error or "backend execution failed"),
             )
-            raise
+            raise RuntimeError(str(last_error or "backend execution failed"))
 
-        if progress_callback:
-            await progress_callback(progress=80, message="processing_backend_response")
-
-        if response.status_code != 200:
-            breaker.record_failure(backend_id, error=f"http {response.status_code}")
-            store.record_call(
-                tool_id,
-                (time.time() - started) * 1000,
-                False,
-                execution_mode="job",
-                trace_id=inputs.get("_trace_id"),
-                session_id=inputs.get("_session_id"),
-                error_code=f"HTTP_{response.status_code}",
-                error_message=response.text[:500],
-            )
-            raise RuntimeError(f"Backend {backend_id} returned HTTP {response.status_code}: {response.text[:300]}")
-
-        data = response.json()
-        if "error" in data and data["error"]:
-            breaker.record_failure(backend_id, error=str(data["error"]))
-            err_obj = data.get("error")
-            err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
-            err_message = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
-            store.record_call(
-                tool_id,
-                (time.time() - started) * 1000,
-                False,
-                execution_mode="job",
-                trace_id=inputs.get("_trace_id"),
-                session_id=inputs.get("_session_id"),
-                error_code=err_code,
-                error_message=err_message,
-            )
-            raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
-
-        result = data.get("result")
         breaker.record_success(backend_id)
         store.record_call(
             tool_id,
-            (time.time() - started) * 1000,
+            latency_ms,
             True,
             execution_mode="job",
             trace_id=inputs.get("_trace_id"),
@@ -1181,11 +1621,24 @@ def create_tool_executor_for_jobs():
                 result = apply_output_guard(
                     result,
                     tool_name=f"{backend_id}:{resolved_name}",
-                    source_context={"backend": backend_id, "via": "job_executor"},
+                    source_context={
+                        "backend": backend_id,
+                        "via": "job_executor",
+                        "backend_url": selected_backend_url,
+                    },
                 )
         except ImportError:
             pass
 
+        await _emit_stage(
+            progress_callback,
+            progress=95.0,
+            stage="completed",
+            stages_completed=["resolve_backend", "route_backend", "invoke_backend", "process_response"],
+            stages_remaining=[],
+            eta_seconds=0,
+            metadata={"backend_id": backend_id, "backend_url": selected_backend_url},
+        )
         return result
 
     return _tool_executor

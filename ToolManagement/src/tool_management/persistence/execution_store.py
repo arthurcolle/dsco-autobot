@@ -547,11 +547,11 @@ class ExecutionStore:
         message: Optional[str] = None,
         data: Any = None,
         error: Optional[str] = None,
-    ):
+    ) -> int:
         data_json = json.dumps(data, default=str) if data is not None else None
         with self._lock:
             with self._conn() as conn:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO execution_events (
                         execution_id, trace_id, session_id, event_type, timestamp, progress, message, data_json, error
@@ -570,6 +570,7 @@ class ExecutionStore:
                         error,
                     ),
                 )
+                return int(cursor.lastrowid or 0)
 
     def get_execution(self, execution_id: str) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
@@ -590,16 +591,32 @@ class ExecutionStore:
                 data["result"] = None
             return data
 
-    def get_events(self, execution_id: str, limit: int = 5000) -> List[Dict[str, Any]]:
+    def get_events(
+        self,
+        execution_id: str,
+        limit: int = 5000,
+        since_event_id: Optional[int] = None,
+        since_timestamp: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses = ["execution_id = ?"]
+        params: List[Any] = [execution_id]
+        if since_event_id is not None:
+            clauses.append("id > ?")
+            params.append(max(0, int(since_event_id)))
+        if since_timestamp is not None:
+            clauses.append("timestamp >= ?")
+            params.append(float(since_timestamp))
+        where_sql = " AND ".join(clauses)
+        params.append(max(1, int(limit)))
         with self._conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM execution_events
-                WHERE execution_id = ?
+                WHERE {where_sql}
                 ORDER BY id ASC
                 LIMIT ?
                 """,
-                (execution_id, limit),
+                params,
             ).fetchall()
             events: List[Dict[str, Any]] = []
             for row in rows:
@@ -2047,6 +2064,10 @@ class ExecutionStore:
         self,
         *,
         execution_id: Optional[str] = None,
+        step_key: Optional[str] = None,
+        gate_type: Optional[str] = None,
+        gate_action: Optional[str] = None,
+        status: Optional[str] = None,
         trace_id: Optional[str] = None,
         session_id: Optional[str] = None,
         limit: int = 500,
@@ -2057,6 +2078,18 @@ class ExecutionStore:
         if execution_id:
             clauses.append("execution_id = ?")
             params.append(execution_id)
+        if step_key:
+            clauses.append("step_key = ?")
+            params.append(step_key)
+        if gate_type:
+            clauses.append("gate_type = ?")
+            params.append(gate_type)
+        if gate_action:
+            clauses.append("gate_action = ?")
+            params.append(gate_action)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
         if trace_id:
             clauses.append("trace_id = ?")
             params.append(trace_id)

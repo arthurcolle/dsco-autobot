@@ -470,6 +470,8 @@ async def _stream_execution(
                 "type": "result",
                 "data": event.data,
                 "progress": ((event.progress or 0.0) / 100.0),
+                "event_id": event.event_id,
+                "replayed": event.replayed,
             }
             yield _sse("chunk", payload)
             chunk_count += 1
@@ -491,13 +493,18 @@ async def _stream_execution(
             continue
 
         if event.type == EventType.PROGRESS:
+            payload: Dict[str, Any] = {
+                "type": "progress",
+                "progress": ((event.progress or 0.0) / 100.0),
+                "message": event.message,
+                "event_id": event.event_id,
+                "replayed": event.replayed,
+            }
+            if isinstance(event.data, dict):
+                payload.update(event.data)
             yield _sse(
                 "signal",
-                {
-                    "type": "progress",
-                    "progress": ((event.progress or 0.0) / 100.0),
-                    "message": event.message,
-                },
+                payload,
             )
             continue
 
@@ -505,11 +512,21 @@ async def _stream_execution(
             payload = event.data if isinstance(event.data, dict) else {"payload": event.data}
             if event.message and "message" not in payload:
                 payload["message"] = event.message
+            payload["event_id"] = event.event_id
+            payload["replayed"] = event.replayed
             yield _sse("signal", payload)
             continue
 
         if event.type in (EventType.PAUSED, EventType.RESUMED, EventType.DETACHED):
-            yield _sse("signal", {"type": event.type.value, "message": event.message})
+            yield _sse(
+                "signal",
+                {
+                    "type": event.type.value,
+                    "message": event.message,
+                    "event_id": event.event_id,
+                    "replayed": event.replayed,
+                },
+            )
             continue
 
         if event.type == EventType.HEARTBEAT:
@@ -520,6 +537,8 @@ async def _stream_execution(
                     "call_id": call_id,
                     "elapsed_ms": elapsed_ms,
                     "progress": ((event.progress or 0.0) / 100.0),
+                    "event_id": event.event_id,
+                    "replayed": event.replayed,
                 },
             )
             continue
@@ -532,7 +551,9 @@ async def _stream_execution(
                         "BACKEND_ERROR",
                         event.error or event.message or "Execution failed",
                         retryable=True,
-                    )
+                    ),
+                    "event_id": event.event_id,
+                    "replayed": event.replayed,
                 },
             )
             continue
@@ -549,6 +570,8 @@ async def _stream_execution(
                     "trace_id": trace_id,
                     "session_id": session_id,
                     "parent_execution_id": parent_execution_id,
+                    "event_id": event.event_id,
+                    "replayed": event.replayed,
                 },
             )
             break
@@ -770,8 +793,15 @@ async def control_call(call_id: str, request: ControlRequest):
 
     action = request.action
     if action == "stop":
+        started = time.time()
         cancelled = executor.cancel_execution(call_id)
-        return {"call_id": call_id, "action": action, "accepted": cancelled}
+        return {
+            "call_id": call_id,
+            "action": action,
+            "accepted": cancelled,
+            "requested_at": started,
+            "target_ack_sla_ms": 500,
+        }
 
     if action == "pause":
         paused = await executor.pause_execution(call_id)

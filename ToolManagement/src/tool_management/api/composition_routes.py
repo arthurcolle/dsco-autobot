@@ -133,6 +133,21 @@ class CompositionStep(BaseModel):
     # Conditional execution
     condition: Optional[str] = None  # Python expression
 
+    # Runtime gate controls
+    gate_type: Optional[str] = Field(
+        default=None,
+        description="Optional gate type: auto|agent_approval|quality_check|branch",
+    )
+    gate_timeout_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Max time to wait for an external gate decision. 0 disables waiting.",
+    )
+    gate_default_action: Literal["proceed", "skip", "abort", "fork", "rewind"] = Field(
+        default="proceed",
+        description="Fallback action when gate times out or no explicit decision exists.",
+    )
+
     # Metadata
     timeout_seconds: float = 300.0
     retry_on_failure: bool = False
@@ -155,6 +170,10 @@ class WorkflowComposition(BaseModel):
     # Global settings
     timeout_seconds: float = 600.0
     max_parallel_steps: int = 5
+    gates: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional gate map, e.g. {'after_step_0': 'agent_approval'}",
+    )
 
     # Schema references
     input_schema: Optional[str] = None
@@ -292,6 +311,170 @@ def _find_idempotent_workflow_result(
             ),
         )
     return existing
+
+
+def _resolve_gate_config(
+    workflow: WorkflowComposition,
+    step: CompositionStep,
+    step_index: int,
+) -> Optional[Dict[str, Any]]:
+    # Step-level config takes precedence.
+    if step.gate_type and str(step.gate_type).strip().lower() not in {"", "auto", "none"}:
+        return {
+            "gate_type": str(step.gate_type).strip().lower(),
+            "timeout_seconds": float(step.gate_timeout_seconds or 0.0),
+            "default_action": str(step.gate_default_action or "proceed").strip().lower(),
+        }
+
+    # Fallback to workflow-level mapping ("after_step_N" or step id/name).
+    gates = workflow.gates or {}
+    lookup_keys = [f"after_step_{step_index}", step.id, step.name]
+    for key in lookup_keys:
+        if key not in gates:
+            continue
+        raw = gates[key]
+        if isinstance(raw, str):
+            gate_type = raw.strip().lower()
+            if gate_type in {"", "auto", "none"}:
+                return None
+            return {
+                "gate_type": gate_type,
+                "timeout_seconds": 0.0,
+                "default_action": "proceed",
+            }
+        if isinstance(raw, dict):
+            gate_type = str(raw.get("type") or raw.get("gate_type") or "").strip().lower()
+            if gate_type in {"", "auto", "none"}:
+                return None
+            timeout_seconds = float(raw.get("timeout_seconds") or 0.0)
+            default_action = str(raw.get("default_action") or "proceed").strip().lower()
+            return {
+                "gate_type": gate_type,
+                "timeout_seconds": max(0.0, timeout_seconds),
+                "default_action": default_action,
+            }
+    return None
+
+
+def _resolve_step_index(
+    workflow: WorkflowComposition,
+    target: Any,
+) -> Optional[int]:
+    if target is None:
+        return None
+    if isinstance(target, int):
+        if 0 <= target < len(workflow.steps):
+            return target
+        return None
+    if isinstance(target, str):
+        raw = target.strip()
+        if raw.isdigit():
+            idx = int(raw)
+            if 0 <= idx < len(workflow.steps):
+                return idx
+            return None
+        for idx, step in enumerate(workflow.steps):
+            if raw == step.id or raw == step.name:
+                return idx
+    return None
+
+
+async def _await_gate_decision(
+    *,
+    execution_id: str,
+    step_key: str,
+    gate_type: str,
+    timeout_seconds: float,
+    default_action: str,
+    trace_id: Optional[str],
+    session_id: Optional[str],
+    recorder: Optional["WorkflowRunRecorder"],
+) -> Dict[str, Any]:
+    store = get_execution_store()
+    started = time.time()
+    deadline = started + timeout_seconds if timeout_seconds > 0 else started
+    poll_interval = 0.2
+
+    # Emit pending marker for observability.
+    store.append_workflow_gate_decision(
+        execution_id=execution_id,
+        step_key=step_key,
+        gate_type=gate_type,
+        gate_action="awaiting",
+        actor="system",
+        status="pending",
+        reason="waiting_for_gate_decision",
+        payload={"timeout_seconds": timeout_seconds, "default_action": default_action},
+        trace_id=trace_id,
+        session_id=session_id,
+    )
+    if recorder:
+        recorder.event(
+            "step_gate_pending",
+            step_key=step_key,
+            message=f"Waiting on gate decision ({gate_type})",
+            data={"timeout_seconds": timeout_seconds, "default_action": default_action},
+        )
+
+    while True:
+        rows = store.list_workflow_gate_decisions(
+            execution_id=execution_id,
+            step_key=step_key,
+            gate_type=gate_type,
+            limit=50,
+        )
+        for row in rows:
+            action = str(row.get("gate_action") or "").strip().lower()
+            status = str(row.get("status") or "").strip().lower()
+            if action in {"", "awaiting", "pending"}:
+                continue
+            if status in {"pending", "awaiting"}:
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            decision = {
+                "action": action,
+                "reason": row.get("reason"),
+                "payload": payload,
+                "source": "decision",
+            }
+            if recorder:
+                recorder.event(
+                    "step_gate_decided",
+                    step_key=step_key,
+                    message=f"Gate action: {action}",
+                    data=decision,
+                )
+            return decision
+
+        if deadline and time.time() >= deadline:
+            timed_out_decision = {
+                "action": default_action,
+                "reason": "gate_timeout",
+                "payload": {},
+                "source": "timeout_default",
+            }
+            store.append_workflow_gate_decision(
+                execution_id=execution_id,
+                step_key=step_key,
+                gate_type=gate_type,
+                gate_action=default_action,
+                actor="system",
+                status="timeout_default",
+                reason="gate_timeout_default_action",
+                payload={"waited_seconds": time.time() - started},
+                trace_id=trace_id,
+                session_id=session_id,
+            )
+            if recorder:
+                recorder.event(
+                    "step_gate_timeout",
+                    step_key=step_key,
+                    message=f"Gate timeout -> default action {default_action}",
+                    data=timed_out_decision,
+                )
+            return timed_out_decision
+
+        await asyncio.sleep(poll_interval)
 
 
 class WorkflowRunRecorder:
@@ -1078,9 +1261,23 @@ async def _execute_workflow(
     step_results = dict(initial_step_results or {})
     current_data = initial_current_data if initial_current_data is not None else inputs
     start_index = max(0, int(start_index))
+    step_index = start_index
+    step_index_map = {step.id: idx for idx, step in enumerate(workflow.steps)}
 
-    # Execute steps in order
-    for step_index, step in enumerate(workflow.steps[start_index:], start=start_index):
+    def _truncate_step_results(from_index: int):
+        remove_keys = []
+        for key in step_results.keys():
+            idx = step_index_map.get(key)
+            if idx is None and ":fork:" in key:
+                parent_key = key.split(":fork:", 1)[0]
+                idx = step_index_map.get(parent_key)
+            if idx is not None and idx >= from_index:
+                remove_keys.append(key)
+        for key in remove_keys:
+            step_results.pop(key, None)
+
+    while step_index < len(workflow.steps):
+        step = workflow.steps[step_index]
         logger.info(f"Executing step: {step.name} (mode={step.mode})")
         step_key = step.id or f"step_{step_index}"
 
@@ -1092,9 +1289,119 @@ async def _execute_workflow(
         if step.input_mapping:
             mapped_data = {}
             for target_key, source_key in step.input_mapping.items():
-                if source_key in current_data:
+                if isinstance(current_data, dict) and source_key in current_data:
                     mapped_data[target_key] = current_data[source_key]
             current_data = mapped_data
+
+        gate_cfg = _resolve_gate_config(workflow, step, step_index)
+        if gate_cfg:
+            gate_decision = await _await_gate_decision(
+                execution_id=execution_id,
+                step_key=step_key,
+                gate_type=str(gate_cfg["gate_type"]),
+                timeout_seconds=float(gate_cfg.get("timeout_seconds") or 0.0),
+                default_action=str(gate_cfg.get("default_action") or "proceed"),
+                trace_id=recorder.trace_id if recorder else None,
+                session_id=recorder.session_id if recorder else None,
+                recorder=recorder,
+            )
+            gate_action = str(gate_decision.get("action") or "proceed").strip().lower()
+            gate_payload = gate_decision.get("payload") if isinstance(gate_decision.get("payload"), dict) else {}
+
+            if "override_input" in gate_payload:
+                current_data = gate_payload.get("override_input")
+
+            if gate_action == "abort":
+                raise RuntimeError(f"Workflow aborted by gate at step '{step.name}'")
+
+            if gate_action == "skip":
+                skipped_output = {
+                    "skipped": True,
+                    "gate_type": gate_cfg.get("gate_type"),
+                    "reason": gate_decision.get("reason"),
+                }
+                if recorder:
+                    recorder.start_step(
+                        step_key=step_key,
+                        step_name=step.name,
+                        step_index=step_index,
+                        tool_name=step.tool,
+                        mode=step.mode.value,
+                        input_data=current_data,
+                        metadata={"gate_action": "skip", "gate_type": gate_cfg.get("gate_type")},
+                    )
+                    recorder.complete_step(
+                        step_key=step_key,
+                        step_name=step.name,
+                        step_index=step_index,
+                        tool_name=step.tool,
+                        mode=step.mode.value,
+                        output_data=skipped_output,
+                        metadata={"skipped": True, "gate_action": "skip"},
+                    )
+                step_results[step.id] = skipped_output
+                current_data = skipped_output
+                step_index += 1
+                continue
+
+            if gate_action == "rewind":
+                rewind_target = gate_payload.get("to_step")
+                rewind_index = _resolve_step_index(workflow, rewind_target)
+                if rewind_index is None:
+                    rewind_index = max(0, step_index - 1)
+                if rewind_index >= step_index:
+                    # Invalid forward rewind target; continue normally.
+                    pass
+                else:
+                    if recorder:
+                        recorder.event(
+                            "step_gate_rewind",
+                            step_key=step_key,
+                            message=f"Rewinding workflow to step index {rewind_index}",
+                            data={"target": rewind_target, "rewind_index": rewind_index},
+                        )
+                    _truncate_step_results(rewind_index)
+                    if rewind_index == 0:
+                        current_data = inputs
+                    else:
+                        prev_step = workflow.steps[rewind_index - 1]
+                        current_data = step_results.get(prev_step.id, inputs)
+                    step_index = rewind_index
+                    continue
+
+            if gate_action == "fork":
+                additional_tools = gate_payload.get("additional_tools")
+                if not isinstance(additional_tools, list):
+                    additional_tools = []
+                for fork_idx, fork_tool in enumerate(additional_tools):
+                    fork_tool_name = str(fork_tool or "").strip()
+                    if not fork_tool_name:
+                        continue
+                    fork_step_key = f"{step_key}:fork:{fork_idx}"
+                    if recorder:
+                        recorder.start_step(
+                            step_key=fork_step_key,
+                            step_name=f"fork_{fork_tool_name}",
+                            step_index=step_index,
+                            tool_name=fork_tool_name,
+                            mode="fork",
+                            input_data=current_data,
+                            metadata={"gate_action": "fork", "parent_step": step_key},
+                        )
+                    fork_result = await _execute_tool(fork_tool_name, current_data)
+                    if recorder:
+                        recorder.complete_step(
+                            step_key=fork_step_key,
+                            step_name=f"fork_{fork_tool_name}",
+                            step_index=step_index,
+                            tool_name=fork_tool_name,
+                            mode="fork",
+                            output_data=fork_result,
+                            metadata={"gate_action": "fork", "parent_step": step_key},
+                        )
+                    step_results[fork_step_key] = fork_result
+                    if gate_payload.get("use_fork_output"):
+                        current_data = fork_result
 
         is_side_effect = _is_side_effect_tool(step.tool)
         side_effect_key = _build_side_effect_key(step.tool, current_data) if is_side_effect else None
@@ -1116,6 +1423,7 @@ async def _execute_workflow(
                     "max_retries": step.max_retries,
                     "is_side_effect": is_side_effect,
                     "side_effect_key": side_effect_key,
+                    "gate_type": gate_cfg.get("gate_type") if gate_cfg else None,
                 },
             )
 
@@ -1193,6 +1501,7 @@ async def _execute_workflow(
 
         step_results[step.id] = result
         current_data = result
+        step_index += 1
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -1367,6 +1676,10 @@ async def record_workflow_gate_decision(
 @router.get("/executions/{execution_id}/gates")
 async def get_execution_gate_decisions(
     execution_id: str,
+    step_key: Optional[str] = Query(default=None),
+    gate_type: Optional[str] = Query(default=None),
+    gate_action: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
 ):
     """List durable workflow gate decisions for one execution."""
@@ -1379,7 +1692,14 @@ async def get_execution_gate_decisions(
     )
     if not execution:
         raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
-    records = store.list_workflow_gate_decisions(execution_id=execution_id, limit=limit)
+    records = store.list_workflow_gate_decisions(
+        execution_id=execution_id,
+        step_key=step_key,
+        gate_type=gate_type,
+        gate_action=gate_action,
+        status=status,
+        limit=limit,
+    )
     return {
         "execution_id": execution_id,
         "count": len(records),
@@ -1390,11 +1710,22 @@ async def get_execution_gate_decisions(
 @router.get("/traces/{trace_id}/gates")
 async def get_trace_gate_decisions(
     trace_id: str,
+    step_key: Optional[str] = Query(default=None),
+    gate_type: Optional[str] = Query(default=None),
+    gate_action: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=10000),
 ):
     """List durable workflow gate decisions for a distributed trace."""
     store = get_execution_store()
-    records = store.list_workflow_gate_decisions(trace_id=trace_id, limit=limit)
+    records = store.list_workflow_gate_decisions(
+        trace_id=trace_id,
+        step_key=step_key,
+        gate_type=gate_type,
+        gate_action=gate_action,
+        status=status,
+        limit=limit,
+    )
     return {
         "trace_id": trace_id,
         "count": len(records),
