@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, List, Literal, Optional
@@ -68,6 +69,16 @@ class ExecuteRequest(BaseModel):
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
+    estimated_cost_cents: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional caller-provided cost estimate; otherwise API estimates from latency/complexity",
+    )
+    max_cost_cents: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Hard per-call cost ceiling; request is rejected if estimated cost exceeds it",
+    )
     priority: Optional[str] = Field(
         default="p1",
         description="Queue priority: p0|p1|p2|p3 (or critical|high|normal|background)",
@@ -113,6 +124,7 @@ class ExecuteResponse(BaseModel):
     status: str
     tool: str
     execution_mode: str
+    estimated_cost_cents: Optional[int] = None
     call_id: Optional[str] = None
     job_id: Optional[str] = None
     result: Optional[Any] = None
@@ -142,6 +154,8 @@ class BatchCall(BaseModel):
     timeout_ms: int = Field(default=30000, ge=100, le=600000)
     sync_timeout_ms: int = Field(default=5000, ge=100, le=600000)
     idempotency_key: Optional[str] = None
+    estimated_cost_cents: Optional[int] = Field(default=None, ge=0)
+    max_cost_cents: Optional[int] = Field(default=None, ge=0)
     priority: Optional[str] = "p1"
     dedupe_window_seconds: int = Field(default=60, ge=0, le=3600)
     dedupe_key: Optional[str] = None
@@ -184,6 +198,29 @@ class BatchExecuteRequest(BaseModel):
         default="reject",
         description="Behavior when canonical calls exceed max_canonical_calls (reject|truncate)",
     )
+    max_reintegration_cost: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Optional reintegration-cost budget; helps prevent high-cost data merge fanout",
+    )
+    reintegration_overflow_policy: BatchOverflowPolicy = Field(
+        default="reject",
+        description="Behavior when reintegration budget is exceeded (reject|truncate)",
+    )
+    cost_per_canonical_call: float = Field(default=1.0, ge=0.0)
+    cost_per_deduped_call: float = Field(default=0.25, ge=0.0)
+    cost_per_parallel_slot: float = Field(default=0.5, ge=0.0)
+    cost_per_unconverged_call: float = Field(default=0.35, ge=0.0)
+    auto_tune_parallel: bool = Field(
+        default=True,
+        description="Auto-adjust max_parallel from queue pressure and reintegration budget",
+    )
+    min_parallel: int = Field(default=1, ge=1, le=512)
+    max_total_cost_cents: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional aggregate batch execution cost ceiling across canonical calls",
+    )
     auto_follow_up: bool = Field(
         default=True,
         description="Automatically persist follow-up actions when batch fanout/reintegration risk is detected",
@@ -200,6 +237,29 @@ class BatchExecuteResponse(BaseModel):
     execution: BatchExecutionMode
     batch_plan: Dict[str, Any] = Field(default_factory=dict)
     follow_up_actions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ExecutionAdmissionRequest(BaseModel):
+    tool_name: Optional[str] = None
+    tool: Optional[str] = None
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    execution_mode: ExecutionMode = "auto"
+    stream: bool = True
+    policy_constraints: Optional[PolicyConstraintsConfig] = None
+    estimated_cost_cents: Optional[int] = Field(default=None, ge=0)
+    max_cost_cents: Optional[int] = Field(default=None, ge=0)
+
+
+class ExecutionAdmissionResponse(BaseModel):
+    tool: str
+    requested_mode: str
+    selected_mode: str
+    latency_class: str
+    estimated_cost_cents: int
+    admitted: bool
+    reasons: List[str] = Field(default_factory=list)
+    policy_decision: Dict[str, Any] = Field(default_factory=dict)
+    queue_pressure: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ControlRequest(BaseModel):
@@ -529,6 +589,240 @@ def _batch_call_fingerprint(call: BatchCall, *, dedupe_on_tool: bool) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _argument_result_size_hint(arguments: Dict[str, Any]) -> int:
+    """Best-effort estimate of result volume requested by a call."""
+    if not isinstance(arguments, dict):
+        return 1
+    candidates = []
+    for key in ("num_results", "max_results", "limit", "top_k", "k", "count", "n"):
+        value = arguments.get(key)
+        if isinstance(value, int):
+            candidates.append(value)
+        elif isinstance(value, float):
+            candidates.append(int(value))
+        elif isinstance(value, str) and value.strip().isdigit():
+            candidates.append(int(value.strip()))
+    size_hint = max(candidates) if candidates else 1
+    return max(1, min(500, int(size_hint)))
+
+
+def _executor_pressure_snapshot() -> Dict[str, Any]:
+    try:
+        executor = get_streaming_executor()
+    except Exception:
+        return {
+            "active_count": 0,
+            "queue_depth": 0,
+            "max_concurrent": 0,
+            "max_pending": 0,
+            "max_inflight": 0,
+            "queue_pressure_ratio": 0.0,
+            "inflight_pressure_ratio": 0.0,
+        }
+
+    stats = executor.get_stats() if hasattr(executor, "get_stats") else {}
+    active_count = int(stats.get("active_count") or 0)
+    queue_depth = int(stats.get("queue_depth") or 0)
+    max_concurrent = int(stats.get("max_concurrent") or 0)
+    max_pending = int(stats.get("max_pending") or 0)
+    max_inflight = int(stats.get("max_inflight") or 0)
+    inflight = active_count + queue_depth
+    queue_pressure_ratio = (float(queue_depth) / float(max_pending)) if max_pending > 0 else 0.0
+    inflight_pressure_ratio = (float(inflight) / float(max_inflight)) if max_inflight > 0 else 0.0
+    return {
+        "active_count": active_count,
+        "queue_depth": queue_depth,
+        "max_concurrent": max_concurrent,
+        "max_pending": max_pending,
+        "max_inflight": max_inflight,
+        "queue_pressure_ratio": queue_pressure_ratio,
+        "inflight_pressure_ratio": inflight_pressure_ratio,
+    }
+
+
+def _estimate_execution_cost_cents(
+    *,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    selected_mode: str,
+    latency_class: str,
+    provided_estimate_cents: Optional[int] = None,
+) -> int:
+    if provided_estimate_cents is not None:
+        return max(0, int(provided_estimate_cents))
+
+    latency_base = {
+        "fast": 4.0,
+        "medium": 12.0,
+        "slow": 35.0,
+    }.get(str(latency_class).lower(), 12.0)
+    mode_multiplier = {
+        "sync": 1.0,
+        "stream": 1.15,
+        "job": 1.35,
+        "auto": 1.2,
+    }.get(str(selected_mode).lower(), 1.2)
+    size_hint = _argument_result_size_hint(arguments)
+    size_cost = math.log2(max(2, size_hint + 1))
+
+    tool_lower = str(tool_name).lower()
+    tool_factor = 1.0
+    if "deep_search" in tool_lower or "find_all" in tool_lower:
+        tool_factor = 1.8
+    elif "search" in tool_lower or "synthesize" in tool_lower:
+        tool_factor = 1.25
+    elif "store_" in tool_lower or "publish_" in tool_lower:
+        tool_factor = 1.15
+
+    estimate = (latency_base + size_cost) * mode_multiplier * tool_factor
+    return max(1, int(math.ceil(estimate)))
+
+
+def _estimate_batch_call_reintegration_cost(
+    *,
+    call: BatchCall,
+    uses: int,
+    request: BatchExecuteRequest,
+) -> float:
+    mode_factor = {
+        "sync": 1.0,
+        "stream": 1.2,
+        "job": 1.6,
+        "auto": 1.35,
+    }.get(str(call.execution_mode).lower(), 1.35)
+    size_hint = _argument_result_size_hint(call.arguments)
+    size_factor = math.log2(max(2, size_hint + 1)) * 0.25
+    tool_name = _resolve_tool_name(call.tool_name, call.tool).lower()
+    tool_factor = 1.0
+    if "deep_search" in tool_name or "find_all" in tool_name:
+        tool_factor = 1.5
+    elif "search" in tool_name or "synthesize" in tool_name:
+        tool_factor = 1.2
+
+    cost = float(request.cost_per_canonical_call)
+    cost += mode_factor * tool_factor
+    cost += size_factor
+    cost += float(request.cost_per_deduped_call) * max(0, int(uses) - 1)
+    if not call.convergence_key:
+        cost += float(request.cost_per_unconverged_call)
+    return max(0.0, float(cost))
+
+
+def _build_batch_reintegration_plan(
+    *,
+    request: BatchExecuteRequest,
+    canonical_calls: List[BatchCall],
+    canonical_use_counts: Dict[int, int],
+    executable_canonical_indices: List[int],
+    default_parallel_limit: int,
+) -> Dict[str, Any]:
+    pressure = _executor_pressure_snapshot()
+    effective_parallel = max(1, int(request.max_parallel or default_parallel_limit))
+    if request.auto_tune_parallel:
+        queue_ratio = float(pressure.get("queue_pressure_ratio") or 0.0)
+        inflight_ratio = float(pressure.get("inflight_pressure_ratio") or 0.0)
+        pressure_ratio = max(queue_ratio, inflight_ratio)
+        if pressure_ratio >= 0.85:
+            effective_parallel = max(int(request.min_parallel), min(effective_parallel, 2))
+        elif pressure_ratio >= 0.6:
+            reduced = max(
+                int(request.min_parallel),
+                int(math.ceil(effective_parallel * (1.0 - (pressure_ratio - 0.5)))),
+            )
+            effective_parallel = max(int(request.min_parallel), reduced)
+
+    costs_by_index: Dict[int, float] = {}
+    for canonical_idx in executable_canonical_indices:
+        call = canonical_calls[canonical_idx]
+        costs_by_index[canonical_idx] = _estimate_batch_call_reintegration_cost(
+            call=call,
+            uses=canonical_use_counts.get(canonical_idx, 1),
+            request=request,
+        )
+
+    pressure_surcharge = max(
+        0.0,
+        max(float(pressure.get("queue_pressure_ratio") or 0.0), float(pressure.get("inflight_pressure_ratio") or 0.0)) - 0.5,
+    ) * 8.0
+    parallel_overhead = float(request.cost_per_parallel_slot) * float(max(1, effective_parallel))
+    fixed_overhead = parallel_overhead + pressure_surcharge
+    variable_cost = sum(costs_by_index.values())
+    estimated_total = fixed_overhead + variable_cost
+
+    return {
+        "pressure": pressure,
+        "effective_parallel": effective_parallel,
+        "costs_by_index": costs_by_index,
+        "fixed_overhead": fixed_overhead,
+        "estimated_total_cost": estimated_total,
+        "estimated_variable_cost": variable_cost,
+        "parallel_overhead": parallel_overhead,
+        "pressure_surcharge": pressure_surcharge,
+    }
+
+
+def _select_canonical_indices_under_reintegration_budget(
+    *,
+    budget_limit: float,
+    costs_by_index: Dict[int, float],
+    canonical_use_counts: Dict[int, int],
+    fixed_overhead: float,
+) -> List[int]:
+    budget_limit = max(0.0, float(budget_limit))
+    budget_for_calls = max(0.0, budget_limit - max(0.0, float(fixed_overhead)))
+    ranked = sorted(
+        costs_by_index.keys(),
+        key=lambda idx: (
+            float(canonical_use_counts.get(idx, 1)) / max(0.01, float(costs_by_index.get(idx, 0.0))),
+            float(canonical_use_counts.get(idx, 1)),
+        ),
+        reverse=True,
+    )
+    chosen: List[int] = []
+    running = 0.0
+    for idx in ranked:
+        item_cost = max(0.0, float(costs_by_index.get(idx, 0.0)))
+        if not chosen and item_cost > budget_for_calls and budget_for_calls <= 0.0:
+            continue
+        if running + item_cost <= budget_for_calls or not chosen:
+            chosen.append(idx)
+            running += item_cost
+    return chosen
+
+
+def _build_batch_canonical_state(request: BatchExecuteRequest) -> Dict[str, Any]:
+    canonical_calls: List[BatchCall] = []
+    call_to_canonical: List[int] = []
+    canonical_first_logical: Dict[int, int] = {}
+    canonical_use_counts: Dict[int, int] = {}
+
+    if request.dedupe_calls:
+        canonical_by_fingerprint: Dict[str, int] = {}
+        for logical_idx, call in enumerate(request.calls):
+            fingerprint = _batch_call_fingerprint(call, dedupe_on_tool=request.dedupe_on_tool)
+            canonical_idx = canonical_by_fingerprint.get(fingerprint)
+            if canonical_idx is None:
+                canonical_idx = len(canonical_calls)
+                canonical_by_fingerprint[fingerprint] = canonical_idx
+                canonical_calls.append(call)
+                canonical_first_logical[canonical_idx] = logical_idx
+                canonical_use_counts[canonical_idx] = 0
+            call_to_canonical.append(canonical_idx)
+            canonical_use_counts[canonical_idx] = canonical_use_counts.get(canonical_idx, 0) + 1
+    else:
+        canonical_calls = list(request.calls)
+        call_to_canonical = list(range(len(request.calls)))
+        canonical_first_logical = {idx: idx for idx in range(len(canonical_calls))}
+        canonical_use_counts = {idx: 1 for idx in range(len(canonical_calls))}
+
+    return {
+        "canonical_calls": canonical_calls,
+        "call_to_canonical": call_to_canonical,
+        "canonical_first_logical": canonical_first_logical,
+        "canonical_use_counts": canonical_use_counts,
+    }
+
+
 def _clone_execute_response(response: ExecuteResponse, *, deduplicated: bool = False) -> ExecuteResponse:
     payload = response.model_dump()
     if deduplicated:
@@ -676,6 +970,9 @@ def _persist_batch_follow_up_actions(
     canonical_calls = int(batch_plan.get("canonical_calls") or 0)
     deduped_calls = int(batch_plan.get("deduped_calls") or 0)
     overflowed = int(batch_plan.get("overflowed_canonical_calls") or 0)
+    reintegration_overflowed = int(batch_plan.get("reintegration_overflowed_calls") or 0)
+    estimated_reintegration_cost = float(batch_plan.get("estimated_reintegration_cost") or 0.0)
+    max_reintegration_cost = batch_plan.get("max_reintegration_cost")
 
     # Trigger durability-driven follow-ups only for materially large batches.
     if total_calls < 25:
@@ -752,6 +1049,57 @@ def _persist_batch_follow_up_actions(
             },
             metadata={"generator": "execute_batch", "generated_at": now},
             dedupe_key=f"fu:batch:resegment:{trace_id}",
+            dedupe_window_seconds=3600,
+        )
+        actions.append(_normalize_follow_up_action_row(created))
+
+    if reintegration_overflowed > 0:
+        created = store.append_follow_up_action(
+            action_type="reintegration_budget_resegment",
+            title="Resegment batch by reintegration budget",
+            description=(
+                f"{reintegration_overflowed} canonical calls were skipped due to reintegration budget pressure. "
+                "Segment workload or strengthen convergence keys/reducers."
+            ),
+            priority="critical" if reintegration_overflowed >= 20 else "high",
+            source_type="batch_execution",
+            source_id=trace_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            payload={
+                "reintegration_overflowed_calls": reintegration_overflowed,
+                "estimated_reintegration_cost": estimated_reintegration_cost,
+                "max_reintegration_cost": max_reintegration_cost,
+                "canonical_calls": canonical_calls,
+                "total_calls": total_calls,
+            },
+            metadata={"generator": "execute_batch", "generated_at": now},
+            dedupe_key=f"fu:batch:reintegration_budget:{trace_id}",
+            dedupe_window_seconds=3600,
+        )
+        actions.append(_normalize_follow_up_action_row(created))
+
+    if max_reintegration_cost is not None and estimated_reintegration_cost > float(max_reintegration_cost):
+        created = store.append_follow_up_action(
+            action_type="tighten_reintegration_policy",
+            title="Tighten reintegration policy for high-cost batch",
+            description=(
+                f"Estimated reintegration cost {estimated_reintegration_cost:.2f} exceeded budget "
+                f"{float(max_reintegration_cost):.2f}. Auto-tune parallelism and cap unconverged fanout."
+            ),
+            priority="high",
+            source_type="batch_execution",
+            source_id=trace_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            payload={
+                "estimated_reintegration_cost": estimated_reintegration_cost,
+                "max_reintegration_cost": float(max_reintegration_cost),
+                "auto_tune_parallel": True,
+                "suggested_min_parallel": max(1, int(batch_plan.get("effective_parallel") or 1)),
+            },
+            metadata={"generator": "execute_batch", "generated_at": now},
+            dedupe_key=f"fu:batch:reintegration_policy:{trace_id}",
             dedupe_window_seconds=3600,
         )
         actions.append(_normalize_follow_up_action_row(created))
@@ -882,12 +1230,14 @@ def _to_collected_response(
     session_id: Optional[str] = None,
     parent_execution_id: Optional[str] = None,
     policy_decision: Optional[Dict[str, Any]] = None,
+    estimated_cost_cents: Optional[int] = None,
 ) -> ExecuteResponse:
     if result.success:
         return ExecuteResponse(
             status="completed",
             tool=tool_name,
             execution_mode=execution_mode,
+            estimated_cost_cents=estimated_cost_cents,
             call_id=call_id,
             job_id=job_id,
             result=result.result,
@@ -902,6 +1252,7 @@ def _to_collected_response(
         status="error",
         tool=tool_name,
         execution_mode=execution_mode,
+        estimated_cost_cents=estimated_cost_cents,
         call_id=call_id,
         job_id=job_id,
         error=_structured_error(
@@ -1104,6 +1455,37 @@ async def execute(request: ExecuteRequest):
             reason="stream_selected_but_client_requested_collected_response",
         )
 
+    latency_class = str(policy_decision.get("latency_class") or _latency_class_for_tool(tool_name))
+    estimated_cost_cents = _estimate_execution_cost_cents(
+        tool_name=tool_name,
+        arguments=request.arguments,
+        selected_mode=selected_mode,
+        latency_class=latency_class,
+        provided_estimate_cents=request.estimated_cost_cents,
+    )
+    effective_max_cost_cents: Optional[int] = request.max_cost_cents
+    if effective_max_cost_cents is None and constraints.cost_budget is not None:
+        try:
+            effective_max_cost_cents = int(math.ceil(float(constraints.cost_budget)))
+        except Exception:
+            effective_max_cost_cents = None
+    policy_decision["estimated_cost_cents"] = estimated_cost_cents
+    if effective_max_cost_cents is not None:
+        policy_decision["max_cost_cents"] = int(effective_max_cost_cents)
+        if estimated_cost_cents > int(effective_max_cost_cents):
+            raise HTTPException(
+                status_code=402,
+                detail=_structured_error(
+                    "COST_BUDGET_EXCEEDED",
+                    (
+                        f"Estimated cost {estimated_cost_cents} cents exceeds max "
+                        f"{int(effective_max_cost_cents)} cents"
+                    ),
+                    category="economic",
+                    retryable=False,
+                ),
+            )
+
     async def submit_job_response(*, status: str = "submitted", error: Optional[Dict[str, Any]] = None) -> ExecuteResponse:
         execution = await _submit_job(
             tool_name=tool_name,
@@ -1138,6 +1520,7 @@ async def execute(request: ExecuteRequest):
             status=status,
             tool=tool_name,
             execution_mode="job",
+            estimated_cost_cents=estimated_cost_cents,
             call_id=execution.execution_id,
             job_id=execution.execution_id,
             deduplicated=deduplicated,
@@ -1192,6 +1575,7 @@ async def execute(request: ExecuteRequest):
                 status="running_background",
                 tool=tool_name,
                 execution_mode="job",
+                estimated_cost_cents=estimated_cost_cents,
                 call_id=execution.execution_id,
                 job_id=execution.execution_id,
                 deduplicated=deduplicated,
@@ -1252,6 +1636,7 @@ async def execute(request: ExecuteRequest):
                 session_id=session_id,
                 parent_execution_id=parent_execution_id,
                 policy_decision=policy_decision,
+                estimated_cost_cents=estimated_cost_cents,
             )
         except asyncio.TimeoutError:
             _update_policy_decision(
@@ -1285,6 +1670,79 @@ async def execute(request: ExecuteRequest):
         session_id=session_id,
         parent_execution_id=parent_execution_id,
         policy_decision=policy_decision,
+        estimated_cost_cents=estimated_cost_cents,
+    )
+
+
+@router.post("/execute/admission-check", response_model=ExecutionAdmissionResponse)
+async def execution_admission_check(request: ExecutionAdmissionRequest):
+    tool_name = _resolve_tool_name(request.tool_name, request.tool)
+    requested_mode: ExecutionMode = request.execution_mode
+    if request.stream:
+        requested_mode = "stream"
+    constraints = PolicyConstraints()
+    if request.policy_constraints is not None:
+        constraints = PolicyConstraints(
+            latency_budget_ms=request.policy_constraints.latency_budget_ms,
+            cost_budget=request.policy_constraints.cost_budget,
+            reliability_target=request.policy_constraints.reliability_target,
+            prefer_streaming=request.policy_constraints.prefer_streaming,
+            allow_sync=request.policy_constraints.allow_sync,
+            allow_stream=request.policy_constraints.allow_stream,
+            allow_job=request.policy_constraints.allow_job,
+        )
+    decision = choose_execution_mode(
+        tool_name=tool_name,
+        requested_mode=requested_mode,
+        tool_store=get_tool_store(),
+        constraints=constraints,
+    ).to_dict()
+    selected_mode = str(decision.get("selected_mode") or "sync")
+    if selected_mode == "stream" and not request.stream:
+        selected_mode = "job"
+    latency_class = str(decision.get("latency_class") or _latency_class_for_tool(tool_name))
+    estimated_cost_cents = _estimate_execution_cost_cents(
+        tool_name=tool_name,
+        arguments=request.arguments,
+        selected_mode=selected_mode,
+        latency_class=latency_class,
+        provided_estimate_cents=request.estimated_cost_cents,
+    )
+    max_cost_cents = request.max_cost_cents
+    if max_cost_cents is None and constraints.cost_budget is not None:
+        try:
+            max_cost_cents = int(math.ceil(float(constraints.cost_budget)))
+        except Exception:
+            max_cost_cents = None
+
+    pressure = _executor_pressure_snapshot()
+    reasons: List[str] = []
+    admitted = True
+    if max_cost_cents is not None and estimated_cost_cents > int(max_cost_cents):
+        admitted = False
+        reasons.append("cost_budget_exceeded")
+    if float(pressure.get("queue_pressure_ratio") or 0.0) >= 0.98:
+        admitted = False
+        reasons.append("queue_backpressure_high")
+    if float(pressure.get("inflight_pressure_ratio") or 0.0) >= 0.98:
+        admitted = False
+        reasons.append("inflight_pressure_high")
+
+    decision["selected_mode"] = selected_mode
+    decision["estimated_cost_cents"] = estimated_cost_cents
+    if max_cost_cents is not None:
+        decision["max_cost_cents"] = int(max_cost_cents)
+
+    return ExecutionAdmissionResponse(
+        tool=tool_name,
+        requested_mode=requested_mode,
+        selected_mode=selected_mode,
+        latency_class=latency_class,
+        estimated_cost_cents=estimated_cost_cents,
+        admitted=admitted,
+        reasons=reasons,
+        policy_decision=decision,
+        queue_pressure=pressure,
     )
 
 
@@ -1642,6 +2100,134 @@ async def get_policy_decision_analytics(
     }
 
 
+@router.post("/execute/batch/plan")
+async def plan_execute_batch(request: BatchExecuteRequest):
+    if request.execution not in ("parallel", "sequential"):
+        raise HTTPException(status_code=400, detail="execution must be parallel or sequential")
+    max_calls = max(1, int(os.getenv("EXECUTE_BATCH_MAX_CALLS", "256")))
+    if len(request.calls) > max_calls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch request too large: {len(request.calls)} calls (max {max_calls})",
+        )
+    for call in request.calls:
+        if call.stream:
+            raise HTTPException(status_code=400, detail="Batch calls do not support stream=true")
+
+    batch_trace_id = _resolve_trace_id(request.trace_id or (request.calls[0].trace_id if request.calls else None))
+    batch_session_id = request.session_id or (request.calls[0].session_id if request.calls else None)
+    if not request.calls:
+        return {
+            "admitted": True,
+            "reasons": [],
+            "trace_id": batch_trace_id,
+            "session_id": batch_session_id,
+            "plan": {
+                "total_calls": 0,
+                "canonical_calls": 0,
+                "deduped_calls": 0,
+                "overflowed_canonical_calls": 0,
+                "estimated_total_cost_cents": 0,
+                "estimated_reintegration_cost": 0.0,
+                "effective_parallel": max(1, int(request.max_parallel or 1)),
+            },
+        }
+
+    canonical_state = _build_batch_canonical_state(request)
+    canonical_calls: List[BatchCall] = canonical_state["canonical_calls"]
+    canonical_use_counts: Dict[int, int] = canonical_state["canonical_use_counts"]
+
+    overflowed_canonical_indices: set[int] = set()
+    executable_indices = list(range(len(canonical_calls)))
+    if request.max_canonical_calls is not None and len(canonical_calls) > int(request.max_canonical_calls):
+        overflowed_canonical_indices = set(range(int(request.max_canonical_calls), len(canonical_calls)))
+        if request.overflow_policy == "truncate":
+            executable_indices = list(range(int(request.max_canonical_calls)))
+
+    canonical_estimated_costs: Dict[int, int] = {}
+    blocked_by_cost: set[int] = set()
+    for idx in executable_indices:
+        call = canonical_calls[idx]
+        tool_name = _resolve_tool_name(call.tool_name, call.tool)
+        estimate = _estimate_execution_cost_cents(
+            tool_name=tool_name,
+            arguments=call.arguments,
+            selected_mode=call.execution_mode,
+            latency_class=_latency_class_for_tool(tool_name),
+            provided_estimate_cents=call.estimated_cost_cents,
+        )
+        canonical_estimated_costs[idx] = estimate
+        if call.max_cost_cents is not None and estimate > int(call.max_cost_cents):
+            blocked_by_cost.add(idx)
+
+    total_estimated_cost_cents = sum(
+        canonical_estimated_costs.get(idx, 0)
+        for idx in executable_indices
+        if idx not in blocked_by_cost
+    )
+
+    default_parallel = max(1, int(os.getenv("EXECUTE_BATCH_PARALLEL_LIMIT", "16")))
+    reintegration_plan = _build_batch_reintegration_plan(
+        request=request,
+        canonical_calls=canonical_calls,
+        canonical_use_counts=canonical_use_counts,
+        executable_canonical_indices=[idx for idx in executable_indices if idx not in blocked_by_cost],
+        default_parallel_limit=default_parallel,
+    )
+    estimated_reintegration_cost = float(reintegration_plan.get("estimated_total_cost") or 0.0)
+    effective_parallel = int(reintegration_plan.get("effective_parallel") or (request.max_parallel or default_parallel))
+
+    reasons: List[str] = []
+    admitted = True
+    if overflowed_canonical_indices and request.overflow_policy == "reject":
+        admitted = False
+        reasons.append("canonical_limit_exceeded")
+    if request.max_total_cost_cents is not None and total_estimated_cost_cents > int(request.max_total_cost_cents):
+        admitted = False
+        reasons.append("total_cost_budget_exceeded")
+    if request.max_reintegration_cost is not None and estimated_reintegration_cost > float(request.max_reintegration_cost):
+        admitted = False
+        reasons.append("reintegration_budget_exceeded")
+    if blocked_by_cost:
+        reasons.append("per_call_cost_limit_exceeded")
+
+    if request.reintegration_overflow_policy == "truncate" and request.max_reintegration_cost is not None:
+        allowed_indices = _select_canonical_indices_under_reintegration_budget(
+            budget_limit=float(request.max_reintegration_cost),
+            costs_by_index=reintegration_plan.get("costs_by_index", {}),
+            canonical_use_counts=canonical_use_counts,
+            fixed_overhead=float(reintegration_plan.get("fixed_overhead") or 0.0),
+        )
+        reintegration_overflowed = len([idx for idx in executable_indices if idx not in set(allowed_indices)])
+    else:
+        reintegration_overflowed = 0
+
+    plan = {
+        "trace_id": batch_trace_id,
+        "session_id": batch_session_id,
+        "total_calls": len(request.calls),
+        "canonical_calls": len(canonical_calls),
+        "deduped_calls": len(request.calls) - len(canonical_calls),
+        "overflowed_canonical_calls": len(overflowed_canonical_indices),
+        "blocked_by_per_call_cost": len(blocked_by_cost),
+        "estimated_total_cost_cents": total_estimated_cost_cents,
+        "max_total_cost_cents": request.max_total_cost_cents,
+        "estimated_reintegration_cost": estimated_reintegration_cost,
+        "max_reintegration_cost": request.max_reintegration_cost,
+        "effective_parallel": max(1, effective_parallel),
+        "queue_pressure": reintegration_plan.get("pressure", {}),
+        "reintegration_overflowed_calls_if_truncate": reintegration_overflowed,
+        "costs_by_index": reintegration_plan.get("costs_by_index", {}),
+    }
+    return {
+        "admitted": admitted,
+        "reasons": reasons,
+        "trace_id": batch_trace_id,
+        "session_id": batch_session_id,
+        "plan": plan,
+    }
+
+
 @router.post("/execute/batch", response_model=BatchExecuteResponse)
 async def execute_batch(request: BatchExecuteRequest):
     if request.execution not in ("parallel", "sequential"):
@@ -1671,7 +2257,15 @@ async def execute_batch(request: BatchExecuteRequest):
                 "canonical_calls": 0,
                 "deduped_calls": 0,
                 "overflowed_canonical_calls": 0,
+                "reintegration_overflowed_calls": 0,
+                "cost_overflowed_calls": 0,
+                "preflight_blocked_calls": 0,
                 "executed_canonical_calls": 0,
+                "estimated_total_cost_cents": 0,
+                "max_total_cost_cents": request.max_total_cost_cents,
+                "estimated_reintegration_cost": 0.0,
+                "max_reintegration_cost": request.max_reintegration_cost,
+                "effective_parallel": max(1, int(request.max_parallel or 1)),
                 "dedupe_calls": request.dedupe_calls,
                 "dedupe_on_tool": request.dedupe_on_tool,
             },
@@ -1681,30 +2275,16 @@ async def execute_batch(request: BatchExecuteRequest):
     batch_trace_id = _resolve_trace_id(request.trace_id or request.calls[0].trace_id)
     batch_session_id = request.session_id or request.calls[0].session_id
 
-    canonical_calls: List[BatchCall] = []
-    call_to_canonical: List[int] = []
-    canonical_first_logical: Dict[int, int] = {}
-    canonical_use_counts: Dict[int, int] = {}
-    if request.dedupe_calls:
-        canonical_by_fingerprint: Dict[str, int] = {}
-        for logical_idx, call in enumerate(request.calls):
-            fingerprint = _batch_call_fingerprint(call, dedupe_on_tool=request.dedupe_on_tool)
-            canonical_idx = canonical_by_fingerprint.get(fingerprint)
-            if canonical_idx is None:
-                canonical_idx = len(canonical_calls)
-                canonical_by_fingerprint[fingerprint] = canonical_idx
-                canonical_calls.append(call)
-                canonical_first_logical[canonical_idx] = logical_idx
-                canonical_use_counts[canonical_idx] = 0
-            call_to_canonical.append(canonical_idx)
-            canonical_use_counts[canonical_idx] = canonical_use_counts.get(canonical_idx, 0) + 1
-    else:
-        canonical_calls = list(request.calls)
-        call_to_canonical = list(range(len(request.calls)))
-        canonical_first_logical = {idx: idx for idx in range(len(canonical_calls))}
-        canonical_use_counts = {idx: 1 for idx in range(len(canonical_calls))}
+    canonical_state = _build_batch_canonical_state(request)
+    canonical_calls: List[BatchCall] = canonical_state["canonical_calls"]
+    call_to_canonical: List[int] = canonical_state["call_to_canonical"]
+    canonical_first_logical: Dict[int, int] = canonical_state["canonical_first_logical"]
+    canonical_use_counts: Dict[int, int] = canonical_state["canonical_use_counts"]
 
     overflowed_canonical_indices: set[int] = set()
+    overflowed_reintegration_indices: set[int] = set()
+    overflowed_cost_indices: set[int] = set()
+    preflight_blocked_indices: Dict[int, Dict[str, Any]] = {}
     executable_canonical_indices = list(range(len(canonical_calls)))
     if request.max_canonical_calls is not None and len(canonical_calls) > int(request.max_canonical_calls):
         overflowed_canonical_indices = set(range(int(request.max_canonical_calls), len(canonical_calls)))
@@ -1743,6 +2323,162 @@ async def execute_batch(request: BatchExecuteRequest):
             )
         executable_canonical_indices = list(range(int(request.max_canonical_calls)))
 
+    canonical_estimated_costs: Dict[int, int] = {}
+    for canonical_idx in list(executable_canonical_indices):
+        call = canonical_calls[canonical_idx]
+        tool_name = _resolve_tool_name(call.tool_name, call.tool)
+        latency_class = _latency_class_for_tool(tool_name)
+        estimated_call_cost = _estimate_execution_cost_cents(
+            tool_name=tool_name,
+            arguments=call.arguments,
+            selected_mode=call.execution_mode,
+            latency_class=latency_class,
+            provided_estimate_cents=call.estimated_cost_cents,
+        )
+        canonical_estimated_costs[canonical_idx] = estimated_call_cost
+        if call.max_cost_cents is not None and estimated_call_cost > int(call.max_cost_cents):
+            preflight_blocked_indices[canonical_idx] = _structured_error(
+                "BATCH_CALL_COST_LIMIT_EXCEEDED",
+                (
+                    f"Estimated call cost {estimated_call_cost} exceeds per-call max {int(call.max_cost_cents)} "
+                    f"for tool {_resolve_tool_name(call.tool_name, call.tool)}"
+                ),
+                category="economic",
+                retryable=False,
+            )
+
+    total_estimated_cost_cents = sum(
+        canonical_estimated_costs.get(idx, 0)
+        for idx in executable_canonical_indices
+        if idx not in preflight_blocked_indices
+    )
+
+    if request.max_total_cost_cents is not None and total_estimated_cost_cents > int(request.max_total_cost_cents):
+        if request.reintegration_overflow_policy == "reject":
+            batch_plan = {
+                "trace_id": batch_trace_id,
+                "session_id": batch_session_id,
+                "total_calls": len(request.calls),
+                "canonical_calls": len(canonical_calls),
+                "deduped_calls": len(request.calls) - len(canonical_calls),
+                "max_total_cost_cents": request.max_total_cost_cents,
+                "estimated_total_cost_cents": total_estimated_cost_cents,
+                "overflowed_canonical_calls": len(overflowed_canonical_indices),
+                "executed_canonical_calls": 0,
+                "dedupe_calls": request.dedupe_calls,
+                "dedupe_on_tool": request.dedupe_on_tool,
+            }
+            _persist_batch_follow_up_actions(
+                trace_id=batch_trace_id,
+                session_id=batch_session_id,
+                request=request,
+                batch_plan=batch_plan,
+            )
+            raise HTTPException(
+                status_code=402,
+                detail=_structured_error(
+                    "BATCH_TOTAL_COST_BUDGET_EXCEEDED",
+                    (
+                        f"Estimated canonical batch cost {total_estimated_cost_cents} cents exceeds max_total_cost_cents="
+                        f"{int(request.max_total_cost_cents)}"
+                    ),
+                    category="economic",
+                    retryable=False,
+                ),
+            )
+        ranked_by_cost_leverage = sorted(
+            [
+                idx
+                for idx in executable_canonical_indices
+                if idx not in preflight_blocked_indices
+            ],
+            key=lambda idx: (
+                float(canonical_use_counts.get(idx, 1)) / max(1.0, float(canonical_estimated_costs.get(idx, 1))),
+                float(canonical_use_counts.get(idx, 1)),
+            ),
+            reverse=True,
+        )
+        kept: List[int] = []
+        running_cost = 0
+        for idx in ranked_by_cost_leverage:
+            item_cost = int(canonical_estimated_costs.get(idx, 0))
+            if running_cost + item_cost <= int(request.max_total_cost_cents) or not kept:
+                kept.append(idx)
+                running_cost += item_cost
+            else:
+                overflowed_cost_indices.add(idx)
+        executable_canonical_indices = [
+            idx for idx in executable_canonical_indices
+            if idx in kept and idx not in overflowed_cost_indices
+        ]
+
+    default_parallel = max(1, int(os.getenv("EXECUTE_BATCH_PARALLEL_LIMIT", "16")))
+    reintegration_plan = _build_batch_reintegration_plan(
+        request=request,
+        canonical_calls=canonical_calls,
+        canonical_use_counts=canonical_use_counts,
+        executable_canonical_indices=[
+            idx for idx in executable_canonical_indices
+            if idx not in preflight_blocked_indices and idx not in overflowed_cost_indices
+        ],
+        default_parallel_limit=default_parallel,
+    )
+    effective_parallel_limit = max(
+        int(request.min_parallel),
+        int(reintegration_plan.get("effective_parallel") or (request.max_parallel or default_parallel)),
+    )
+    estimated_reintegration_cost = float(reintegration_plan.get("estimated_total_cost") or 0.0)
+
+    if request.max_reintegration_cost is not None and estimated_reintegration_cost > float(request.max_reintegration_cost):
+        if request.reintegration_overflow_policy == "reject":
+            batch_plan = {
+                "trace_id": batch_trace_id,
+                "session_id": batch_session_id,
+                "total_calls": len(request.calls),
+                "canonical_calls": len(canonical_calls),
+                "deduped_calls": len(request.calls) - len(canonical_calls),
+                "max_reintegration_cost": request.max_reintegration_cost,
+                "estimated_reintegration_cost": estimated_reintegration_cost,
+                "effective_parallel": effective_parallel_limit,
+                "overflowed_canonical_calls": len(overflowed_canonical_indices),
+                "executed_canonical_calls": 0,
+                "dedupe_calls": request.dedupe_calls,
+                "dedupe_on_tool": request.dedupe_on_tool,
+            }
+            _persist_batch_follow_up_actions(
+                trace_id=batch_trace_id,
+                session_id=batch_session_id,
+                request=request,
+                batch_plan=batch_plan,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=_structured_error(
+                    "BATCH_REINTEGRATION_BUDGET_EXCEEDED",
+                    (
+                        f"Estimated reintegration cost {estimated_reintegration_cost:.2f} exceeds "
+                        f"max_reintegration_cost={float(request.max_reintegration_cost):.2f}"
+                    ),
+                    category="resource_limit",
+                    retryable=True,
+                    retry_after_ms=1000,
+                ),
+            )
+        allowed_indices = _select_canonical_indices_under_reintegration_budget(
+            budget_limit=float(request.max_reintegration_cost),
+            costs_by_index=reintegration_plan.get("costs_by_index", {}),
+            canonical_use_counts=canonical_use_counts,
+            fixed_overhead=float(reintegration_plan.get("fixed_overhead") or 0.0),
+        )
+        allowed_index_set = set(allowed_indices)
+        for idx in executable_canonical_indices:
+            if idx not in allowed_index_set and idx not in preflight_blocked_indices and idx not in overflowed_cost_indices:
+                overflowed_reintegration_indices.add(idx)
+        executable_canonical_indices = [
+            idx for idx in executable_canonical_indices
+            if idx not in overflowed_reintegration_indices
+        ]
+
     async def _run_call(call: BatchCall):
         return await execute(
             ExecuteRequest(
@@ -1755,6 +2491,8 @@ async def execute_batch(request: BatchExecuteRequest):
                 timeout_ms=call.timeout_ms,
                 sync_timeout_ms=call.sync_timeout_ms,
                 idempotency_key=call.idempotency_key,
+                estimated_cost_cents=call.estimated_cost_cents,
+                max_cost_cents=call.max_cost_cents,
                 priority=call.priority,
                 dedupe_window_seconds=call.dedupe_window_seconds,
                 dedupe_key=call.dedupe_key,
@@ -1802,8 +2540,7 @@ async def execute_batch(request: BatchExecuteRequest):
 
     canonical_results: Dict[int, ExecuteResponse] = {}
     if request.execution == "parallel":
-        default_parallel = max(1, int(os.getenv("EXECUTE_BATCH_PARALLEL_LIMIT", "16")))
-        parallel_limit = int(request.max_parallel or default_parallel)
+        parallel_limit = int(effective_parallel_limit)
         parallel_limit = max(1, min(parallel_limit, max(1, len(executable_canonical_indices))))
         semaphore = asyncio.Semaphore(parallel_limit)
 
@@ -1857,6 +2594,66 @@ async def execute_batch(request: BatchExecuteRequest):
             )
             continue
 
+        if canonical_idx in overflowed_reintegration_indices:
+            results.append(
+                ExecuteResponse(
+                    status="skipped",
+                    tool=tool_name,
+                    execution_mode=call.execution_mode,
+                    error=_structured_error(
+                        "BATCH_REINTEGRATION_BUDGET_OVERFLOW",
+                        (
+                            f"Call skipped due to reintegration budget "
+                            f"(max_reintegration_cost={request.max_reintegration_cost}, "
+                            f"overflow_policy={request.reintegration_overflow_policy})"
+                        ),
+                        category="resource_limit",
+                        retryable=False,
+                    ),
+                    trace_id=call.trace_id or batch_trace_id,
+                    session_id=call.session_id or batch_session_id,
+                    parent_execution_id=call.parent_execution_id,
+                )
+            )
+            continue
+
+        if canonical_idx in overflowed_cost_indices:
+            results.append(
+                ExecuteResponse(
+                    status="skipped",
+                    tool=tool_name,
+                    execution_mode=call.execution_mode,
+                    error=_structured_error(
+                        "BATCH_TOTAL_COST_BUDGET_OVERFLOW",
+                        (
+                            f"Call skipped due to max_total_cost_cents={request.max_total_cost_cents} "
+                            f"overflow_policy={request.reintegration_overflow_policy}"
+                        ),
+                        category="economic",
+                        retryable=False,
+                    ),
+                    trace_id=call.trace_id or batch_trace_id,
+                    session_id=call.session_id or batch_session_id,
+                    parent_execution_id=call.parent_execution_id,
+                )
+            )
+            continue
+
+        blocked_error = preflight_blocked_indices.get(canonical_idx)
+        if blocked_error:
+            results.append(
+                ExecuteResponse(
+                    status="skipped",
+                    tool=tool_name,
+                    execution_mode=call.execution_mode,
+                    error=blocked_error,
+                    trace_id=call.trace_id or batch_trace_id,
+                    session_id=call.session_id or batch_session_id,
+                    parent_execution_id=call.parent_execution_id,
+                )
+            )
+            continue
+
         canonical_result = canonical_results.get(canonical_idx)
         if not canonical_result:
             results.append(
@@ -1896,7 +2693,18 @@ async def execute_batch(request: BatchExecuteRequest):
         "max_canonical_calls": request.max_canonical_calls,
         "overflow_policy": request.overflow_policy,
         "overflowed_canonical_calls": len(overflowed_canonical_indices),
+        "reintegration_overflowed_calls": len(overflowed_reintegration_indices),
+        "cost_overflowed_calls": len(overflowed_cost_indices),
+        "preflight_blocked_calls": len(preflight_blocked_indices),
         "executed_canonical_calls": len(executable_canonical_indices),
+        "estimated_total_cost_cents": total_estimated_cost_cents,
+        "max_total_cost_cents": request.max_total_cost_cents,
+        "estimated_reintegration_cost": estimated_reintegration_cost,
+        "max_reintegration_cost": request.max_reintegration_cost,
+        "effective_parallel": effective_parallel_limit,
+        "queue_pressure": reintegration_plan.get("pressure", {}),
+        "parallel_overhead": reintegration_plan.get("parallel_overhead"),
+        "pressure_surcharge": reintegration_plan.get("pressure_surcharge"),
         "dedupe_calls": request.dedupe_calls,
         "dedupe_on_tool": request.dedupe_on_tool,
     }
