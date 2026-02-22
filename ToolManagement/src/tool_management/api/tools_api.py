@@ -64,6 +64,9 @@ class ToolCall(BaseModel):
         default=None,
         description="Idempotency key for write tools (prevents duplicate side effects)",
     )
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class BatchRequest(BaseModel):
@@ -174,6 +177,14 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 )
 
         # Execute via MCP protocol
+        outbound_arguments = dict(call.arguments)
+        if call.trace_id:
+            outbound_arguments.setdefault("_trace_id", call.trace_id)
+        if call.session_id:
+            outbound_arguments.setdefault("_session_id", call.session_id)
+        if call.parent_execution_id:
+            outbound_arguments.setdefault("_parent_execution_id", call.parent_execution_id)
+
         client = get_client()
         response = await client.post(
             f"{backend_url}/mcp",
@@ -183,7 +194,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 "method": "tools/call",
                 "params": {
                     "name": tool_name,
-                    "arguments": call.arguments
+                    "arguments": outbound_arguments
                 }
             },
             timeout=call.timeout,
@@ -761,5 +772,10 @@ def _is_write_tool(tool_ref: str, resolved_name: str) -> bool:
 
 
 def _hash_arguments(arguments: Dict[str, Any]) -> str:
-    stable_payload = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+    stable_arguments = {
+        k: v
+        for k, v in arguments.items()
+        if k not in {"_trace_id", "_session_id", "_parent_execution_id"}
+    }
+    stable_payload = json.dumps(stable_arguments, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(stable_payload.encode("utf-8")).hexdigest()

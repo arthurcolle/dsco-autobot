@@ -96,6 +96,9 @@ class StreamingExecution:
     execution_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     tool_name: str = ""
     client_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
     # State
     status: str = "pending"  # pending, running, completed, error, cancelled
@@ -249,6 +252,9 @@ class StreamingExecutor:
         tool_name: str,
         inputs: Dict[str, Any],
         client_id: str = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        parent_execution_id: Optional[str] = None,
         priority: int | str | None = None,
         dedupe_window_seconds: int = 0,
         dedupe_key: Optional[str] = None,
@@ -307,12 +313,21 @@ class StreamingExecutor:
         execution = StreamingExecution(
             tool_name=tool_name,
             client_id=client_id,
+            trace_id=trace_id or (inputs.get("_trace_id") if isinstance(inputs, dict) else None),
+            session_id=session_id or (inputs.get("_session_id") if isinstance(inputs, dict) else None),
+            parent_execution_id=parent_execution_id or (inputs.get("_parent_execution_id") if isinstance(inputs, dict) else None),
             status="queued",
             queued_at=now,
             queue_priority=normalized_priority,
             dedupe_key=effective_dedupe_key,
         )
         execution.control_state["submit_count"] = 1
+        if execution.trace_id:
+            execution.control_state["trace_id"] = execution.trace_id
+        if execution.session_id:
+            execution.control_state["session_id"] = execution.session_id
+        if execution.parent_execution_id:
+            execution.control_state["parent_execution_id"] = execution.parent_execution_id
         execution._event_persistor = self._persist_event
 
         self._executions[execution.execution_id] = execution
@@ -363,7 +378,7 @@ class StreamingExecutor:
 
                 inputs = self._execution_inputs.get(execution_id, {})
                 self._active_count += 1
-                execution._task = asyncio.create_task(self._run_execution(execution, inputs))
+            execution._task = asyncio.create_task(self._run_execution(execution, inputs))
 
             if self._pending_queue and self._active_count < self.max_concurrent:
                 # Re-trigger loop to avoid starvation on race edges.
@@ -748,6 +763,8 @@ class StreamingExecutor:
             return
         self._execution_store.append_event(
             execution_id=execution.execution_id,
+            trace_id=execution.trace_id,
+            session_id=execution.session_id,
             event_type=event.type.value,
             timestamp=event.timestamp,
             progress=event.progress,
@@ -777,6 +794,9 @@ class StreamingExecutor:
             execution_id=execution.execution_id,
             tool_name=execution.tool_name,
             client_id=execution.client_id,
+            trace_id=execution.trace_id,
+            session_id=execution.session_id,
+            parent_execution_id=execution.parent_execution_id,
             status=execution.status,
             progress=execution.progress,
             queue_priority=execution.queue_priority,
@@ -806,6 +826,9 @@ class StreamingExecutor:
             execution_id=row["execution_id"],
             tool_name=row.get("tool_name", ""),
             client_id=row.get("client_id"),
+            trace_id=row.get("trace_id"),
+            session_id=row.get("session_id"),
+            parent_execution_id=row.get("parent_execution_id"),
         )
         execution.status = row.get("status", "pending")
         execution.progress = float(row.get("progress") or 0.0)
@@ -866,7 +889,7 @@ class StreamingExecutor:
     def _build_dedupe_key(self, tool_name: str, inputs: Dict[str, Any]) -> str:
         stable_inputs = {
             k: v for k, v in inputs.items()
-            if k not in {"_submitted_at", "_trace_id"}
+            if k not in {"_submitted_at", "_trace_id", "_session_id", "_parent_execution_id"}
         }
         payload = json.dumps(
             {"tool_name": tool_name, "arguments": stable_inputs},

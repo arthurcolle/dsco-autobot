@@ -81,6 +81,20 @@ async def lifespan(app: FastAPI):
         "runs": 0,
         "backends": {},
     }
+    app.state.cleanup_state = {
+        "enabled": False,
+        "interval_seconds": None,
+        "last_run_at": None,
+        "runs": 0,
+        "totals": {
+            "job_executions": 0,
+            "workflow_executions": 0,
+            "workflow_artifacts": 0,
+            "workflow_definitions": 0,
+        },
+        "last_run": {},
+        "retention_seconds": {},
+    }
 
     registry = get_registry()
     service_registry = get_service_registry()
@@ -165,24 +179,69 @@ async def lifespan(app: FastAPI):
         tool_executor_fn = create_tool_executor_for_jobs()
         streaming_executor = get_streaming_executor(tool_executor=tool_executor_fn)
         execution_store = get_execution_store()
+        cleanup_interval_seconds = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "300"))
+        job_ttl = int(os.getenv("JOB_EXECUTION_TTL_SECONDS", "3600"))
+        workflow_ttl = int(os.getenv("WORKFLOW_EXECUTION_TTL_SECONDS", "86400"))
+        artifact_ttl = int(os.getenv("WORKFLOW_ARTIFACT_TTL_SECONDS", str(workflow_ttl)))
+        definition_ttl = int(os.getenv("WORKFLOW_DEFINITION_TTL_SECONDS", "0"))
+        app.state.cleanup_state = {
+            "enabled": True,
+            "interval_seconds": cleanup_interval_seconds,
+            "last_run_at": None,
+            "runs": 0,
+            "totals": {
+                "job_executions": 0,
+                "workflow_executions": 0,
+                "workflow_artifacts": 0,
+                "workflow_definitions": 0,
+            },
+            "last_run": {},
+            "retention_seconds": {
+                "job_executions": job_ttl,
+                "workflow_executions": workflow_ttl,
+                "workflow_artifacts": artifact_ttl,
+                "workflow_definitions": definition_ttl,
+            },
+        }
         logger.info("Streaming executor initialized for async jobs")
 
         async def _cleanup_old_jobs():
             while True:
-                await asyncio.sleep(300)
+                await asyncio.sleep(cleanup_interval_seconds)
+                cleanup_run = {
+                    "job_executions": 0,
+                    "workflow_executions": 0,
+                    "workflow_artifacts": 0,
+                    "workflow_definitions": 0,
+                }
                 try:
-                    removed = streaming_executor.cleanup_old(max_age_seconds=3600)
+                    removed = streaming_executor.cleanup_old(max_age_seconds=job_ttl)
+                    cleanup_run["job_executions"] = int(removed or 0)
                     if removed:
                         logger.info(f"Cleaned up {removed} old job executions")
                 except Exception as exc:
                     logger.warning(f"Job cleanup error: {exc}")
                 try:
-                    workflow_ttl = int(os.getenv("WORKFLOW_EXECUTION_TTL_SECONDS", "86400"))
                     removed_workflows = execution_store.cleanup_old_workflows(max_age_seconds=workflow_ttl)
+                    cleanup_run["workflow_executions"] = int(removed_workflows or 0)
                     if removed_workflows:
                         logger.info(f"Cleaned up {removed_workflows} old workflow executions")
                 except Exception as exc:
                     logger.warning(f"Workflow cleanup error: {exc}")
+                try:
+                    removed_artifacts = execution_store.cleanup_old_workflow_artifacts(max_age_seconds=artifact_ttl)
+                    cleanup_run["workflow_artifacts"] = int(removed_artifacts or 0)
+                    if removed_artifacts:
+                        logger.info(f"Cleaned up {removed_artifacts} old workflow artifacts")
+                except Exception as exc:
+                    logger.warning(f"Workflow artifact cleanup error: {exc}")
+                try:
+                    removed_definitions = execution_store.cleanup_old_workflow_definitions(max_age_seconds=definition_ttl)
+                    cleanup_run["workflow_definitions"] = int(removed_definitions or 0)
+                    if removed_definitions:
+                        logger.info(f"Cleaned up {removed_definitions} old workflow definitions")
+                except Exception as exc:
+                    logger.warning(f"Workflow definition cleanup error: {exc}")
                 # Also clean up stale rate limiter entries
                 try:
                     from .core.rate_limit import get_quota_manager
@@ -192,6 +251,20 @@ async def lifespan(app: FastAPI):
                         logger.info(f"Cleaned up {cleaned} stale rate limiter entries")
                 except Exception as exc:
                     logger.warning(f"Rate limiter cleanup error: {exc}")
+                try:
+                    previous = getattr(app.state, "cleanup_state", {})
+                    totals = dict(previous.get("totals", {}))
+                    for key, value in cleanup_run.items():
+                        totals[key] = int(totals.get(key, 0)) + int(value or 0)
+                    app.state.cleanup_state = {
+                        **previous,
+                        "last_run_at": datetime.utcnow().isoformat(),
+                        "runs": int(previous.get("runs", 0)) + 1,
+                        "totals": totals,
+                        "last_run": cleanup_run,
+                    }
+                except Exception as exc:
+                    logger.warning(f"Cleanup state update error: {exc}")
 
         _cleanup_task = asyncio.create_task(_cleanup_old_jobs())
     except Exception as e:
@@ -650,6 +723,7 @@ def create_app() -> FastAPI:
         store = get_tool_store()
         stats = store.get_stats()
         warm_pool_state = getattr(app.state, "warm_pool_state", {"enabled": False})
+        cleanup_state = getattr(app.state, "cleanup_state", {"enabled": False})
         durable_jobs = {"enabled": False}
         try:
             from .core.streaming import get_streaming_executor
@@ -668,6 +742,7 @@ def create_app() -> FastAPI:
             "backend_count": stats.get("backend_count", 0),
             "healthy_backends": stats.get("healthy_backends", 0),
             "warm_pool": warm_pool_state,
+            "cleanup": cleanup_state,
             "durable_jobs": durable_jobs,
         }
 

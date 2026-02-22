@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from typing import Any, Dict, List, Literal, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -65,6 +66,9 @@ class ExecuteRequest(BaseModel):
     dedupe_key: Optional[str] = None
     detach: bool = False
     client_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class ExecuteResponse(BaseModel):
@@ -81,6 +85,9 @@ class ExecuteResponse(BaseModel):
     idempotent_replay: bool = False
     deduplicated: bool = False
     priority: Optional[int] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class BatchCall(BaseModel):
@@ -95,6 +102,9 @@ class BatchCall(BaseModel):
     dedupe_window_seconds: int = Field(default=60, ge=0, le=3600)
     dedupe_key: Optional[str] = None
     stream: bool = False
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class BatchExecuteRequest(BaseModel):
@@ -121,6 +131,10 @@ def _resolve_tool_name(tool_name: Optional[str], tool: Optional[str]) -> str:
     if not resolved:
         raise HTTPException(status_code=400, detail="tool_name (or tool) is required")
     return resolved
+
+
+def _resolve_trace_id(trace_id: Optional[str]) -> str:
+    return trace_id or f"tr_{uuid4().hex}"
 
 
 def _structured_error(
@@ -203,6 +217,9 @@ async def _submit_job(
     dedupe_window_seconds: int = 0,
     dedupe_key: Optional[str] = None,
     client_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    parent_execution_id: Optional[str] = None,
 ):
     try:
         executor = get_streaming_executor()
@@ -211,8 +228,17 @@ async def _submit_job(
 
     execution = await executor.execute(
         tool_name=tool_name,
-        inputs={**arguments, "_timeout": timeout_ms / 1000.0},
+        inputs={
+            **arguments,
+            "_timeout": timeout_ms / 1000.0,
+            "_trace_id": trace_id,
+            "_session_id": session_id,
+            "_parent_execution_id": parent_execution_id,
+        },
         client_id=client_id,
+        trace_id=trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
         priority=priority,
         dedupe_window_seconds=dedupe_window_seconds,
         dedupe_key=dedupe_key,
@@ -225,6 +251,9 @@ async def _execute_sync(
     arguments: Dict[str, Any],
     timeout_ms: int,
     idempotency_key: Optional[str],
+    trace_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    parent_execution_id: Optional[str] = None,
 ) -> ToolResult:
     return await execute_single_tool(
         ToolCall(
@@ -232,6 +261,9 @@ async def _execute_sync(
             arguments=arguments,
             timeout=timeout_ms / 1000.0,
             idempotency_key=idempotency_key,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
     )
 
@@ -243,6 +275,9 @@ def _to_collected_response(
     *,
     call_id: Optional[str] = None,
     job_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    parent_execution_id: Optional[str] = None,
 ) -> ExecuteResponse:
     if result.success:
         return ExecuteResponse(
@@ -254,6 +289,9 @@ def _to_collected_response(
             result=result.result,
             latency_ms=result.latency_ms,
             idempotent_replay=result.idempotent_replay,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
     return ExecuteResponse(
         status="error",
@@ -268,6 +306,9 @@ def _to_collected_response(
         ),
         latency_ms=result.latency_ms,
         idempotent_replay=result.idempotent_replay,
+        trace_id=trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
     )
 
 
@@ -275,6 +316,9 @@ async def _stream_execution(
     tool_name: str,
     call_id: str,
     early_stop: Optional[EarlyStopConfig],
+    trace_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    parent_execution_id: Optional[str] = None,
 ):
     try:
         executor = get_streaming_executor()
@@ -294,6 +338,9 @@ async def _stream_execution(
             "call_id": call_id,
             "tool": tool_name,
             "started_at": started_at,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "parent_execution_id": parent_execution_id,
         },
     )
 
@@ -383,6 +430,9 @@ async def _stream_execution(
                     "total_chunks": chunk_count,
                     "duration_ms": duration_ms,
                     "stopped_early": event.type == EventType.CANCELLED,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "parent_execution_id": parent_execution_id,
                 },
             )
             break
@@ -391,6 +441,9 @@ async def _stream_execution(
 @router.post("/execute")
 async def execute(request: ExecuteRequest):
     tool_name = _resolve_tool_name(request.tool_name, request.tool)
+    trace_id = _resolve_trace_id(request.trace_id)
+    session_id = request.session_id
+    parent_execution_id = request.parent_execution_id
     requested_mode: ExecutionMode = request.execution_mode
     if request.stream:
         requested_mode = "stream"
@@ -405,7 +458,13 @@ async def execute(request: ExecuteRequest):
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
             client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
+        execution_trace_id = execution.trace_id or trace_id
+        execution_session_id = execution.session_id or session_id
+        execution_parent_id = execution.parent_execution_id or parent_execution_id
         deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         if request.detach:
             executor = get_streaming_executor()
@@ -420,10 +479,20 @@ async def execute(request: ExecuteRequest):
                 priority=execution.queue_priority,
                 poll_url=f"/api/v1/jobs/{execution.execution_id}",
                 stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+                trace_id=execution_trace_id,
+                session_id=execution_session_id,
+                parent_execution_id=execution_parent_id,
             )
 
         return StreamingResponse(
-            _stream_execution(tool_name, execution.execution_id, request.early_stop),
+            _stream_execution(
+                tool_name,
+                execution.execution_id,
+                request.early_stop,
+                trace_id=execution_trace_id,
+                session_id=execution_session_id,
+                parent_execution_id=execution_parent_id,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -442,7 +511,13 @@ async def execute(request: ExecuteRequest):
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
             client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
+        execution_trace_id = execution.trace_id or trace_id
+        execution_session_id = execution.session_id or session_id
+        execution_parent_id = execution.parent_execution_id or parent_execution_id
         deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
@@ -454,6 +529,9 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
         )
 
     if requested_mode == "sync":
@@ -462,8 +540,18 @@ async def execute(request: ExecuteRequest):
             arguments=request.arguments,
             timeout_ms=request.timeout_ms,
             idempotency_key=request.idempotency_key,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
-        return _to_collected_response(tool_name, "sync", result)
+        return _to_collected_response(
+            tool_name,
+            "sync",
+            result,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+        )
 
     # auto mode: choose from measured latency class, then attempt sync with timeout escalation.
     latency_class = _latency_class_for_tool(tool_name)
@@ -477,7 +565,13 @@ async def execute(request: ExecuteRequest):
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
             client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
+        execution_trace_id = execution.trace_id or trace_id
+        execution_session_id = execution.session_id or session_id
+        execution_parent_id = execution.parent_execution_id or parent_execution_id
         deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
@@ -489,6 +583,9 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
         )
 
     try:
@@ -498,10 +595,20 @@ async def execute(request: ExecuteRequest):
                 arguments=request.arguments,
                 timeout_ms=request.timeout_ms,
                 idempotency_key=request.idempotency_key,
+                trace_id=trace_id,
+                session_id=session_id,
+                parent_execution_id=parent_execution_id,
             ),
             timeout=request.sync_timeout_ms / 1000.0,
         )
-        return _to_collected_response(tool_name, "sync", result)
+        return _to_collected_response(
+            tool_name,
+            "sync",
+            result,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+        )
     except asyncio.TimeoutError:
         request_started_at = time.time()
         execution = await _submit_job(
@@ -512,7 +619,13 @@ async def execute(request: ExecuteRequest):
             dedupe_window_seconds=request.dedupe_window_seconds,
             dedupe_key=request.dedupe_key,
             client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
+        execution_trace_id = execution.trace_id or trace_id
+        execution_session_id = execution.session_id or session_id
+        execution_parent_id = execution.parent_execution_id or parent_execution_id
         deduplicated = execution.queued_at is not None and execution.queued_at < request_started_at
         return ExecuteResponse(
             status="submitted",
@@ -524,6 +637,9 @@ async def execute(request: ExecuteRequest):
             priority=execution.queue_priority,
             poll_url=f"/api/v1/jobs/{execution.execution_id}",
             stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
             error=_structured_error(
                 "SYNC_TIMEOUT_ESCALATED",
                 f"Sync execution exceeded {request.sync_timeout_ms}ms and was promoted to job",
@@ -566,6 +682,9 @@ async def control_call(call_id: str, request: ControlRequest):
             "status": "running_background" if detached else execution.status,
             "poll_url": f"/api/v1/jobs/{call_id}",
             "stream_url": f"/api/v1/jobs/{call_id}/stream",
+            "trace_id": execution.trace_id,
+            "session_id": execution.session_id,
+            "parent_execution_id": execution.parent_execution_id,
         }
 
     if action == "priority":
@@ -608,6 +727,9 @@ async def execute_batch(request: BatchExecuteRequest):
                         priority=call.priority,
                         dedupe_window_seconds=call.dedupe_window_seconds,
                         dedupe_key=call.dedupe_key,
+                        trace_id=call.trace_id,
+                        session_id=call.session_id,
+                        parent_execution_id=call.parent_execution_id,
                     )
                 )
             )
@@ -626,6 +748,9 @@ async def execute_batch(request: BatchExecuteRequest):
                             str(raw),
                             retryable=True,
                         ),
+                        trace_id=call.trace_id,
+                        session_id=call.session_id,
+                        parent_execution_id=call.parent_execution_id,
                     )
                 )
                 continue
@@ -653,6 +778,9 @@ async def execute_batch(request: BatchExecuteRequest):
                         priority=call.priority,
                         dedupe_window_seconds=call.dedupe_window_seconds,
                         dedupe_key=call.dedupe_key,
+                        trace_id=call.trace_id,
+                        session_id=call.session_id,
+                        parent_execution_id=call.parent_execution_id,
                     )
                 )
                 if isinstance(raw, ExecuteResponse):
@@ -670,6 +798,9 @@ async def execute_batch(request: BatchExecuteRequest):
                             str(exc),
                             retryable=True,
                         ),
+                        trace_id=call.trace_id,
+                        session_id=call.session_id,
+                        parent_execution_id=call.parent_execution_id,
                     )
                 )
 

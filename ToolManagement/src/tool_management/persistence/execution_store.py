@@ -6,6 +6,7 @@ Stores execution lifecycle and event streams on disk so job state survives resta
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -53,6 +54,9 @@ class ExecutionStore:
                     execution_id TEXT PRIMARY KEY,
                     tool_name TEXT NOT NULL,
                     client_id TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    parent_execution_id TEXT,
                     status TEXT NOT NULL,
                     progress REAL DEFAULT 0,
                     queue_priority INTEGER DEFAULT 0,
@@ -71,6 +75,8 @@ class ExecutionStore:
                 CREATE TABLE IF NOT EXISTS execution_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     execution_id TEXT NOT NULL,
+                    trace_id TEXT,
+                    session_id TEXT,
                     event_type TEXT NOT NULL,
                     timestamp REAL NOT NULL,
                     progress REAL,
@@ -92,6 +98,12 @@ class ExecutionStore:
                     workflow_name TEXT NOT NULL,
                     workflow_kind TEXT NOT NULL,
                     workflow_type TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    parent_execution_id TEXT,
+                    replay_of_execution_id TEXT,
+                    idempotency_key TEXT,
+                    request_hash TEXT,
                     status TEXT NOT NULL,
                     inputs_json TEXT,
                     output_json TEXT,
@@ -121,6 +133,8 @@ class ExecutionStore:
                     step_index INTEGER,
                     tool_name TEXT,
                     mode TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
                     status TEXT NOT NULL,
                     started_at REAL,
                     completed_at REAL,
@@ -140,6 +154,8 @@ class ExecutionStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     execution_id TEXT NOT NULL,
                     step_key TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
                     event_type TEXT NOT NULL,
                     timestamp REAL NOT NULL,
                     message TEXT,
@@ -147,17 +163,66 @@ class ExecutionStore:
                     FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS workflow_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    execution_id TEXT NOT NULL,
+                    step_key TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    artifact_type TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    payload_json TEXT,
+                    payload_size_bytes INTEGER DEFAULT 0,
+                    source TEXT,
+                    metadata_json TEXT,
+                    created_at REAL NOT NULL,
+                    UNIQUE (execution_id, step_key, artifact_type, content_hash),
+                    FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_kind ON workflow_executions(workflow_kind);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_updated ON workflow_executions(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workflow_executions_trace ON workflow_executions(trace_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_executions_session ON workflow_executions(session_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_executions_idempotency ON workflow_executions(idempotency_key);
                 CREATE INDEX IF NOT EXISTS idx_workflow_definitions_name ON workflow_definitions(workflow_name);
                 CREATE INDEX IF NOT EXISTS idx_workflow_definitions_updated ON workflow_definitions(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_execution ON workflow_steps(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_status ON workflow_steps(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_execution ON workflow_events(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_ts ON workflow_events(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_execution ON workflow_artifacts(execution_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_created ON workflow_artifacts(created_at DESC);
                 """
             )
+
+            # Backfill/migrate older databases that were created before these columns existed.
+            self._ensure_column(conn, "executions", "trace_id", "TEXT")
+            self._ensure_column(conn, "executions", "session_id", "TEXT")
+            self._ensure_column(conn, "executions", "parent_execution_id", "TEXT")
+            self._ensure_column(conn, "execution_events", "trace_id", "TEXT")
+            self._ensure_column(conn, "execution_events", "session_id", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "trace_id", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "session_id", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "parent_execution_id", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "replay_of_execution_id", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "idempotency_key", "TEXT")
+            self._ensure_column(conn, "workflow_executions", "request_hash", "TEXT")
+            self._ensure_column(conn, "workflow_steps", "trace_id", "TEXT")
+            self._ensure_column(conn, "workflow_steps", "session_id", "TEXT")
+            self._ensure_column(conn, "workflow_events", "trace_id", "TEXT")
+            self._ensure_column(conn, "workflow_events", "session_id", "TEXT")
+
+    @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(row["name"] == column for row in rows)
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, column_type: str):
+        if self._column_exists(conn, table, column):
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
     def upsert_execution(
         self,
@@ -165,6 +230,9 @@ class ExecutionStore:
         execution_id: str,
         tool_name: str,
         client_id: Optional[str],
+        trace_id: Optional[str],
+        session_id: Optional[str],
+        parent_execution_id: Optional[str],
         status: str,
         progress: float,
         queue_priority: int,
@@ -186,15 +254,18 @@ class ExecutionStore:
                 conn.execute(
                     """
                     INSERT INTO executions (
-                        execution_id, tool_name, client_id, status, progress,
+                        execution_id, tool_name, client_id, trace_id, session_id, parent_execution_id, status, progress,
                         queue_priority, dedupe_key, queued_at, started_at, completed_at,
                         last_message, error, result_json, control_state_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(execution_id) DO UPDATE SET
                         tool_name = excluded.tool_name,
                         client_id = excluded.client_id,
+                        trace_id = COALESCE(excluded.trace_id, executions.trace_id),
+                        session_id = COALESCE(excluded.session_id, executions.session_id),
+                        parent_execution_id = COALESCE(excluded.parent_execution_id, executions.parent_execution_id),
                         status = excluded.status,
                         progress = excluded.progress,
                         queue_priority = excluded.queue_priority,
@@ -212,6 +283,9 @@ class ExecutionStore:
                         execution_id,
                         tool_name,
                         client_id,
+                        trace_id,
+                        session_id,
+                        parent_execution_id,
                         status,
                         progress,
                         int(queue_priority),
@@ -232,6 +306,8 @@ class ExecutionStore:
         self,
         *,
         execution_id: str,
+        trace_id: Optional[str],
+        session_id: Optional[str],
         event_type: str,
         timestamp: float,
         progress: Optional[float] = None,
@@ -245,12 +321,14 @@ class ExecutionStore:
                 conn.execute(
                     """
                     INSERT INTO execution_events (
-                        execution_id, event_type, timestamp, progress, message, data_json, error
+                        execution_id, trace_id, session_id, event_type, timestamp, progress, message, data_json, error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         execution_id,
+                        trace_id,
+                        session_id,
                         event_type,
                         timestamp,
                         progress,
@@ -527,6 +605,12 @@ class ExecutionStore:
         workflow_name: str,
         workflow_kind: str,
         workflow_type: Optional[str],
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        parent_execution_id: Optional[str] = None,
+        replay_of_execution_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_hash: Optional[str] = None,
         status: str,
         inputs: Any = None,
         output: Any = None,
@@ -547,16 +631,24 @@ class ExecutionStore:
                     """
                     INSERT INTO workflow_executions (
                         execution_id, workflow_id, workflow_name, workflow_kind, workflow_type,
+                        trace_id, session_id, parent_execution_id, replay_of_execution_id,
+                        idempotency_key, request_hash,
                         status, inputs_json, output_json, error,
                         started_at, completed_at, duration_ms, metadata_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(execution_id) DO UPDATE SET
                         workflow_id = COALESCE(excluded.workflow_id, workflow_executions.workflow_id),
                         workflow_name = COALESCE(excluded.workflow_name, workflow_executions.workflow_name),
                         workflow_kind = COALESCE(excluded.workflow_kind, workflow_executions.workflow_kind),
                         workflow_type = COALESCE(excluded.workflow_type, workflow_executions.workflow_type),
+                        trace_id = COALESCE(excluded.trace_id, workflow_executions.trace_id),
+                        session_id = COALESCE(excluded.session_id, workflow_executions.session_id),
+                        parent_execution_id = COALESCE(excluded.parent_execution_id, workflow_executions.parent_execution_id),
+                        replay_of_execution_id = COALESCE(excluded.replay_of_execution_id, workflow_executions.replay_of_execution_id),
+                        idempotency_key = COALESCE(excluded.idempotency_key, workflow_executions.idempotency_key),
+                        request_hash = COALESCE(excluded.request_hash, workflow_executions.request_hash),
                         status = excluded.status,
                         inputs_json = COALESCE(excluded.inputs_json, workflow_executions.inputs_json),
                         output_json = COALESCE(excluded.output_json, workflow_executions.output_json),
@@ -573,6 +665,12 @@ class ExecutionStore:
                         workflow_name,
                         workflow_kind,
                         workflow_type,
+                        trace_id,
+                        session_id,
+                        parent_execution_id,
+                        replay_of_execution_id,
+                        idempotency_key,
+                        request_hash,
                         status,
                         inputs_json,
                         output_json,
@@ -595,6 +693,8 @@ class ExecutionStore:
         step_index: Optional[int],
         tool_name: Optional[str],
         mode: Optional[str],
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         status: str,
         input_data: Any = None,
         output_data: Any = None,
@@ -615,17 +715,19 @@ class ExecutionStore:
                 conn.execute(
                     """
                     INSERT INTO workflow_steps (
-                        execution_id, step_key, step_name, step_index, tool_name, mode, status,
+                        execution_id, step_key, step_name, step_index, tool_name, mode, trace_id, session_id, status,
                         started_at, completed_at, duration_ms, retries,
                         input_json, output_json, error, metadata_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(execution_id, step_key) DO UPDATE SET
                         step_name = COALESCE(excluded.step_name, workflow_steps.step_name),
                         step_index = COALESCE(excluded.step_index, workflow_steps.step_index),
                         tool_name = COALESCE(excluded.tool_name, workflow_steps.tool_name),
                         mode = COALESCE(excluded.mode, workflow_steps.mode),
+                        trace_id = COALESCE(excluded.trace_id, workflow_steps.trace_id),
+                        session_id = COALESCE(excluded.session_id, workflow_steps.session_id),
                         status = excluded.status,
                         started_at = COALESCE(excluded.started_at, workflow_steps.started_at),
                         completed_at = COALESCE(excluded.completed_at, workflow_steps.completed_at),
@@ -644,6 +746,8 @@ class ExecutionStore:
                         step_index,
                         tool_name,
                         mode,
+                        trace_id,
+                        session_id,
                         status,
                         started_at,
                         completed_at,
@@ -663,6 +767,8 @@ class ExecutionStore:
         *,
         execution_id: str,
         event_type: str,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         timestamp: Optional[float] = None,
         step_key: Optional[str] = None,
         message: Optional[str] = None,
@@ -676,13 +782,15 @@ class ExecutionStore:
                 conn.execute(
                     """
                     INSERT INTO workflow_events (
-                        execution_id, step_key, event_type, timestamp, message, data_json
+                        execution_id, step_key, trace_id, session_id, event_type, timestamp, message, data_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         execution_id,
                         step_key,
+                        trace_id,
+                        session_id,
                         event_type,
                         event_ts,
                         message,
@@ -690,12 +798,136 @@ class ExecutionStore:
                     ),
                 )
 
+    def append_workflow_artifact(
+        self,
+        *,
+        execution_id: str,
+        step_key: Optional[str],
+        artifact_type: str,
+        payload: Any,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        source: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        payload_json = json.dumps(payload, default=str) if payload is not None else "null"
+        payload_size = len(payload_json.encode("utf-8"))
+        content_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        created_at = time.time()
+        metadata_json = json.dumps(metadata or {}, default=str)
+
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO workflow_artifacts (
+                        execution_id, step_key, trace_id, session_id,
+                        artifact_type, content_hash, payload_json, payload_size_bytes,
+                        source, metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        execution_id,
+                        step_key,
+                        trace_id,
+                        session_id,
+                        artifact_type,
+                        content_hash,
+                        payload_json,
+                        payload_size,
+                        source,
+                        metadata_json,
+                        created_at,
+                    ),
+                )
+
+        return {
+            "execution_id": execution_id,
+            "step_key": step_key,
+            "artifact_type": artifact_type,
+            "content_hash": content_hash,
+            "payload_size_bytes": payload_size,
+            "source": source,
+            "created_at": created_at,
+            "metadata": metadata or {},
+        }
+
+    def list_workflow_artifacts(
+        self,
+        execution_id: str,
+        *,
+        step_key: Optional[str] = None,
+        artifact_type: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM workflow_artifacts WHERE execution_id = ?"
+        params: List[Any] = [execution_id]
+        if step_key:
+            query += " AND step_key = ?"
+            params.append(step_key)
+        if artifact_type:
+            query += " AND artifact_type = ?"
+            params.append(artifact_type)
+        query += " ORDER BY id ASC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        artifacts: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = self._safe_json_loads(data.get("payload_json"), None)
+            data["metadata"] = self._safe_json_loads(data.get("metadata_json"), {})
+            artifacts.append(data)
+        return artifacts
+
+    def find_recent_workflow_by_idempotency(
+        self,
+        *,
+        workflow_kind: str,
+        workflow_id: Optional[str],
+        idempotency_key: str,
+        since_ts: float,
+    ) -> Optional[Dict[str, Any]]:
+        clauses = [
+            "workflow_kind = ?",
+            "idempotency_key = ?",
+            "COALESCE(started_at, created_at) >= ?",
+        ]
+        params: List[Any] = [workflow_kind, idempotency_key, since_ts]
+        if workflow_id:
+            clauses.append("workflow_id = ?")
+            params.append(workflow_id)
+
+        with self._conn() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM workflow_executions
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(started_at, created_at) DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["inputs"] = self._safe_json_loads(data.get("inputs_json"), {})
+        data["output"] = self._safe_json_loads(data.get("output_json"), None)
+        data["metadata"] = self._safe_json_loads(data.get("metadata_json"), {})
+        return data
+
     def list_workflow_executions(
         self,
         *,
         status: Optional[str] = None,
         workflow_kind: Optional[str] = None,
         workflow_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         query = "SELECT * FROM workflow_executions"
@@ -711,6 +943,12 @@ class ExecutionStore:
         if workflow_id:
             clauses.append("workflow_id = ?")
             params.append(workflow_id)
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
 
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
@@ -736,7 +974,9 @@ class ExecutionStore:
         *,
         include_steps: bool = True,
         include_events: bool = False,
+        include_artifacts: bool = False,
         event_limit: int = 200,
+        artifact_limit: int = 1000,
     ) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
             row = conn.execute(
@@ -790,6 +1030,25 @@ class ExecutionStore:
                     event["data"] = self._safe_json_loads(event.get("data_json"), None)
                     events.append(event)
                 execution["events"] = events
+
+            if include_artifacts:
+                artifact_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM workflow_artifacts
+                    WHERE execution_id = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (execution_id, max(1, int(artifact_limit))),
+                ).fetchall()
+                artifacts: List[Dict[str, Any]] = []
+                for artifact_row in artifact_rows:
+                    artifact = dict(artifact_row)
+                    artifact["payload"] = self._safe_json_loads(artifact.get("payload_json"), None)
+                    artifact["metadata"] = self._safe_json_loads(artifact.get("metadata_json"), {})
+                    artifacts.append(artifact)
+                execution["artifacts"] = artifacts
 
             return execution
 
@@ -888,6 +1147,115 @@ class ExecutionStore:
             ],
         }
 
+    def get_workflow_chain_analytics(
+        self,
+        *,
+        hours: int = 24,
+        limit: int = 20,
+        min_chain_length: int = 2,
+    ) -> Dict[str, Any]:
+        since_ts = time.time() - max(1, int(hours)) * 3600
+        min_chain_length = max(1, int(min_chain_length))
+        limit = max(1, int(limit))
+
+        with self._conn() as conn:
+            step_rows = conn.execute(
+                """
+                SELECT execution_id,
+                       COALESCE(NULLIF(tool_name, ''), step_name) AS node,
+                       COALESCE(step_index, id) AS step_order,
+                       status
+                FROM workflow_steps
+                WHERE COALESCE(started_at, created_at) >= ?
+                ORDER BY execution_id ASC, step_order ASC, id ASC
+                """,
+                (since_ts,),
+            ).fetchall()
+
+            execution_rows = conn.execute(
+                """
+                SELECT execution_id, status, duration_ms
+                FROM workflow_executions
+                WHERE COALESCE(started_at, created_at) >= ?
+                """,
+                (since_ts,),
+            ).fetchall()
+
+            hotspot_rows = conn.execute(
+                """
+                SELECT COALESCE(NULLIF(tool_name, ''), step_name) AS step,
+                       mode,
+                       COUNT(*) AS failures
+                FROM workflow_steps
+                WHERE status = 'failed'
+                  AND COALESCE(started_at, created_at) >= ?
+                GROUP BY step, mode
+                ORDER BY failures DESC
+                LIMIT 25
+                """,
+                (since_ts,),
+            ).fetchall()
+
+        chains_by_execution: Dict[str, List[str]] = {}
+        for row in step_rows:
+            ex_id = row["execution_id"]
+            node = row["node"] or "unknown_step"
+            chains_by_execution.setdefault(ex_id, []).append(node)
+
+        execution_status: Dict[str, str] = {
+            row["execution_id"]: row["status"] or "unknown"
+            for row in execution_rows
+        }
+        execution_duration: Dict[str, float] = {
+            row["execution_id"]: float(row["duration_ms"] or 0.0)
+            for row in execution_rows
+        }
+
+        chain_agg: Dict[str, Dict[str, Any]] = {}
+        for ex_id, nodes in chains_by_execution.items():
+            if len(nodes) < min_chain_length:
+                continue
+            chain_key = " -> ".join(nodes)
+            bucket = chain_agg.setdefault(
+                chain_key,
+                {
+                    "chain": chain_key,
+                    "steps": nodes,
+                    "runs": 0,
+                    "completed": 0,
+                    "failed": 0,
+                    "avg_duration_ms": 0.0,
+                    "_durations": [],
+                },
+            )
+            bucket["runs"] += 1
+            status = execution_status.get(ex_id)
+            if status == "completed":
+                bucket["completed"] += 1
+            elif status == "failed":
+                bucket["failed"] += 1
+            bucket["_durations"].append(execution_duration.get(ex_id, 0.0))
+
+        chains: List[Dict[str, Any]] = []
+        for bucket in chain_agg.values():
+            durations = bucket.pop("_durations", [])
+            bucket["avg_duration_ms"] = float(sum(durations) / max(1, len(durations)))
+            chains.append(bucket)
+        chains.sort(key=lambda item: (-int(item["runs"]), item["chain"]))
+
+        return {
+            "window_hours": max(1, int(hours)),
+            "chains": chains[:limit],
+            "failure_hotspots": [
+                {
+                    "step": row["step"],
+                    "mode": row["mode"],
+                    "failures": int(row["failures"]),
+                }
+                for row in hotspot_rows
+            ],
+        }
+
     def cleanup_old_workflows(self, max_age_seconds: int = 86400) -> int:
         cutoff = time.time() - max(1, int(max_age_seconds))
         with self._lock:
@@ -914,10 +1282,62 @@ class ExecutionStore:
                     execution_ids,
                 )
                 conn.execute(
+                    f"DELETE FROM workflow_artifacts WHERE execution_id IN ({placeholders})",
+                    execution_ids,
+                )
+                conn.execute(
                     f"DELETE FROM workflow_executions WHERE execution_id IN ({placeholders})",
                     execution_ids,
                 )
                 return len(execution_ids)
+
+    def cleanup_old_workflow_artifacts(self, max_age_seconds: int = 86400) -> int:
+        cutoff = time.time() - max(1, int(max_age_seconds))
+        with self._lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM workflow_artifacts
+                    WHERE created_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchone()
+                count = int(row["cnt"] if row else 0)
+                if count <= 0:
+                    return 0
+                conn.execute(
+                    """
+                    DELETE FROM workflow_artifacts
+                    WHERE created_at < ?
+                    """,
+                    (cutoff,),
+                )
+                return count
+
+    def cleanup_old_workflow_definitions(self, max_age_seconds: int = 0) -> int:
+        if max_age_seconds <= 0:
+            return 0
+        cutoff = time.time() - int(max_age_seconds)
+        with self._lock:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT workflow_id
+                    FROM workflow_definitions
+                    WHERE updated_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                workflow_ids = [row["workflow_id"] for row in rows]
+                if not workflow_ids:
+                    return 0
+                placeholders = ", ".join("?" for _ in workflow_ids)
+                conn.execute(
+                    f"DELETE FROM workflow_definitions WHERE workflow_id IN ({placeholders})",
+                    workflow_ids,
+                )
+                return len(workflow_ids)
 
 
 _execution_store: Optional[ExecutionStore] = None

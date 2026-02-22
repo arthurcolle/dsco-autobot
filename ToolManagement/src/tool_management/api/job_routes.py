@@ -7,6 +7,7 @@ Wraps the StreamingExecutor to provide a REST API for long-running tool executio
 import logging
 import time
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -40,6 +41,9 @@ class JobSubmitRequest(BaseModel):
         description="Optional explicit dedupe key; defaults to hash(tool+arguments)",
     )
     client_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -57,6 +61,9 @@ class JobStatusResponse(BaseModel):
     partial_results: List[Any] = Field(default_factory=list)
     result: Optional[Any] = None
     error: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
     timestamps: Dict[str, Optional[float]] = Field(default_factory=dict)
 
 
@@ -67,6 +74,9 @@ class JobSubmitResponse(BaseModel):
     priority: int = 0
     poll_url: str
     stream_url: str
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 # ==================== Helpers ====================
@@ -134,6 +144,9 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
         partial_results=partial_results,
         result=result,
         error=error,
+        trace_id=ex.trace_id,
+        session_id=ex.session_id,
+        parent_execution_id=ex.parent_execution_id,
         timestamps={
             "queued_at": ex.queued_at,
             "started_at": ex.started_at,
@@ -159,10 +172,20 @@ async def submit_job(request: JobSubmitRequest):
             detail="Streaming executor not initialized yet",
         )
 
+    trace_id = request.trace_id or f"tr_{uuid4().hex}"
     execution = await executor.execute(
         tool_name=request.tool,
-        inputs={**request.arguments, "_timeout": request.timeout},
+        inputs={
+            **request.arguments,
+            "_timeout": request.timeout,
+            "_trace_id": trace_id,
+            "_session_id": request.session_id,
+            "_parent_execution_id": request.parent_execution_id,
+        },
         client_id=request.client_id,
+        trace_id=trace_id,
+        session_id=request.session_id,
+        parent_execution_id=request.parent_execution_id,
         priority=request.priority,
         dedupe_window_seconds=request.dedupe_window_seconds,
         dedupe_key=request.dedupe_key,
@@ -176,6 +199,9 @@ async def submit_job(request: JobSubmitRequest):
         priority=execution.queue_priority,
         poll_url=f"/api/v1/jobs/{execution.execution_id}",
         stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+        trace_id=execution.trace_id,
+        session_id=execution.session_id,
+        parent_execution_id=execution.parent_execution_id,
     )
 
 

@@ -11,8 +11,10 @@ This API enables sophisticated multi-step workflows with:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from enum import Enum
@@ -215,11 +217,72 @@ def _serialize_limits(limits: Optional[ResourceLimits]) -> Dict[str, Any]:
     return {"value": str(limits)}
 
 
+def _resolve_trace_id(trace_id: Optional[str]) -> str:
+    return trace_id or f"tr_{uuid4().hex}"
+
+
+def _stable_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _workflow_idempotency_window_seconds() -> int:
+    return max(1, int(os.getenv("WORKFLOW_IDEMPOTENCY_WINDOW_SECONDS", "86400")))
+
+
+def _find_idempotent_workflow_result(
+    *,
+    workflow_kind: str,
+    workflow_id: Optional[str],
+    idempotency_key: Optional[str],
+    request_hash: str,
+) -> Optional[Dict[str, Any]]:
+    if not idempotency_key:
+        return None
+
+    store = get_execution_store()
+    existing = store.find_recent_workflow_by_idempotency(
+        workflow_kind=workflow_kind,
+        workflow_id=workflow_id,
+        idempotency_key=idempotency_key,
+        since_ts=time.time() - _workflow_idempotency_window_seconds(),
+    )
+    if not existing:
+        return None
+
+    existing_hash = existing.get("request_hash")
+    if existing_hash and existing_hash != request_hash:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Idempotency key conflict: key was previously used with different payload "
+                f"(execution_id={existing.get('execution_id')})"
+            ),
+        )
+    return existing
+
+
 class WorkflowRunRecorder:
     """Persists workflow executions and step lineage for durability."""
 
-    def __init__(self, execution_id: str):
+    def __init__(
+        self,
+        execution_id: str,
+        *,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        parent_execution_id: Optional[str] = None,
+        replay_of_execution_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_hash: Optional[str] = None,
+    ):
         self.execution_id = execution_id
+        self.trace_id = trace_id
+        self.session_id = session_id
+        self.parent_execution_id = parent_execution_id
+        self.replay_of_execution_id = replay_of_execution_id
+        self.idempotency_key = idempotency_key
+        self.request_hash = request_hash
         self._store = get_execution_store()
         self._step_started_at: Dict[str, float] = {}
         self._run_started_at: Optional[float] = None
@@ -251,6 +314,12 @@ class WorkflowRunRecorder:
                 workflow_name=workflow_name,
                 workflow_kind=workflow_kind,
                 workflow_type=workflow_type,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                parent_execution_id=self.parent_execution_id,
+                replay_of_execution_id=self.replay_of_execution_id,
+                idempotency_key=self.idempotency_key,
+                request_hash=self.request_hash,
                 status="running",
                 inputs=inputs,
                 started_at=self._run_started_at,
@@ -258,6 +327,8 @@ class WorkflowRunRecorder:
             )
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type="run_started",
                 message=f"Workflow started: {workflow_name}",
                 data={
@@ -289,6 +360,12 @@ class WorkflowRunRecorder:
                 workflow_name=self._run_meta.get("workflow_name", "unknown_workflow"),
                 workflow_kind=self._run_meta.get("workflow_kind", "workflow"),
                 workflow_type=self._run_meta.get("workflow_type"),
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                parent_execution_id=self.parent_execution_id,
+                replay_of_execution_id=self.replay_of_execution_id,
+                idempotency_key=self.idempotency_key,
+                request_hash=self.request_hash,
                 status=status,
                 output=output,
                 error=error,
@@ -299,6 +376,8 @@ class WorkflowRunRecorder:
             )
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type=f"run_{status}",
                 message=f"Workflow {status}",
                 data={
@@ -330,6 +409,8 @@ class WorkflowRunRecorder:
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 status="running",
                 input_data=input_data,
                 started_at=started_at,
@@ -338,9 +419,26 @@ class WorkflowRunRecorder:
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
                 step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type="step_started",
                 message=f"Step started: {step_name}",
                 data={
+                    "step_index": step_index,
+                    "tool_name": tool_name,
+                    "mode": mode,
+                },
+            )
+            self._store.append_workflow_artifact(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                artifact_type="input",
+                payload=input_data,
+                source="step_started",
+                metadata={
+                    "step_name": step_name,
                     "step_index": step_index,
                     "tool_name": tool_name,
                     "mode": mode,
@@ -372,6 +470,8 @@ class WorkflowRunRecorder:
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 status="completed",
                 output_data=output_data,
                 completed_at=completed_at,
@@ -382,12 +482,29 @@ class WorkflowRunRecorder:
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
                 step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type="step_completed",
                 message=f"Step completed: {step_name}",
                 data={
                     "step_index": step_index,
                     "duration_ms": duration_ms,
                     "retries": retries,
+                },
+            )
+            self._store.append_workflow_artifact(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                artifact_type="output",
+                payload=output_data,
+                source="step_completed",
+                metadata={
+                    "step_name": step_name,
+                    "step_index": step_index,
+                    "retries": retries,
+                    "mode": mode,
                 },
             )
         except Exception as exc:
@@ -417,6 +534,8 @@ class WorkflowRunRecorder:
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 status="failed",
                 output_data=output_data,
                 error=error,
@@ -428,6 +547,8 @@ class WorkflowRunRecorder:
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
                 step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type="step_failed",
                 message=f"Step failed: {step_name}",
                 data={
@@ -435,6 +556,24 @@ class WorkflowRunRecorder:
                     "duration_ms": duration_ms,
                     "retries": retries,
                     "error": error,
+                },
+            )
+            self._store.append_workflow_artifact(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                artifact_type="error",
+                payload={
+                    "error": error,
+                    "output": output_data,
+                },
+                source="step_failed",
+                metadata={
+                    "step_name": step_name,
+                    "step_index": step_index,
+                    "retries": retries,
+                    "mode": mode,
                 },
             )
         except Exception as exc:
@@ -452,6 +591,8 @@ class WorkflowRunRecorder:
             self._store.append_workflow_event(
                 execution_id=self.execution_id,
                 step_key=step_key,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
                 event_type=event_type,
                 message=message,
                 data=data,
@@ -466,6 +607,10 @@ class CompositionExecutionRequest(BaseModel):
     workflow: Optional[WorkflowComposition] = None  # Inline workflow
     inputs: Dict[str, Any] = Field(default_factory=dict)
     stream: bool = False
+    idempotency_key: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 class CompositionExecutionResponse(BaseModel):
@@ -478,6 +623,8 @@ class CompositionExecutionResponse(BaseModel):
     step_results: Dict[str, Any] = Field(default_factory=dict)
     duration_ms: float = 0
     error: Optional[str] = None
+    trace_id: Optional[str] = None
+    idempotent_replay: bool = False
 
 
 # =============================================================================
@@ -668,17 +815,84 @@ async def execute_composition(
     _ensure_workflow_registry_loaded()
 
     # Get workflow
+    inline_workflow = False
     if request.workflow_id:
         if request.workflow_id not in _workflow_registry:
             raise HTTPException(404, f"Workflow not found: {request.workflow_id}")
         workflow = _workflow_registry[request.workflow_id]
     elif request.workflow:
         workflow = request.workflow
+        inline_workflow = True
     else:
         raise HTTPException(400, "Either workflow_id or workflow must be provided")
 
+    if inline_workflow:
+        get_execution_store().upsert_workflow_definition(
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            definition=workflow.model_dump(mode="json"),
+            tags=workflow.tags,
+        )
+
+    trace_id = _resolve_trace_id(request.trace_id)
+    request_hash = _stable_hash(
+        {
+            "workflow_id": workflow.id,
+            "workflow_kind": "composition",
+            "inputs": request.inputs,
+        }
+    )
+    existing = _find_idempotent_workflow_result(
+        workflow_kind="composition",
+        workflow_id=workflow.id,
+        idempotency_key=request.idempotency_key,
+        request_hash=request_hash,
+    )
+    if existing:
+        existing_id = existing["execution_id"]
+        if existing.get("status") == "completed":
+            stored = get_execution_store().get_workflow_execution(
+                existing_id,
+                include_steps=True,
+                include_events=False,
+                include_artifacts=False,
+            ) or {}
+            step_results = {}
+            for step in stored.get("steps", []):
+                step_key = step.get("step_key")
+                if step_key:
+                    step_results[step_key] = step.get("output")
+            return CompositionExecutionResponse(
+                execution_id=existing_id,
+                workflow_id=workflow.id,
+                workflow_name=workflow.name,
+                status="completed",
+                output=stored.get("output"),
+                step_results=step_results,
+                duration_ms=float(stored.get("duration_ms") or 0.0),
+                trace_id=existing.get("trace_id") or trace_id,
+                idempotent_replay=True,
+            )
+
+        return CompositionExecutionResponse(
+            execution_id=existing_id,
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            status=existing.get("status", "running"),
+            duration_ms=float(existing.get("duration_ms") or 0.0),
+            trace_id=existing.get("trace_id") or trace_id,
+            idempotent_replay=True,
+        )
+
     execution_id = str(uuid4())
-    recorder = WorkflowRunRecorder(execution_id)
+    recorder = WorkflowRunRecorder(
+        execution_id,
+        trace_id=trace_id,
+        session_id=request.session_id,
+        parent_execution_id=request.parent_execution_id,
+        idempotency_key=request.idempotency_key,
+        request_hash=request_hash,
+    )
     recorder.start_run(
         workflow_id=workflow.id,
         workflow_name=workflow.name,
@@ -690,6 +904,8 @@ async def execute_composition(
             "step_count": len(workflow.steps),
             "tags": workflow.tags,
             "stream_requested": request.stream,
+            "request_hash": request_hash,
+            "idempotency_key": request.idempotency_key,
         },
     )
 
@@ -727,7 +943,8 @@ async def execute_composition(
             status="completed",
             output=result.get("output"),
             step_results=result.get("step_results", {}),
-            duration_ms=result.get("duration_ms", 0)
+            duration_ms=result.get("duration_ms", 0),
+            trace_id=trace_id,
         )
 
     except Exception as e:
@@ -747,7 +964,8 @@ async def execute_composition(
             workflow_name=workflow.name,
             status="failed",
             error=str(e),
-            duration_ms=0
+            duration_ms=0,
+            trace_id=trace_id,
         )
 
 
@@ -756,15 +974,19 @@ async def _execute_workflow(
     inputs: Dict[str, Any],
     execution_id: str,
     recorder: Optional[WorkflowRunRecorder] = None,
+    start_index: int = 0,
+    initial_step_results: Optional[Dict[str, Any]] = None,
+    initial_current_data: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute a workflow composition."""
     start_time = time.time()
 
-    step_results = {}
-    current_data = inputs
+    step_results = dict(initial_step_results or {})
+    current_data = initial_current_data if initial_current_data is not None else inputs
+    start_index = max(0, int(start_index))
 
     # Execute steps in order
-    for step_index, step in enumerate(workflow.steps):
+    for step_index, step in enumerate(workflow.steps[start_index:], start=start_index):
         logger.info(f"Executing step: {step.name} (mode={step.mode})")
         step_key = step.id or f"step_{step_index}"
 
@@ -851,6 +1073,8 @@ async def list_composition_executions(
     status: Optional[str] = Query(default=None, description="Filter by run status"),
     workflow_kind: Optional[str] = Query(default=None, description="composition|simple_composition|named_workflow"),
     workflow_id: Optional[str] = Query(default=None, description="Workflow identifier"),
+    trace_id: Optional[str] = Query(default=None, description="Distributed trace identifier"),
+    session_id: Optional[str] = Query(default=None, description="Caller/session identifier"),
     limit: int = Query(default=100, ge=1, le=500),
 ):
     """List durable workflow executions with lineage metadata."""
@@ -859,6 +1083,8 @@ async def list_composition_executions(
         status=status,
         workflow_kind=workflow_kind,
         workflow_id=workflow_id,
+        trace_id=trace_id,
+        session_id=session_id,
         limit=limit,
     )
     return {
@@ -878,11 +1104,314 @@ async def get_composition_execution_analytics(
     }
 
 
+@router.get("/executions/chains")
+async def get_composition_chain_analytics(
+    hours: int = Query(default=24, ge=1, le=720, description="Lookback window in hours"),
+    limit: int = Query(default=20, ge=1, le=200, description="Max number of chains"),
+    min_chain_length: int = Query(default=2, ge=1, le=20, description="Minimum steps in a chain"),
+):
+    """Get durable chain intelligence and failure hotspots from workflow step lineage."""
+    store = get_execution_store()
+    return {
+        "analytics": store.get_workflow_chain_analytics(
+            hours=hours,
+            limit=limit,
+            min_chain_length=min_chain_length,
+        ),
+    }
+
+
+class WorkflowReplayRequest(BaseModel):
+    from_step: Optional[str] = Field(
+        default=None,
+        description="Step id/name to start replay from (inclusive); earlier step outputs are reused when available.",
+    )
+    override_inputs: Dict[str, Any] = Field(default_factory=dict)
+    fork: bool = Field(default=True, description="When true, create a new execution lineage branch")
+    include_prior_steps: bool = Field(default=True, description="Reuse cached outputs before from_step")
+    idempotency_key: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
+
+
+@router.post("/executions/{execution_id}/replay")
+async def replay_composition_execution(
+    execution_id: str,
+    request: WorkflowReplayRequest,
+):
+    """Replay an existing workflow execution with optional forking and input overrides."""
+    store = get_execution_store()
+    source = store.get_workflow_execution(
+        execution_id,
+        include_steps=True,
+        include_events=False,
+        include_artifacts=False,
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+
+    workflow_kind = source.get("workflow_kind")
+    workflow_id = source.get("workflow_id")
+    workflow_name = source.get("workflow_name", "workflow")
+    source_inputs = source.get("inputs") or {}
+    merged_inputs = {**source_inputs, **(request.override_inputs or {})}
+
+    replay_trace_id = _resolve_trace_id(request.trace_id)
+    replay_parent = request.parent_execution_id or execution_id
+    replay_execution_id = str(uuid4()) if request.fork else str(uuid4())
+
+    if workflow_kind == "composition":
+        _ensure_workflow_registry_loaded()
+        workflow = _workflow_registry.get(workflow_id or "")
+        if not workflow and workflow_id:
+            persisted = store.get_workflow_definition(workflow_id)
+            if persisted:
+                workflow = WorkflowComposition.model_validate(persisted.get("definition", {}))
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Workflow definition not found for replay: {workflow_id}")
+
+        from_index = 0
+        if request.from_step:
+            matched_index = None
+            for idx, step in enumerate(workflow.steps):
+                if request.from_step in {step.id, step.name}:
+                    matched_index = idx
+                    break
+            if matched_index is None:
+                raise HTTPException(status_code=400, detail=f"from_step not found in workflow: {request.from_step}")
+            from_index = matched_index
+
+        source_step_outputs = {
+            step.get("step_key"): step.get("output")
+            for step in source.get("steps", [])
+            if step.get("step_key")
+        }
+        initial_step_results: Dict[str, Any] = {}
+        reused_steps: List[str] = []
+        initial_current_data: Any = merged_inputs
+        if request.include_prior_steps and from_index > 0:
+            for step in workflow.steps[:from_index]:
+                cached = source_step_outputs.get(step.id)
+                if cached is not None:
+                    initial_step_results[step.id] = cached
+                    reused_steps.append(step.id)
+            prior_step = workflow.steps[from_index - 1]
+            if prior_step.id in initial_step_results:
+                initial_current_data = initial_step_results[prior_step.id]
+
+        request_hash = _stable_hash(
+            {
+                "replay_of": execution_id,
+                "workflow_id": workflow.id,
+                "workflow_kind": workflow_kind,
+                "from_step": request.from_step,
+                "inputs": merged_inputs,
+            }
+        )
+        recorder = WorkflowRunRecorder(
+            replay_execution_id,
+            trace_id=replay_trace_id,
+            session_id=request.session_id or source.get("session_id"),
+            parent_execution_id=replay_parent,
+            replay_of_execution_id=execution_id,
+            idempotency_key=request.idempotency_key,
+            request_hash=request_hash,
+        )
+        recorder.start_run(
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            workflow_kind=workflow_kind,
+            workflow_type=source.get("workflow_type"),
+            inputs=merged_inputs,
+            metadata={
+                "replay": True,
+                "source_execution_id": execution_id,
+                "from_step": request.from_step,
+                "reused_steps": reused_steps,
+                "request_hash": request_hash,
+            },
+        )
+        try:
+            result = await _execute_workflow(
+                workflow,
+                merged_inputs,
+                replay_execution_id,
+                recorder=recorder,
+                start_index=from_index,
+                initial_step_results=initial_step_results,
+                initial_current_data=initial_current_data,
+            )
+            recorder.complete_run(
+                status="completed",
+                output=result.get("output"),
+                metadata={"reused_steps": reused_steps, "duration_ms": result.get("duration_ms", 0)},
+            )
+        except Exception as exc:
+            recorder.complete_run(
+                status="failed",
+                error=str(exc),
+                metadata={"reused_steps": reused_steps},
+            )
+            raise
+        return {
+            "source_execution_id": execution_id,
+            "execution_id": replay_execution_id,
+            "workflow_id": workflow.id,
+            "workflow_name": workflow.name,
+            "workflow_kind": workflow_kind,
+            "status": "completed",
+            "output": result.get("output"),
+            "step_results": result.get("step_results", {}),
+            "reused_steps": reused_steps,
+            "duration_ms": result.get("duration_ms", 0),
+            "trace_id": replay_trace_id,
+            "forked": request.fork,
+        }
+
+    if workflow_kind == "simple_composition":
+        metadata = source.get("metadata") or {}
+        workflow_type_raw = metadata.get("workflow_type") or source.get("workflow_type")
+        if not workflow_type_raw:
+            raise HTTPException(status_code=400, detail="Missing workflow_type metadata for simple composition replay")
+        tools = metadata.get("tools") or []
+        arguments = metadata.get("arguments") or []
+        composition = SimpleComposition(
+            workflow_type=WorkflowType(workflow_type_raw),
+            tools=tools,
+            arguments=arguments,
+            inputs=merged_inputs,
+            timeout_seconds=float(metadata.get("timeout_seconds") or 300.0),
+            parallel_limit=int(metadata.get("parallel_limit") or 5),
+            idempotency_key=request.idempotency_key,
+            trace_id=replay_trace_id,
+            session_id=request.session_id or source.get("session_id"),
+            parent_execution_id=replay_parent,
+        )
+        result = await compose_simple(composition)
+        result["source_execution_id"] = execution_id
+        result["forked"] = request.fork
+        return result
+
+    if workflow_kind == "named_workflow":
+        workflow = get_workflow_by_id(workflow_id or "")
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Named workflow not found for replay: {workflow_id}")
+
+        from_stage_index = 0
+        if request.from_step:
+            matched_index = None
+            for idx, stage in enumerate(workflow.stages):
+                if request.from_step == stage.name:
+                    matched_index = idx
+                    break
+            if matched_index is None:
+                raise HTTPException(status_code=400, detail=f"from_step not found in named workflow: {request.from_step}")
+            from_stage_index = matched_index
+
+        source_stage_outputs = {
+            step.get("step_key"): step.get("output")
+            for step in source.get("steps", [])
+            if step.get("step_key")
+        }
+        initial_stage_results: Dict[str, Any] = {}
+        reused_stages: List[str] = []
+        initial_current_data: Any = merged_inputs
+        if request.include_prior_steps and from_stage_index > 0:
+            for stage in workflow.stages[:from_stage_index]:
+                cached = source_stage_outputs.get(stage.name)
+                if cached is not None:
+                    initial_stage_results[stage.name] = cached
+                    reused_stages.append(stage.name)
+            prior_stage = workflow.stages[from_stage_index - 1]
+            if prior_stage.name in initial_stage_results:
+                initial_current_data = initial_stage_results[prior_stage.name]
+
+        request_hash = _stable_hash(
+            {
+                "replay_of": execution_id,
+                "workflow_id": workflow.id,
+                "workflow_kind": workflow_kind,
+                "from_step": request.from_step,
+                "inputs": merged_inputs,
+            }
+        )
+        replay_recorder = WorkflowRunRecorder(
+            replay_execution_id,
+            trace_id=replay_trace_id,
+            session_id=request.session_id or source.get("session_id"),
+            parent_execution_id=replay_parent,
+            replay_of_execution_id=execution_id,
+            idempotency_key=request.idempotency_key,
+            request_hash=request_hash,
+        )
+        replay_recorder.start_run(
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            workflow_kind=workflow_kind,
+            workflow_type=workflow.category.value,
+            inputs=merged_inputs,
+            metadata={
+                "replay": True,
+                "source_execution_id": execution_id,
+                "from_step": request.from_step,
+                "reused_steps": reused_stages,
+                "request_hash": request_hash,
+            },
+        )
+        try:
+            result = await _execute_named_workflow(
+                workflow,
+                merged_inputs,
+                replay_execution_id,
+                override_limits=None,
+                recorder=replay_recorder,
+                start_stage_index=from_stage_index,
+                initial_stage_results=initial_stage_results,
+                initial_current_data=initial_current_data,
+            )
+            replay_recorder.complete_run(
+                status="completed",
+                output=result.get("output"),
+                metadata={
+                    "resource_usage": result.get("resource_usage", {}),
+                    "stages_executed": result.get("stages_executed", []),
+                    "reused_steps": reused_stages,
+                },
+            )
+        except Exception as exc:
+            replay_recorder.complete_run(
+                status="failed",
+                error=str(exc),
+                metadata={"reused_steps": reused_stages},
+            )
+            raise
+        return {
+            "source_execution_id": execution_id,
+            "execution_id": replay_execution_id,
+            "workflow_id": workflow.id,
+            "workflow_name": workflow.name,
+            "workflow_kind": workflow_kind,
+            "status": "completed",
+            "result": result.get("output"),
+            "resource_usage": result.get("resource_usage", {}),
+            "stages_executed": result.get("stages_executed", []),
+            "reused_steps": reused_stages,
+            "duration_ms": result.get("duration_ms", 0),
+            "trace_id": replay_trace_id,
+            "forked": request.fork,
+        }
+
+    raise HTTPException(status_code=400, detail=f"Replay not supported for workflow kind: {workflow_kind}")
+
+
 @router.get("/executions/{execution_id}")
 async def get_composition_execution(
     execution_id: str,
     include_events: bool = Query(default=False, description="Include per-event lineage"),
+    include_artifacts: bool = Query(default=False, description="Include stored step artifacts"),
     event_limit: int = Query(default=200, ge=1, le=2000),
+    artifact_limit: int = Query(default=1000, ge=1, le=10000),
 ):
     """Get a durable workflow run including steps and optional events."""
     store = get_execution_store()
@@ -890,7 +1419,9 @@ async def get_composition_execution(
         execution_id,
         include_steps=True,
         include_events=include_events,
+        include_artifacts=include_artifacts,
         event_limit=event_limit,
+        artifact_limit=artifact_limit,
     )
     if not execution:
         raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
@@ -1299,6 +1830,10 @@ class SimpleComposition(BaseModel):
     # Optional configuration
     timeout_seconds: float = 300.0
     parallel_limit: int = 5
+    idempotency_key: Optional[str] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    parent_execution_id: Optional[str] = None
 
 
 @router.post("/compose-simple", response_model=Dict[str, Any])
@@ -1356,8 +1891,58 @@ async def compose_simple(composition: SimpleComposition):
     }
     ```
     """
+    trace_id = _resolve_trace_id(composition.trace_id)
+    request_hash = _stable_hash(
+        {
+            "workflow_kind": "simple_composition",
+            "workflow_type": composition.workflow_type.value,
+            "tools": composition.tools,
+            "arguments": composition.arguments,
+            "inputs": composition.inputs,
+        }
+    )
+    existing = _find_idempotent_workflow_result(
+        workflow_kind="simple_composition",
+        workflow_id=f"simple:{composition.workflow_type.value}",
+        idempotency_key=composition.idempotency_key,
+        request_hash=request_hash,
+    )
+    if existing:
+        existing_id = existing["execution_id"]
+        if existing.get("status") == "completed":
+            stored = get_execution_store().get_workflow_execution(
+                existing_id,
+                include_steps=False,
+                include_events=False,
+                include_artifacts=False,
+            ) or {}
+            return {
+                "execution_id": existing_id,
+                "workflow_type": composition.workflow_type.value,
+                "status": "completed",
+                "result": stored.get("output"),
+                "tools_executed": composition.tools,
+                "trace_id": existing.get("trace_id") or trace_id,
+                "idempotent_replay": True,
+            }
+        return {
+            "execution_id": existing_id,
+            "workflow_type": composition.workflow_type.value,
+            "status": existing.get("status", "running"),
+            "tools_executed": composition.tools,
+            "trace_id": existing.get("trace_id") or trace_id,
+            "idempotent_replay": True,
+        }
+
     execution_id = str(uuid4())
-    recorder = WorkflowRunRecorder(execution_id)
+    recorder = WorkflowRunRecorder(
+        execution_id,
+        trace_id=trace_id,
+        session_id=composition.session_id,
+        parent_execution_id=composition.parent_execution_id,
+        idempotency_key=composition.idempotency_key,
+        request_hash=request_hash,
+    )
     recorder.start_run(
         workflow_id=f"simple:{composition.workflow_type.value}",
         workflow_name=f"simple_{composition.workflow_type.value}",
@@ -1366,8 +1951,11 @@ async def compose_simple(composition: SimpleComposition):
         inputs=composition.inputs,
         metadata={
             "tools": composition.tools,
+            "arguments": composition.arguments,
             "timeout_seconds": composition.timeout_seconds,
             "parallel_limit": composition.parallel_limit,
+            "request_hash": request_hash,
+            "idempotency_key": composition.idempotency_key,
         },
     )
 
@@ -1399,7 +1987,8 @@ async def compose_simple(composition: SimpleComposition):
             "workflow_type": composition.workflow_type.value,
             "status": "completed",
             "result": result,
-            "tools_executed": composition.tools
+            "tools_executed": composition.tools,
+            "trace_id": trace_id,
         }
 
     except Exception as e:
@@ -1417,7 +2006,8 @@ async def compose_simple(composition: SimpleComposition):
             "workflow_type": composition.workflow_type.value,
             "status": "failed",
             "error": str(e),
-            "tools_executed": composition.tools
+            "tools_executed": composition.tools,
+            "trace_id": trace_id,
         }
 
 
@@ -1896,7 +2486,11 @@ async def get_library_by_tag(tag: str):
 async def execute_named_workflow(
     workflow_id: str,
     inputs: Dict[str, Any],
-    override_limits: Optional[Dict[str, ResourceLimits]] = None
+    override_limits: Optional[Dict[str, ResourceLimits]] = None,
+    idempotency_key: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    parent_execution_id: Optional[str] = None,
 ):
     """
     Execute a named workflow from the library.
@@ -1924,8 +2518,59 @@ async def execute_named_workflow(
         if required not in inputs:
             raise HTTPException(400, f"Missing required input: {required}")
 
+    resolved_trace_id = _resolve_trace_id(trace_id)
+    request_hash = _stable_hash(
+        {
+            "workflow_id": workflow.id,
+            "workflow_kind": "named_workflow",
+            "inputs": inputs,
+            "override_limits": override_limits or {},
+        }
+    )
+    existing = _find_idempotent_workflow_result(
+        workflow_kind="named_workflow",
+        workflow_id=workflow.id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    if existing:
+        existing_id = existing["execution_id"]
+        if existing.get("status") == "completed":
+            stored = get_execution_store().get_workflow_execution(
+                existing_id,
+                include_steps=False,
+                include_events=False,
+                include_artifacts=False,
+            ) or {}
+            return {
+                "execution_id": existing_id,
+                "workflow_id": workflow.id,
+                "workflow_name": workflow.name,
+                "status": "completed",
+                "result": stored.get("output"),
+                "resource_usage": stored.get("metadata", {}).get("resource_usage", {}),
+                "stages_executed": stored.get("metadata", {}).get("stages_executed", []),
+                "trace_id": existing.get("trace_id") or resolved_trace_id,
+                "idempotent_replay": True,
+            }
+        return {
+            "execution_id": existing_id,
+            "workflow_id": workflow.id,
+            "workflow_name": workflow.name,
+            "status": existing.get("status", "running"),
+            "trace_id": existing.get("trace_id") or resolved_trace_id,
+            "idempotent_replay": True,
+        }
+
     execution_id = str(uuid4())
-    recorder = WorkflowRunRecorder(execution_id)
+    recorder = WorkflowRunRecorder(
+        execution_id,
+        trace_id=resolved_trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
     recorder.start_run(
         workflow_id=workflow.id,
         workflow_name=workflow.name,
@@ -1937,6 +2582,8 @@ async def execute_named_workflow(
             "stage_count": len(workflow.stages),
             "total_max_tokens": workflow.total_max_tokens,
             "total_max_cost_cents": workflow.total_max_cost_cents,
+            "request_hash": request_hash,
+            "idempotency_key": idempotency_key,
         },
     )
 
@@ -1960,7 +2607,8 @@ async def execute_named_workflow(
             "status": "completed",
             "result": result.get("output"),
             "resource_usage": result.get("resource_usage", {}),
-            "stages_executed": result.get("stages_executed", [])
+            "stages_executed": result.get("stages_executed", []),
+            "trace_id": resolved_trace_id,
         }
 
     except Exception as e:
@@ -1975,7 +2623,8 @@ async def execute_named_workflow(
             "workflow_id": workflow.id,
             "workflow_name": workflow.name,
             "status": "failed",
-            "error": str(e)
+            "error": str(e),
+            "trace_id": resolved_trace_id,
         }
 
 
@@ -1985,19 +2634,23 @@ async def _execute_named_workflow(
     execution_id: str,
     override_limits: Optional[Dict[str, ResourceLimits]] = None,
     recorder: Optional[WorkflowRunRecorder] = None,
+    start_stage_index: int = 0,
+    initial_stage_results: Optional[Dict[str, Any]] = None,
+    initial_current_data: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute a named workflow with token limits."""
     start_time = time.time()
 
-    stage_results = {}
-    current_data = inputs
+    stage_results = dict(initial_stage_results or {})
+    current_data = initial_current_data if initial_current_data is not None else inputs
     resource_usage = {
         "total_tokens": 0,
         "total_cost_cents": 0,
         "stages": {}
     }
 
-    for stage_index, stage in enumerate(workflow.stages):
+    start_stage_index = max(0, int(start_stage_index))
+    for stage_index, stage in enumerate(workflow.stages[start_stage_index:], start=start_stage_index):
         # Check if dependencies are met
         for dep in stage.depends_on:
             if dep not in stage_results:

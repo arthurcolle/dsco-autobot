@@ -166,3 +166,119 @@ def test_workflow_definition_persistence(tmp_path):
 
     listed = store.list_workflow_definitions(limit=10)
     assert any(item["workflow_id"] == "wf_durable" for item in listed)
+
+
+def test_trace_and_artifact_persistence(tmp_path):
+    store = ExecutionStore(db_path=str(tmp_path / "trace_artifacts.db"))
+    execution_id = "exec_trace_1"
+
+    store.upsert_workflow_execution(
+        execution_id=execution_id,
+        workflow_id="wf_trace",
+        workflow_name="traceable_workflow",
+        workflow_kind="composition",
+        workflow_type="sequential",
+        trace_id="tr_abc123",
+        session_id="sess_001",
+        parent_execution_id="parent_001",
+        status="running",
+        inputs={"x": 1},
+        metadata={},
+    )
+
+    store.upsert_workflow_step(
+        execution_id=execution_id,
+        step_key="step_a",
+        step_name="step_a",
+        step_index=0,
+        tool_name="search",
+        mode="tool",
+        trace_id="tr_abc123",
+        session_id="sess_001",
+        status="completed",
+        input_data={"query": "dc weather"},
+        output_data={"top": "forecast"},
+        duration_ms=100,
+        metadata={},
+    )
+
+    artifact = store.append_workflow_artifact(
+        execution_id=execution_id,
+        step_key="step_a",
+        trace_id="tr_abc123",
+        session_id="sess_001",
+        artifact_type="output",
+        payload={"top": "forecast"},
+        source="test",
+        metadata={"kind": "unit"},
+    )
+    assert artifact is not None
+    assert artifact["content_hash"]
+
+    run = store.get_workflow_execution(
+        execution_id,
+        include_steps=True,
+        include_events=False,
+        include_artifacts=True,
+    )
+    assert run is not None
+    assert run["trace_id"] == "tr_abc123"
+    assert run["session_id"] == "sess_001"
+    assert run["parent_execution_id"] == "parent_001"
+    assert len(run.get("artifacts", [])) == 1
+    assert run["artifacts"][0]["payload"]["top"] == "forecast"
+
+
+def test_workflow_idempotency_and_chain_analytics(tmp_path):
+    store = ExecutionStore(db_path=str(tmp_path / "chain_analytics.db"))
+    now = time.time()
+
+    store.upsert_workflow_execution(
+        execution_id="exec_chain_1",
+        workflow_id="wf_chain",
+        workflow_name="chainable",
+        workflow_kind="composition",
+        workflow_type="pipe",
+        idempotency_key="idem-1",
+        request_hash="hash-1",
+        status="completed",
+        started_at=now - 5,
+        completed_at=now - 1,
+        duration_ms=4000,
+        metadata={},
+    )
+    store.upsert_workflow_step(
+        execution_id="exec_chain_1",
+        step_key="s1",
+        step_name="search",
+        step_index=0,
+        tool_name="search",
+        mode="tool",
+        status="completed",
+        metadata={},
+    )
+    store.upsert_workflow_step(
+        execution_id="exec_chain_1",
+        step_key="s2",
+        step_name="read",
+        step_index=1,
+        tool_name="read",
+        mode="tool",
+        status="completed",
+        metadata={},
+    )
+
+    idem = store.find_recent_workflow_by_idempotency(
+        workflow_kind="composition",
+        workflow_id="wf_chain",
+        idempotency_key="idem-1",
+        since_ts=now - 60,
+    )
+    assert idem is not None
+    assert idem["execution_id"] == "exec_chain_1"
+    assert idem["request_hash"] == "hash-1"
+
+    chains = store.get_workflow_chain_analytics(hours=24, limit=10, min_chain_length=2)
+    assert len(chains["chains"]) == 1
+    assert chains["chains"][0]["chain"] == "search -> read"
+    assert chains["chains"][0]["runs"] == 1
