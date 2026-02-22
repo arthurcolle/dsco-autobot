@@ -282,3 +282,103 @@ def test_workflow_idempotency_and_chain_analytics(tmp_path):
     assert len(chains["chains"]) == 1
     assert chains["chains"][0]["chain"] == "search -> read"
     assert chains["chains"][0]["runs"] == 1
+
+
+def test_side_effect_journal_lineage_and_storage_stats(tmp_path):
+    store = ExecutionStore(db_path=str(tmp_path / "side_effects.db"))
+    now = time.time()
+
+    store.upsert_workflow_execution(
+        execution_id="exec_root",
+        workflow_id="wf_sidefx",
+        workflow_name="sidefx_workflow",
+        workflow_kind="composition",
+        workflow_type="sequential",
+        trace_id="tr_sidefx",
+        session_id="sess_sidefx",
+        status="completed",
+        started_at=now - 20,
+        completed_at=now - 19,
+        duration_ms=1000,
+        metadata={},
+    )
+    store.upsert_workflow_execution(
+        execution_id="exec_replay",
+        workflow_id="wf_sidefx",
+        workflow_name="sidefx_workflow",
+        workflow_kind="composition",
+        workflow_type="sequential",
+        trace_id="tr_sidefx",
+        session_id="sess_sidefx",
+        parent_execution_id="exec_root",
+        replay_of_execution_id="exec_root",
+        status="completed",
+        started_at=now - 10,
+        completed_at=now - 9,
+        duration_ms=1000,
+        metadata={},
+    )
+
+    store.upsert_workflow_step(
+        execution_id="exec_replay",
+        step_key="store",
+        step_name="store",
+        step_index=1,
+        tool_name="store_belief",
+        mode="tool",
+        is_side_effect=True,
+        side_effect_key="fx_1",
+        status="completed",
+        input_data={"belief": "storm incoming"},
+        output_data={"stored": True},
+        duration_ms=120,
+        metadata={},
+    )
+
+    record = store.append_workflow_side_effect(
+        execution_id="exec_replay",
+        step_key="store",
+        tool_name="store_belief",
+        side_effect_key="fx_1",
+        status="completed",
+        request_data={"belief": "storm incoming"},
+        response_data={"stored": True},
+        trace_id="tr_sidefx",
+        session_id="sess_sidefx",
+        idempotency_key="idem-sidefx-1",
+        request_hash="req_hash_1",
+        replay_policy="allow",
+        replay_of_execution_id="exec_root",
+    )
+    assert record["status"] == "completed"
+
+    execution = store.get_workflow_execution(
+        "exec_replay",
+        include_steps=True,
+        include_side_effects=True,
+    )
+    assert execution is not None
+    assert execution["steps"][0]["is_side_effect"] is True
+    assert len(execution["side_effects"]) == 1
+    assert execution["side_effects"][0]["request"]["belief"] == "storm incoming"
+
+    lineage = store.get_workflow_lineage("exec_replay", depth=3)
+    assert lineage["root_execution_id"] == "exec_replay"
+    assert len(lineage["nodes"]) >= 2
+    assert any(edge["type"] == "replay_of" for edge in lineage["edges"])
+
+    trace_lineage = store.get_trace_workflow_lineage("tr_sidefx", limit=50)
+    assert trace_lineage["count"] == 2
+    assert len(trace_lineage["edges"]) >= 1
+
+    stats = store.get_storage_stats()
+    assert stats["table_counts"]["workflow_side_effects"] == 1
+    assert stats["db_size_bytes"] > 0
+
+    with store._conn() as conn:
+        conn.execute(
+            "UPDATE workflow_side_effects SET created_at = ? WHERE execution_id = ?",
+            (now - 10_000, "exec_replay"),
+        )
+    removed = store.cleanup_old_workflow_side_effects(max_age_seconds=120)
+    assert removed == 1

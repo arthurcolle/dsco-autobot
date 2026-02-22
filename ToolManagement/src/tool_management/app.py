@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
             "job_executions": 0,
             "workflow_executions": 0,
             "workflow_artifacts": 0,
+            "workflow_side_effects": 0,
             "workflow_definitions": 0,
         },
         "last_run": {},
@@ -183,6 +184,7 @@ async def lifespan(app: FastAPI):
         job_ttl = int(os.getenv("JOB_EXECUTION_TTL_SECONDS", "3600"))
         workflow_ttl = int(os.getenv("WORKFLOW_EXECUTION_TTL_SECONDS", "86400"))
         artifact_ttl = int(os.getenv("WORKFLOW_ARTIFACT_TTL_SECONDS", str(workflow_ttl)))
+        side_effect_ttl = int(os.getenv("WORKFLOW_SIDE_EFFECT_TTL_SECONDS", str(workflow_ttl)))
         definition_ttl = int(os.getenv("WORKFLOW_DEFINITION_TTL_SECONDS", "0"))
         app.state.cleanup_state = {
             "enabled": True,
@@ -193,6 +195,7 @@ async def lifespan(app: FastAPI):
                 "job_executions": 0,
                 "workflow_executions": 0,
                 "workflow_artifacts": 0,
+                "workflow_side_effects": 0,
                 "workflow_definitions": 0,
             },
             "last_run": {},
@@ -200,6 +203,7 @@ async def lifespan(app: FastAPI):
                 "job_executions": job_ttl,
                 "workflow_executions": workflow_ttl,
                 "workflow_artifacts": artifact_ttl,
+                "workflow_side_effects": side_effect_ttl,
                 "workflow_definitions": definition_ttl,
             },
         }
@@ -212,6 +216,7 @@ async def lifespan(app: FastAPI):
                     "job_executions": 0,
                     "workflow_executions": 0,
                     "workflow_artifacts": 0,
+                    "workflow_side_effects": 0,
                     "workflow_definitions": 0,
                 }
                 try:
@@ -235,6 +240,13 @@ async def lifespan(app: FastAPI):
                         logger.info(f"Cleaned up {removed_artifacts} old workflow artifacts")
                 except Exception as exc:
                     logger.warning(f"Workflow artifact cleanup error: {exc}")
+                try:
+                    removed_side_effects = execution_store.cleanup_old_workflow_side_effects(max_age_seconds=side_effect_ttl)
+                    cleanup_run["workflow_side_effects"] = int(removed_side_effects or 0)
+                    if removed_side_effects:
+                        logger.info(f"Cleaned up {removed_side_effects} old workflow side-effect journal records")
+                except Exception as exc:
+                    logger.warning(f"Workflow side-effect cleanup error: {exc}")
                 try:
                     removed_definitions = execution_store.cleanup_old_workflow_definitions(max_age_seconds=definition_ttl)
                     cleanup_run["workflow_definitions"] = int(removed_definitions or 0)
@@ -733,6 +745,7 @@ def create_app() -> FastAPI:
                 durable_jobs = {
                     "enabled": True,
                     "db_path": str(getattr(execution_store, "db_path", "")),
+                    "storage": execution_store.get_storage_stats(),
                 }
         except Exception:
             pass

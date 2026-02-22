@@ -378,7 +378,7 @@ class StreamingExecutor:
 
                 inputs = self._execution_inputs.get(execution_id, {})
                 self._active_count += 1
-            execution._task = asyncio.create_task(self._run_execution(execution, inputs))
+                execution._task = asyncio.create_task(self._run_execution(execution, inputs))
 
             if self._pending_queue and self._active_count < self.max_concurrent:
                 # Re-trigger loop to avoid starvation on race edges.

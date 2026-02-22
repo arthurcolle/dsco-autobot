@@ -115,3 +115,129 @@ def test_composition_idempotency_returns_existing_execution(tmp_path, monkeypatc
     second_data = second.json()
     assert second_data["idempotent_replay"] is True
     assert second_data["execution_id"] == first_execution_id
+
+
+def test_replay_blocks_side_effect_by_default(tmp_path, monkeypatch):
+    client, _store, calls = _build_client(tmp_path, monkeypatch)
+
+    workflow = {
+        "id": "wf_side_effect_block",
+        "name": "wf_side_effect_block",
+        "steps": [
+            {"id": "s1", "name": "step_one", "mode": "passthrough", "tool": "echo"},
+            {"id": "s2", "name": "step_two", "mode": "passthrough", "tool": "store_belief"},
+        ],
+    }
+
+    first = client.post(
+        "/api/v1/compose/execute",
+        json={"workflow": workflow, "inputs": {"input": "persist this"}},
+    )
+    assert first.status_code == 200
+    source_execution_id = first.json()["execution_id"]
+    assert len(calls) == 2
+
+    replay = client.post(
+        f"/api/v1/compose/executions/{source_execution_id}/replay",
+        json={"from_step": "s2"},
+    )
+    assert replay.status_code == 409
+    assert "side-effecting" in replay.json()["detail"]
+    assert len(calls) == 2
+
+
+def test_replay_reuses_side_effect_step_when_requested(tmp_path, monkeypatch):
+    client, store, calls = _build_client(tmp_path, monkeypatch)
+
+    workflow = {
+        "id": "wf_side_effect_reuse",
+        "name": "wf_side_effect_reuse",
+        "steps": [
+            {"id": "s1", "name": "step_one", "mode": "passthrough", "tool": "echo"},
+            {"id": "s2", "name": "step_two", "mode": "passthrough", "tool": "store_belief"},
+        ],
+    }
+
+    first = client.post(
+        "/api/v1/compose/execute",
+        json={"workflow": workflow, "inputs": {"input": "persist this"}},
+    )
+    assert first.status_code == 200
+    source_execution_id = first.json()["execution_id"]
+    assert len(calls) == 2
+
+    replay = client.post(
+        f"/api/v1/compose/executions/{source_execution_id}/replay",
+        json={"from_step": "s2", "write_policy": "reuse"},
+    )
+    assert replay.status_code == 200
+    replay_data = replay.json()
+    assert replay_data["write_policy"] == "reuse"
+    assert "s2" in replay_data["reused_steps"]
+    assert len(calls) == 2  # no re-execution of write step
+
+    lineage = client.get(f"/api/v1/compose/executions/{replay_data['execution_id']}/lineage")
+    assert lineage.status_code == 200
+    lineage_data = lineage.json()
+    assert any(edge["type"] == "replay_of" for edge in lineage_data["edges"])
+
+    replay_execution = store.get_workflow_execution(
+        replay_data["execution_id"],
+        include_steps=True,
+        include_side_effects=True,
+    )
+    assert replay_execution is not None
+    assert replay_execution["replay_of_execution_id"] == source_execution_id
+    assert replay_execution.get("side_effects", []) == []
+
+
+def test_replay_allow_executes_and_records_side_effects(tmp_path, monkeypatch):
+    client, store, calls = _build_client(tmp_path, monkeypatch)
+
+    workflow = {
+        "id": "wf_side_effect_allow",
+        "name": "wf_side_effect_allow",
+        "steps": [
+            {"id": "s1", "name": "step_one", "mode": "passthrough", "tool": "echo"},
+            {"id": "s2", "name": "step_two", "mode": "passthrough", "tool": "store_belief"},
+        ],
+    }
+
+    first = client.post(
+        "/api/v1/compose/execute",
+        json={"workflow": workflow, "inputs": {"input": "persist this"}},
+    )
+    assert first.status_code == 200
+    source_execution_id = first.json()["execution_id"]
+    assert len(calls) == 2
+
+    replay = client.post(
+        f"/api/v1/compose/executions/{source_execution_id}/replay",
+        json={"from_step": "s2", "write_policy": "allow", "trace_id": "tr_sidefx_allow"},
+    )
+    assert replay.status_code == 200
+    replay_data = replay.json()
+    assert replay_data["write_policy"] == "allow"
+    assert len(calls) == 3
+
+    side_effects_resp = client.get(f"/api/v1/compose/executions/{replay_data['execution_id']}/side-effects")
+    assert side_effects_resp.status_code == 200
+    side_effects = side_effects_resp.json()
+    assert side_effects["count"] >= 1
+    assert side_effects["side_effects"][0]["tool_name"] == "store_belief"
+
+    trace_side_effects_resp = client.get("/api/v1/compose/traces/tr_sidefx_allow/side-effects")
+    assert trace_side_effects_resp.status_code == 200
+    assert trace_side_effects_resp.json()["count"] >= 1
+
+    storage_resp = client.get("/api/v1/compose/storage")
+    assert storage_resp.status_code == 200
+    storage = storage_resp.json()["storage"]
+    assert storage["table_counts"]["workflow_side_effects"] >= 1
+
+    replay_execution = store.get_workflow_execution(
+        replay_data["execution_id"],
+        include_side_effects=True,
+    )
+    assert replay_execution is not None
+    assert len(replay_execution["side_effects"]) >= 1

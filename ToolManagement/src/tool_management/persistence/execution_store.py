@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
@@ -50,6 +50,11 @@ class ExecutionStore:
         with self._conn() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    migration_name TEXT PRIMARY KEY,
+                    applied_at REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS executions (
                     execution_id TEXT PRIMARY KEY,
                     tool_name TEXT NOT NULL,
@@ -135,6 +140,8 @@ class ExecutionStore:
                     mode TEXT,
                     trace_id TEXT,
                     session_id TEXT,
+                    is_side_effect INTEGER DEFAULT 0,
+                    side_effect_key TEXT,
                     status TEXT NOT NULL,
                     started_at REAL,
                     completed_at REAL,
@@ -180,20 +187,47 @@ class ExecutionStore:
                     FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS workflow_side_effects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    execution_id TEXT NOT NULL,
+                    step_key TEXT,
+                    trace_id TEXT,
+                    session_id TEXT,
+                    tool_name TEXT,
+                    side_effect_key TEXT,
+                    idempotency_key TEXT,
+                    request_hash TEXT,
+                    request_json TEXT,
+                    response_json TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    replay_policy TEXT,
+                    replay_of_execution_id TEXT,
+                    created_at REAL NOT NULL,
+                    UNIQUE (execution_id, step_key, side_effect_key),
+                    FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_kind ON workflow_executions(workflow_kind);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_updated ON workflow_executions(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_trace ON workflow_executions(trace_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_session ON workflow_executions(session_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent ON workflow_executions(parent_execution_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_executions_replay_of ON workflow_executions(replay_of_execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_idempotency ON workflow_executions(idempotency_key);
                 CREATE INDEX IF NOT EXISTS idx_workflow_definitions_name ON workflow_definitions(workflow_name);
                 CREATE INDEX IF NOT EXISTS idx_workflow_definitions_updated ON workflow_definitions(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_execution ON workflow_steps(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_status ON workflow_steps(status);
+                CREATE INDEX IF NOT EXISTS idx_workflow_steps_side_effect ON workflow_steps(is_side_effect, step_key);
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_execution ON workflow_events(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_ts ON workflow_events(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_execution ON workflow_artifacts(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_created ON workflow_artifacts(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_execution ON workflow_side_effects(execution_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_trace ON workflow_side_effects(trace_id);
+                CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_created ON workflow_side_effects(created_at DESC);
                 """
             )
 
@@ -211,8 +245,78 @@ class ExecutionStore:
             self._ensure_column(conn, "workflow_executions", "request_hash", "TEXT")
             self._ensure_column(conn, "workflow_steps", "trace_id", "TEXT")
             self._ensure_column(conn, "workflow_steps", "session_id", "TEXT")
+            self._ensure_column(conn, "workflow_steps", "is_side_effect", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "workflow_steps", "side_effect_key", "TEXT")
             self._ensure_column(conn, "workflow_events", "trace_id", "TEXT")
             self._ensure_column(conn, "workflow_events", "session_id", "TEXT")
+            self._run_migrations(conn)
+
+    def _migration_applied(self, conn: sqlite3.Connection, migration_name: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM schema_migrations
+            WHERE migration_name = ?
+            LIMIT 1
+            """,
+            (migration_name,),
+        ).fetchone()
+        return bool(row)
+
+    def _mark_migration_applied(self, conn: sqlite3.Connection, migration_name: str):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations (migration_name, applied_at)
+            VALUES (?, ?)
+            """,
+            (migration_name, time.time()),
+        )
+
+    def _run_migrations(self, conn: sqlite3.Connection):
+        # All migrations must be idempotent and safe to run multiple times.
+        migrations = [
+            ("2026_02_22_side_effect_journal", self._migration_side_effect_journal),
+        ]
+        for migration_name, migration_fn in migrations:
+            if self._migration_applied(conn, migration_name):
+                continue
+            migration_fn(conn)
+            self._mark_migration_applied(conn, migration_name)
+
+    def _migration_side_effect_journal(self, conn: sqlite3.Connection):
+        self._ensure_column(conn, "workflow_steps", "is_side_effect", "INTEGER DEFAULT 0")
+        self._ensure_column(conn, "workflow_steps", "side_effect_key", "TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS workflow_side_effects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                execution_id TEXT NOT NULL,
+                step_key TEXT,
+                trace_id TEXT,
+                session_id TEXT,
+                tool_name TEXT,
+                side_effect_key TEXT,
+                idempotency_key TEXT,
+                request_hash TEXT,
+                request_json TEXT,
+                response_json TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                replay_policy TEXT,
+                replay_of_execution_id TEXT,
+                created_at REAL NOT NULL,
+                UNIQUE (execution_id, step_key, side_effect_key),
+                FOREIGN KEY (execution_id) REFERENCES workflow_executions(execution_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent ON workflow_executions(parent_execution_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_executions_replay_of ON workflow_executions(replay_of_execution_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_steps_side_effect ON workflow_steps(is_side_effect, step_key);
+            CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_execution ON workflow_side_effects(execution_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_trace ON workflow_side_effects(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_side_effects_created ON workflow_side_effects(created_at DESC);
+            """
+        )
 
     @staticmethod
     def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -695,6 +799,8 @@ class ExecutionStore:
         mode: Optional[str],
         trace_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        is_side_effect: Optional[bool] = None,
+        side_effect_key: Optional[str] = None,
         status: str,
         input_data: Any = None,
         output_data: Any = None,
@@ -709,18 +815,26 @@ class ExecutionStore:
         input_json = json.dumps(input_data, default=str) if input_data is not None else None
         output_json = json.dumps(output_data, default=str) if output_data is not None else None
         metadata_json = json.dumps(metadata or {}, default=str)
+        is_side_effect_value: Optional[int]
+        if is_side_effect is True:
+            is_side_effect_value = 1
+        elif is_side_effect is False:
+            is_side_effect_value = 0
+        else:
+            is_side_effect_value = None
 
         with self._lock:
             with self._conn() as conn:
                 conn.execute(
                     """
                     INSERT INTO workflow_steps (
-                        execution_id, step_key, step_name, step_index, tool_name, mode, trace_id, session_id, status,
+                        execution_id, step_key, step_name, step_index, tool_name, mode,
+                        trace_id, session_id, is_side_effect, side_effect_key, status,
                         started_at, completed_at, duration_ms, retries,
                         input_json, output_json, error, metadata_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(execution_id, step_key) DO UPDATE SET
                         step_name = COALESCE(excluded.step_name, workflow_steps.step_name),
                         step_index = COALESCE(excluded.step_index, workflow_steps.step_index),
@@ -728,6 +842,8 @@ class ExecutionStore:
                         mode = COALESCE(excluded.mode, workflow_steps.mode),
                         trace_id = COALESCE(excluded.trace_id, workflow_steps.trace_id),
                         session_id = COALESCE(excluded.session_id, workflow_steps.session_id),
+                        is_side_effect = COALESCE(excluded.is_side_effect, workflow_steps.is_side_effect),
+                        side_effect_key = COALESCE(excluded.side_effect_key, workflow_steps.side_effect_key),
                         status = excluded.status,
                         started_at = COALESCE(excluded.started_at, workflow_steps.started_at),
                         completed_at = COALESCE(excluded.completed_at, workflow_steps.completed_at),
@@ -748,6 +864,8 @@ class ExecutionStore:
                         mode,
                         trace_id,
                         session_id,
+                        is_side_effect_value,
+                        side_effect_key,
                         status,
                         started_at,
                         completed_at,
@@ -852,6 +970,115 @@ class ExecutionStore:
             "created_at": created_at,
             "metadata": metadata or {},
         }
+
+    def append_workflow_side_effect(
+        self,
+        *,
+        execution_id: str,
+        step_key: Optional[str],
+        tool_name: Optional[str],
+        side_effect_key: str,
+        status: str,
+        request_data: Any = None,
+        response_data: Any = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_hash: Optional[str] = None,
+        error: Optional[str] = None,
+        replay_policy: Optional[str] = None,
+        replay_of_execution_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        created_at = time.time()
+        request_json = json.dumps(request_data, default=str) if request_data is not None else None
+        response_json = json.dumps(response_data, default=str) if response_data is not None else None
+        if not request_hash and request_data is not None:
+            request_hash = hashlib.sha256(
+                json.dumps(request_data, default=str, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO workflow_side_effects (
+                        execution_id, step_key, trace_id, session_id, tool_name,
+                        side_effect_key, idempotency_key, request_hash,
+                        request_json, response_json, status, error,
+                        replay_policy, replay_of_execution_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        execution_id,
+                        step_key,
+                        trace_id,
+                        session_id,
+                        tool_name,
+                        side_effect_key,
+                        idempotency_key,
+                        request_hash,
+                        request_json,
+                        response_json,
+                        status,
+                        error,
+                        replay_policy,
+                        replay_of_execution_id,
+                        created_at,
+                    ),
+                )
+
+        return {
+            "execution_id": execution_id,
+            "step_key": step_key,
+            "tool_name": tool_name,
+            "side_effect_key": side_effect_key,
+            "status": status,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "idempotency_key": idempotency_key,
+            "request_hash": request_hash,
+            "error": error,
+            "replay_policy": replay_policy,
+            "replay_of_execution_id": replay_of_execution_id,
+            "created_at": created_at,
+        }
+
+    def list_workflow_side_effects(
+        self,
+        *,
+        execution_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        step_key: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM workflow_side_effects"
+        clauses: List[str] = []
+        params: List[Any] = []
+        if execution_id:
+            clauses.append("execution_id = ?")
+            params.append(execution_id)
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if step_key:
+            clauses.append("step_key = ?")
+            params.append(step_key)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id ASC LIMIT ?"
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        effects: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["request"] = self._safe_json_loads(data.get("request_json"), None)
+            data["response"] = self._safe_json_loads(data.get("response_json"), None)
+            effects.append(data)
+        return effects
 
     def list_workflow_artifacts(
         self,
@@ -975,8 +1202,10 @@ class ExecutionStore:
         include_steps: bool = True,
         include_events: bool = False,
         include_artifacts: bool = False,
+        include_side_effects: bool = False,
         event_limit: int = 200,
         artifact_limit: int = 1000,
+        side_effect_limit: int = 1000,
     ) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
             row = conn.execute(
@@ -1010,6 +1239,7 @@ class ExecutionStore:
                     step["input"] = self._safe_json_loads(step.get("input_json"), None)
                     step["output"] = self._safe_json_loads(step.get("output_json"), None)
                     step["metadata"] = self._safe_json_loads(step.get("metadata_json"), {})
+                    step["is_side_effect"] = bool(step.get("is_side_effect") or 0)
                     steps.append(step)
                 execution["steps"] = steps
 
@@ -1049,6 +1279,25 @@ class ExecutionStore:
                     artifact["metadata"] = self._safe_json_loads(artifact.get("metadata_json"), {})
                     artifacts.append(artifact)
                 execution["artifacts"] = artifacts
+
+            if include_side_effects:
+                side_effect_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM workflow_side_effects
+                    WHERE execution_id = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (execution_id, max(1, int(side_effect_limit))),
+                ).fetchall()
+                side_effects: List[Dict[str, Any]] = []
+                for side_effect_row in side_effect_rows:
+                    side_effect = dict(side_effect_row)
+                    side_effect["request"] = self._safe_json_loads(side_effect.get("request_json"), None)
+                    side_effect["response"] = self._safe_json_loads(side_effect.get("response_json"), None)
+                    side_effects.append(side_effect)
+                execution["side_effects"] = side_effects
 
             return execution
 
@@ -1256,6 +1505,216 @@ class ExecutionStore:
             ],
         }
 
+    def get_workflow_lineage(
+        self,
+        execution_id: str,
+        *,
+        depth: int = 4,
+    ) -> Dict[str, Any]:
+        depth = max(1, int(depth))
+        with self._conn() as conn:
+            root_row = conn.execute(
+                """
+                SELECT execution_id, workflow_id, workflow_name, workflow_kind, status,
+                       trace_id, session_id, parent_execution_id, replay_of_execution_id,
+                       started_at, completed_at
+                FROM workflow_executions
+                WHERE execution_id = ?
+                """,
+                (execution_id,),
+            ).fetchone()
+            if not root_row:
+                return {"root_execution_id": execution_id, "nodes": [], "edges": []}
+
+            nodes: Dict[str, Dict[str, Any]] = {}
+            edges: Set[str] = set()
+            queue: List[tuple[str, int]] = [(execution_id, 0)]
+            visited: Set[str] = set()
+
+            while queue:
+                current_id, level = queue.pop(0)
+                if current_id in visited or level > depth:
+                    continue
+                visited.add(current_id)
+
+                row = conn.execute(
+                    """
+                    SELECT execution_id, workflow_id, workflow_name, workflow_kind, status,
+                           trace_id, session_id, parent_execution_id, replay_of_execution_id,
+                           started_at, completed_at
+                    FROM workflow_executions
+                    WHERE execution_id = ?
+                    """,
+                    (current_id,),
+                ).fetchone()
+                if not row:
+                    continue
+
+                node = dict(row)
+                node["depth"] = level
+                nodes[current_id] = node
+
+                parent_ids = [
+                    row["parent_execution_id"],
+                    row["replay_of_execution_id"],
+                ]
+                for parent_id in parent_ids:
+                    if not parent_id:
+                        continue
+                    edge_key = f"{parent_id}->{current_id}"
+                    edges.add(edge_key)
+                    queue.append((parent_id, level + 1))
+
+                child_rows = conn.execute(
+                    """
+                    SELECT execution_id
+                    FROM workflow_executions
+                    WHERE parent_execution_id = ? OR replay_of_execution_id = ?
+                    """,
+                    (current_id, current_id),
+                ).fetchall()
+                for child in child_rows:
+                    child_id = child["execution_id"]
+                    edge_key = f"{current_id}->{child_id}"
+                    edges.add(edge_key)
+                    queue.append((child_id, level + 1))
+
+        edge_records: List[Dict[str, Any]] = []
+        for edge in sorted(edges):
+            src, dst = edge.split("->", 1)
+            edge_type = "parent"
+            dst_node = nodes.get(dst, {})
+            if dst_node.get("replay_of_execution_id") == src:
+                edge_type = "replay_of"
+            elif dst_node.get("parent_execution_id") == src:
+                edge_type = "parent"
+            edge_records.append({"from": src, "to": dst, "type": edge_type})
+
+        node_records = list(nodes.values())
+        node_records.sort(key=lambda item: (item.get("depth", 0), item.get("started_at") or 0))
+        return {
+            "root_execution_id": execution_id,
+            "trace_id": root_row["trace_id"],
+            "session_id": root_row["session_id"],
+            "depth": depth,
+            "nodes": node_records,
+            "edges": edge_records,
+        }
+
+    def get_trace_workflow_lineage(
+        self,
+        trace_id: str,
+        *,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT execution_id, workflow_id, workflow_name, workflow_kind, status,
+                       trace_id, session_id, parent_execution_id, replay_of_execution_id,
+                       started_at, completed_at
+                FROM workflow_executions
+                WHERE trace_id = ?
+                ORDER BY COALESCE(started_at, created_at) ASC
+                LIMIT ?
+                """,
+                (trace_id, max(1, int(limit))),
+            ).fetchall()
+
+        nodes = [dict(row) for row in rows]
+        node_ids = {row["execution_id"] for row in rows}
+        edges: List[Dict[str, Any]] = []
+        for row in rows:
+            current_id = row["execution_id"]
+            if row["parent_execution_id"] and row["parent_execution_id"] in node_ids:
+                edges.append(
+                    {
+                        "from": row["parent_execution_id"],
+                        "to": current_id,
+                        "type": "parent",
+                    }
+                )
+            if row["replay_of_execution_id"] and row["replay_of_execution_id"] in node_ids:
+                edges.append(
+                    {
+                        "from": row["replay_of_execution_id"],
+                        "to": current_id,
+                        "type": "replay_of",
+                    }
+                )
+
+        return {
+            "trace_id": trace_id,
+            "count": len(nodes),
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    def get_storage_stats(self) -> Dict[str, Any]:
+        with self._conn() as conn:
+            table_counts = {}
+            tables = [
+                "executions",
+                "execution_events",
+                "workflow_executions",
+                "workflow_steps",
+                "workflow_events",
+                "workflow_artifacts",
+                "workflow_side_effects",
+                "workflow_definitions",
+            ]
+            for table in tables:
+                row = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                table_counts[table] = int(row["count"] if row else 0)
+
+            execution_payload_bytes = conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT SUM(LENGTH(result_json)) FROM executions), 0) AS execution_result_bytes,
+                    COALESCE((SELECT SUM(LENGTH(data_json)) FROM execution_events), 0) AS execution_event_bytes
+                """
+            ).fetchone()
+
+            workflow_payload_bytes = conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT SUM(LENGTH(inputs_json)) FROM workflow_executions), 0) AS workflow_input_bytes,
+                    COALESCE((SELECT SUM(LENGTH(output_json)) FROM workflow_executions), 0) AS workflow_output_bytes,
+                    COALESCE((SELECT SUM(LENGTH(payload_json)) FROM workflow_artifacts), 0) AS artifact_payload_bytes,
+                    COALESCE((SELECT SUM(LENGTH(request_json)) FROM workflow_side_effects), 0) AS side_effect_request_bytes,
+                    COALESCE((SELECT SUM(LENGTH(response_json)) FROM workflow_side_effects), 0) AS side_effect_response_bytes
+                """
+            ).fetchone()
+
+        db_size_bytes = 0
+        wal_size_bytes = 0
+        try:
+            db_size_bytes = int(self.db_path.stat().st_size)
+        except Exception:
+            pass
+        wal_path = Path(f"{self.db_path}-wal")
+        try:
+            if wal_path.exists():
+                wal_size_bytes = int(wal_path.stat().st_size)
+        except Exception:
+            pass
+
+        return {
+            "db_path": str(self.db_path),
+            "db_size_bytes": db_size_bytes,
+            "wal_size_bytes": wal_size_bytes,
+            "table_counts": table_counts,
+            "payload_bytes": {
+                "execution_result_bytes": int(execution_payload_bytes["execution_result_bytes"] or 0),
+                "execution_event_bytes": int(execution_payload_bytes["execution_event_bytes"] or 0),
+                "workflow_input_bytes": int(workflow_payload_bytes["workflow_input_bytes"] or 0),
+                "workflow_output_bytes": int(workflow_payload_bytes["workflow_output_bytes"] or 0),
+                "artifact_payload_bytes": int(workflow_payload_bytes["artifact_payload_bytes"] or 0),
+                "side_effect_request_bytes": int(workflow_payload_bytes["side_effect_request_bytes"] or 0),
+                "side_effect_response_bytes": int(workflow_payload_bytes["side_effect_response_bytes"] or 0),
+            },
+        }
+
     def cleanup_old_workflows(self, max_age_seconds: int = 86400) -> int:
         cutoff = time.time() - max(1, int(max_age_seconds))
         with self._lock:
@@ -1286,6 +1745,10 @@ class ExecutionStore:
                     execution_ids,
                 )
                 conn.execute(
+                    f"DELETE FROM workflow_side_effects WHERE execution_id IN ({placeholders})",
+                    execution_ids,
+                )
+                conn.execute(
                     f"DELETE FROM workflow_executions WHERE execution_id IN ({placeholders})",
                     execution_ids,
                 )
@@ -1309,6 +1772,30 @@ class ExecutionStore:
                 conn.execute(
                     """
                     DELETE FROM workflow_artifacts
+                    WHERE created_at < ?
+                    """,
+                    (cutoff,),
+                )
+                return count
+
+    def cleanup_old_workflow_side_effects(self, max_age_seconds: int = 86400) -> int:
+        cutoff = time.time() - max(1, int(max_age_seconds))
+        with self._lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM workflow_side_effects
+                    WHERE created_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchone()
+                count = int(row["cnt"] if row else 0)
+                if count <= 0:
+                    return 0
+                conn.execute(
+                    """
+                    DELETE FROM workflow_side_effects
                     WHERE created_at < ?
                     """,
                     (cutoff,),

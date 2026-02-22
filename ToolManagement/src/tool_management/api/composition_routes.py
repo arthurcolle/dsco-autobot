@@ -18,7 +18,7 @@ import os
 import time
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
@@ -173,6 +173,14 @@ class WorkflowComposition(BaseModel):
 # In-memory workflow registry
 _workflow_registry: Dict[str, WorkflowComposition] = {}
 _workflow_registry_loaded: bool = False
+_WRITE_TOOL_NAMES = {
+    name.strip().lower()
+    for name in os.getenv(
+        "WORKFLOW_SIDE_EFFECT_TOOLS",
+        "store_belief,publish_event,substack_create_draft",
+    ).split(",")
+    if name.strip()
+}
 
 
 def _ensure_workflow_registry_loaded():
@@ -224,6 +232,30 @@ def _resolve_trace_id(trace_id: Optional[str]) -> str:
 def _stable_hash(payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _is_side_effect_tool(tool_name: Optional[str]) -> bool:
+    if not tool_name:
+        return False
+    normalized = str(tool_name).strip().lower()
+    if ":" in normalized:
+        normalized = normalized.split(":", 1)[1]
+    return normalized in _WRITE_TOOL_NAMES
+
+
+def _build_side_effect_key(tool_name: Optional[str], request_data: Any) -> str:
+    payload = {
+        "tool": str(tool_name or "").strip().lower(),
+        "request": request_data,
+    }
+    return _stable_hash(payload)
+
+
+def _default_replay_write_policy() -> str:
+    raw = os.getenv("WORKFLOW_REPLAY_WRITE_POLICY", "block").strip().lower()
+    if raw in {"allow", "block", "reuse"}:
+        return raw
+    return "block"
 
 
 def _workflow_idempotency_window_seconds() -> int:
@@ -396,6 +428,8 @@ class WorkflowRunRecorder:
         step_index: Optional[int],
         tool_name: Optional[str],
         mode: Optional[str],
+        is_side_effect: bool = False,
+        side_effect_key: Optional[str] = None,
         input_data: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
     ):
@@ -411,6 +445,8 @@ class WorkflowRunRecorder:
                 mode=mode,
                 trace_id=self.trace_id,
                 session_id=self.session_id,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 status="running",
                 input_data=input_data,
                 started_at=started_at,
@@ -427,6 +463,8 @@ class WorkflowRunRecorder:
                     "step_index": step_index,
                     "tool_name": tool_name,
                     "mode": mode,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
             self._store.append_workflow_artifact(
@@ -442,6 +480,8 @@ class WorkflowRunRecorder:
                     "step_index": step_index,
                     "tool_name": tool_name,
                     "mode": mode,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
         except Exception as exc:
@@ -455,6 +495,8 @@ class WorkflowRunRecorder:
         step_index: Optional[int],
         tool_name: Optional[str],
         mode: Optional[str],
+        is_side_effect: bool = False,
+        side_effect_key: Optional[str] = None,
         output_data: Any = None,
         retries: int = 0,
         metadata: Optional[Dict[str, Any]] = None,
@@ -472,6 +514,8 @@ class WorkflowRunRecorder:
                 mode=mode,
                 trace_id=self.trace_id,
                 session_id=self.session_id,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 status="completed",
                 output_data=output_data,
                 completed_at=completed_at,
@@ -490,6 +534,8 @@ class WorkflowRunRecorder:
                     "step_index": step_index,
                     "duration_ms": duration_ms,
                     "retries": retries,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
             self._store.append_workflow_artifact(
@@ -505,6 +551,8 @@ class WorkflowRunRecorder:
                     "step_index": step_index,
                     "retries": retries,
                     "mode": mode,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
         except Exception as exc:
@@ -519,6 +567,8 @@ class WorkflowRunRecorder:
         tool_name: Optional[str],
         mode: Optional[str],
         error: str,
+        is_side_effect: bool = False,
+        side_effect_key: Optional[str] = None,
         output_data: Any = None,
         retries: int = 0,
         metadata: Optional[Dict[str, Any]] = None,
@@ -536,6 +586,8 @@ class WorkflowRunRecorder:
                 mode=mode,
                 trace_id=self.trace_id,
                 session_id=self.session_id,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 status="failed",
                 output_data=output_data,
                 error=error,
@@ -556,6 +608,8 @@ class WorkflowRunRecorder:
                     "duration_ms": duration_ms,
                     "retries": retries,
                     "error": error,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
             self._store.append_workflow_artifact(
@@ -574,10 +628,50 @@ class WorkflowRunRecorder:
                     "step_index": step_index,
                     "retries": retries,
                     "mode": mode,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
         except Exception as exc:
             logger.warning(f"Workflow recorder fail_step failed ({self.execution_id}/{step_key}): {exc}")
+
+    def record_side_effect(
+        self,
+        *,
+        step_key: str,
+        tool_name: Optional[str],
+        side_effect_key: str,
+        status: str,
+        request_data: Any = None,
+        response_data: Any = None,
+        error: Optional[str] = None,
+        replay_policy: Optional[str] = None,
+    ):
+        effective_replay_policy = replay_policy
+        if not effective_replay_policy:
+            run_metadata = self._run_meta.get("metadata", {}) if isinstance(self._run_meta, dict) else {}
+            policy = run_metadata.get("write_policy")
+            if isinstance(policy, str) and policy.strip():
+                effective_replay_policy = policy
+        try:
+            self._store.append_workflow_side_effect(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                tool_name=tool_name,
+                side_effect_key=side_effect_key,
+                status=status,
+                request_data=request_data,
+                response_data=response_data,
+                trace_id=self.trace_id,
+                session_id=self.session_id,
+                idempotency_key=self.idempotency_key,
+                request_hash=self.request_hash,
+                error=error,
+                replay_policy=effective_replay_policy,
+                replay_of_execution_id=self.replay_of_execution_id,
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder side-effect journal failed ({self.execution_id}/{step_key}): {exc}")
 
     def event(
         self,
@@ -1002,6 +1096,9 @@ async def _execute_workflow(
                     mapped_data[target_key] = current_data[source_key]
             current_data = mapped_data
 
+        is_side_effect = _is_side_effect_tool(step.tool)
+        side_effect_key = _build_side_effect_key(step.tool, current_data) if is_side_effect else None
+
         if recorder:
             recorder.start_step(
                 step_key=step_key,
@@ -1009,12 +1106,16 @@ async def _execute_workflow(
                 step_index=step_index,
                 tool_name=step.tool,
                 mode=step.mode.value,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 input_data=current_data,
                 metadata={
                     "input_from": step.input_from,
                     "input_mapping": step.input_mapping,
                     "retry_on_failure": step.retry_on_failure,
                     "max_retries": step.max_retries,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
 
@@ -1029,8 +1130,19 @@ async def _execute_workflow(
                     step_index=step_index,
                     tool_name=step.tool,
                     mode=step.mode.value,
+                    is_side_effect=is_side_effect,
+                    side_effect_key=side_effect_key,
                     error=str(exc),
                 )
+                if is_side_effect and side_effect_key:
+                    recorder.record_side_effect(
+                        step_key=step_key,
+                        tool_name=step.tool,
+                        side_effect_key=side_effect_key,
+                        status="failed",
+                        request_data=current_data,
+                        error=str(exc),
+                    )
             raise
 
         if recorder:
@@ -1042,10 +1154,22 @@ async def _execute_workflow(
                     step_index=step_index,
                     tool_name=step.tool,
                     mode=step.mode.value,
+                    is_side_effect=is_side_effect,
+                    side_effect_key=side_effect_key,
                     error=error_message,
                     output_data=result,
                     metadata={"soft_failure": True},
                 )
+                if is_side_effect and side_effect_key:
+                    recorder.record_side_effect(
+                        step_key=step_key,
+                        tool_name=step.tool,
+                        side_effect_key=side_effect_key,
+                        status="failed",
+                        request_data=current_data,
+                        response_data=result,
+                        error=error_message,
+                    )
             else:
                 recorder.complete_step(
                     step_key=step_key,
@@ -1053,8 +1177,19 @@ async def _execute_workflow(
                     step_index=step_index,
                     tool_name=step.tool,
                     mode=step.mode.value,
+                    is_side_effect=is_side_effect,
+                    side_effect_key=side_effect_key,
                     output_data=result,
                 )
+                if is_side_effect and side_effect_key:
+                    recorder.record_side_effect(
+                        step_key=step_key,
+                        tool_name=step.tool,
+                        side_effect_key=side_effect_key,
+                        status="completed",
+                        request_data=current_data,
+                        response_data=result,
+                    )
 
         step_results[step.id] = result
         current_data = result
@@ -1121,6 +1256,75 @@ async def get_composition_chain_analytics(
     }
 
 
+@router.get("/executions/{execution_id}/lineage")
+async def get_composition_execution_lineage(
+    execution_id: str,
+    depth: int = Query(default=4, ge=1, le=12, description="Traversal depth across parent/replay links"),
+):
+    """Get a lineage graph for one workflow execution."""
+    store = get_execution_store()
+    lineage = store.get_workflow_lineage(execution_id, depth=depth)
+    if not lineage.get("nodes"):
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+    return lineage
+
+
+@router.get("/traces/{trace_id}")
+async def get_trace_lineage(
+    trace_id: str,
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    """Get all workflow executions and lineage edges for a trace_id."""
+    store = get_execution_store()
+    lineage = store.get_trace_workflow_lineage(trace_id, limit=limit)
+    return lineage
+
+
+@router.get("/executions/{execution_id}/side-effects")
+async def get_execution_side_effects(
+    execution_id: str,
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    """List side-effect journal entries for a workflow execution."""
+    store = get_execution_store()
+    execution = store.get_workflow_execution(
+        execution_id,
+        include_steps=False,
+        include_events=False,
+        include_artifacts=False,
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+    side_effects = store.list_workflow_side_effects(execution_id=execution_id, limit=limit)
+    return {
+        "execution_id": execution_id,
+        "count": len(side_effects),
+        "side_effects": side_effects,
+    }
+
+
+@router.get("/traces/{trace_id}/side-effects")
+async def get_trace_side_effects(
+    trace_id: str,
+    limit: int = Query(default=1000, ge=1, le=10000),
+):
+    """List side-effect journal entries for a trace."""
+    store = get_execution_store()
+    side_effects = store.list_workflow_side_effects(trace_id=trace_id, limit=limit)
+    return {
+        "trace_id": trace_id,
+        "count": len(side_effects),
+        "side_effects": side_effects,
+    }
+
+
+@router.get("/storage")
+async def get_composition_storage_stats():
+    """Get durable storage stats for workflow lineage datasets."""
+    store = get_execution_store()
+    return {"storage": store.get_storage_stats()}
+
+
 class WorkflowReplayRequest(BaseModel):
     from_step: Optional[str] = Field(
         default=None,
@@ -1129,6 +1333,10 @@ class WorkflowReplayRequest(BaseModel):
     override_inputs: Dict[str, Any] = Field(default_factory=dict)
     fork: bool = Field(default=True, description="When true, create a new execution lineage branch")
     include_prior_steps: bool = Field(default=True, description="Reuse cached outputs before from_step")
+    write_policy: Literal["allow", "block", "reuse"] = Field(
+        default_factory=_default_replay_write_policy,
+        description="Replay behavior for side-effecting steps: block (safe), reuse cached output, or allow re-execution.",
+    )
     idempotency_key: Optional[str] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -1200,12 +1408,39 @@ async def replay_composition_execution(
             if prior_step.id in initial_step_results:
                 initial_current_data = initial_step_results[prior_step.id]
 
+        target_step = workflow.steps[from_index] if from_index < len(workflow.steps) else None
+        if target_step and _is_side_effect_tool(target_step.tool):
+            cached_target_output = source_step_outputs.get(target_step.id)
+            if request.write_policy == "block":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Replay blocked: step '{target_step.name}' is side-effecting ({target_step.tool}). "
+                        "Use write_policy='reuse' to reuse cached output or write_policy='allow' to re-run."
+                    ),
+                )
+            if request.write_policy == "reuse":
+                if cached_target_output is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Replay requested write_policy='reuse' but cached output is missing for "
+                            f"side-effect step '{target_step.name}'."
+                        ),
+                    )
+                initial_step_results[target_step.id] = cached_target_output
+                if target_step.id not in reused_steps:
+                    reused_steps.append(target_step.id)
+                initial_current_data = cached_target_output
+                from_index += 1
+
         request_hash = _stable_hash(
             {
                 "replay_of": execution_id,
                 "workflow_id": workflow.id,
                 "workflow_kind": workflow_kind,
                 "from_step": request.from_step,
+                "write_policy": request.write_policy,
                 "inputs": merged_inputs,
             }
         )
@@ -1229,6 +1464,7 @@ async def replay_composition_execution(
                 "source_execution_id": execution_id,
                 "from_step": request.from_step,
                 "reused_steps": reused_steps,
+                "write_policy": request.write_policy,
                 "request_hash": request_hash,
             },
         )
@@ -1245,13 +1481,17 @@ async def replay_composition_execution(
             recorder.complete_run(
                 status="completed",
                 output=result.get("output"),
-                metadata={"reused_steps": reused_steps, "duration_ms": result.get("duration_ms", 0)},
+                metadata={
+                    "reused_steps": reused_steps,
+                    "write_policy": request.write_policy,
+                    "duration_ms": result.get("duration_ms", 0),
+                },
             )
         except Exception as exc:
             recorder.complete_run(
                 status="failed",
                 error=str(exc),
-                metadata={"reused_steps": reused_steps},
+                metadata={"reused_steps": reused_steps, "write_policy": request.write_policy},
             )
             raise
         return {
@@ -1267,6 +1507,7 @@ async def replay_composition_execution(
             "duration_ms": result.get("duration_ms", 0),
             "trace_id": replay_trace_id,
             "forked": request.fork,
+            "write_policy": request.write_policy,
         }
 
     if workflow_kind == "simple_composition":
@@ -1276,6 +1517,75 @@ async def replay_composition_execution(
             raise HTTPException(status_code=400, detail="Missing workflow_type metadata for simple composition replay")
         tools = metadata.get("tools") or []
         arguments = metadata.get("arguments") or []
+        side_effect_tools = [tool_name for tool_name in tools if _is_side_effect_tool(tool_name)]
+        if side_effect_tools and request.write_policy == "block":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Replay blocked: workflow includes side-effect tools "
+                    f"{side_effect_tools}. Use write_policy='reuse' or 'allow'."
+                ),
+            )
+        if side_effect_tools and request.write_policy == "reuse":
+            if request.override_inputs:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot reuse side-effect outputs when override_inputs are provided. "
+                        "Use write_policy='allow' to execute with new inputs."
+                    ),
+                )
+            replay_recorder = WorkflowRunRecorder(
+                replay_execution_id,
+                trace_id=replay_trace_id,
+                session_id=request.session_id or source.get("session_id"),
+                parent_execution_id=replay_parent,
+                replay_of_execution_id=execution_id,
+                idempotency_key=request.idempotency_key,
+                request_hash=_stable_hash(
+                    {
+                        "replay_of": execution_id,
+                        "workflow_kind": workflow_kind,
+                        "workflow_type": workflow_type_raw,
+                        "write_policy": request.write_policy,
+                        "inputs": merged_inputs,
+                    }
+                ),
+            )
+            replay_recorder.start_run(
+                workflow_id=source.get("workflow_id"),
+                workflow_name=workflow_name,
+                workflow_kind=workflow_kind,
+                workflow_type=workflow_type_raw,
+                inputs=merged_inputs,
+                metadata={
+                    "replay": True,
+                    "source_execution_id": execution_id,
+                    "write_policy": request.write_policy,
+                    "reused_steps": side_effect_tools,
+                },
+            )
+            replay_recorder.complete_run(
+                status="completed",
+                output=source.get("output"),
+                metadata={
+                    "write_policy": request.write_policy,
+                    "reused_steps": side_effect_tools,
+                },
+            )
+            return {
+                "execution_id": replay_execution_id,
+                "workflow_type": workflow_type_raw,
+                "status": "completed",
+                "result": source.get("output"),
+                "tools_executed": tools,
+                "trace_id": replay_trace_id,
+                "source_execution_id": execution_id,
+                "forked": request.fork,
+                "reused_steps": side_effect_tools,
+                "write_policy": request.write_policy,
+            }
+
         composition = SimpleComposition(
             workflow_type=WorkflowType(workflow_type_raw),
             tools=tools,
@@ -1287,10 +1597,12 @@ async def replay_composition_execution(
             trace_id=replay_trace_id,
             session_id=request.session_id or source.get("session_id"),
             parent_execution_id=replay_parent,
+            write_policy=request.write_policy,
         )
         result = await compose_simple(composition)
         result["source_execution_id"] = execution_id
         result["forked"] = request.fork
+        result["write_policy"] = request.write_policy
         return result
 
     if workflow_kind == "named_workflow":
@@ -1327,12 +1639,39 @@ async def replay_composition_execution(
             if prior_stage.name in initial_stage_results:
                 initial_current_data = initial_stage_results[prior_stage.name]
 
+        target_stage = workflow.stages[from_stage_index] if from_stage_index < len(workflow.stages) else None
+        if target_stage and _is_side_effect_tool(target_stage.tool):
+            cached_target_output = source_stage_outputs.get(target_stage.name)
+            if request.write_policy == "block":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Replay blocked: stage '{target_stage.name}' is side-effecting ({target_stage.tool}). "
+                        "Use write_policy='reuse' to reuse cached output or write_policy='allow' to re-run."
+                    ),
+                )
+            if request.write_policy == "reuse":
+                if cached_target_output is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Replay requested write_policy='reuse' but cached output is missing for "
+                            f"side-effect stage '{target_stage.name}'."
+                        ),
+                    )
+                initial_stage_results[target_stage.name] = cached_target_output
+                if target_stage.name not in reused_stages:
+                    reused_stages.append(target_stage.name)
+                initial_current_data = cached_target_output
+                from_stage_index += 1
+
         request_hash = _stable_hash(
             {
                 "replay_of": execution_id,
                 "workflow_id": workflow.id,
                 "workflow_kind": workflow_kind,
                 "from_step": request.from_step,
+                "write_policy": request.write_policy,
                 "inputs": merged_inputs,
             }
         )
@@ -1356,6 +1695,7 @@ async def replay_composition_execution(
                 "source_execution_id": execution_id,
                 "from_step": request.from_step,
                 "reused_steps": reused_stages,
+                "write_policy": request.write_policy,
                 "request_hash": request_hash,
             },
         )
@@ -1377,13 +1717,14 @@ async def replay_composition_execution(
                     "resource_usage": result.get("resource_usage", {}),
                     "stages_executed": result.get("stages_executed", []),
                     "reused_steps": reused_stages,
+                    "write_policy": request.write_policy,
                 },
             )
         except Exception as exc:
             replay_recorder.complete_run(
                 status="failed",
                 error=str(exc),
-                metadata={"reused_steps": reused_stages},
+                metadata={"reused_steps": reused_stages, "write_policy": request.write_policy},
             )
             raise
         return {
@@ -1400,6 +1741,7 @@ async def replay_composition_execution(
             "duration_ms": result.get("duration_ms", 0),
             "trace_id": replay_trace_id,
             "forked": request.fork,
+            "write_policy": request.write_policy,
         }
 
     raise HTTPException(status_code=400, detail=f"Replay not supported for workflow kind: {workflow_kind}")
@@ -1410,8 +1752,10 @@ async def get_composition_execution(
     execution_id: str,
     include_events: bool = Query(default=False, description="Include per-event lineage"),
     include_artifacts: bool = Query(default=False, description="Include stored step artifacts"),
+    include_side_effects: bool = Query(default=False, description="Include side-effect journal entries"),
     event_limit: int = Query(default=200, ge=1, le=2000),
     artifact_limit: int = Query(default=1000, ge=1, le=10000),
+    side_effect_limit: int = Query(default=1000, ge=1, le=10000),
 ):
     """Get a durable workflow run including steps and optional events."""
     store = get_execution_store()
@@ -1420,8 +1764,10 @@ async def get_composition_execution(
         include_steps=True,
         include_events=include_events,
         include_artifacts=include_artifacts,
+        include_side_effects=include_side_effects,
         event_limit=event_limit,
         artifact_limit=artifact_limit,
+        side_effect_limit=side_effect_limit,
     )
     if not execution:
         raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
@@ -1834,6 +2180,7 @@ class SimpleComposition(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
+    write_policy: Optional[str] = None
 
 
 @router.post("/compose-simple", response_model=Dict[str, Any])
@@ -1899,6 +2246,7 @@ async def compose_simple(composition: SimpleComposition):
             "tools": composition.tools,
             "arguments": composition.arguments,
             "inputs": composition.inputs,
+            "write_policy": composition.write_policy,
         }
     )
     existing = _find_idempotent_workflow_result(
@@ -1954,6 +2302,7 @@ async def compose_simple(composition: SimpleComposition):
             "arguments": composition.arguments,
             "timeout_seconds": composition.timeout_seconds,
             "parallel_limit": composition.parallel_limit,
+            "write_policy": composition.write_policy,
             "request_hash": request_hash,
             "idempotency_key": composition.idempotency_key,
         },
@@ -1989,6 +2338,7 @@ async def compose_simple(composition: SimpleComposition):
             "result": result,
             "tools_executed": composition.tools,
             "trace_id": trace_id,
+            "write_policy": composition.write_policy,
         }
 
     except Exception as e:
@@ -2008,6 +2358,7 @@ async def compose_simple(composition: SimpleComposition):
             "error": str(e),
             "tools_executed": composition.tools,
             "trace_id": trace_id,
+            "write_policy": composition.write_policy,
         }
 
 
@@ -2022,6 +2373,8 @@ async def _execute_simple_tool_call(
     args: Dict[str, Any],
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
+    is_side_effect = _is_side_effect_tool(tool_name)
+    side_effect_key = _build_side_effect_key(tool_name, args) if is_side_effect else None
     if recorder:
         recorder.start_step(
             step_key=step_key,
@@ -2029,8 +2382,14 @@ async def _execute_simple_tool_call(
             step_index=step_index,
             tool_name=tool_name,
             mode=mode,
+            is_side_effect=is_side_effect,
+            side_effect_key=side_effect_key,
             input_data=args,
-            metadata=metadata or {},
+            metadata={
+                **(metadata or {}),
+                "is_side_effect": is_side_effect,
+                "side_effect_key": side_effect_key,
+            },
         )
 
     try:
@@ -2043,9 +2402,20 @@ async def _execute_simple_tool_call(
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 error=str(exc),
                 metadata=metadata or {},
             )
+            if is_side_effect and side_effect_key:
+                recorder.record_side_effect(
+                    step_key=step_key,
+                    tool_name=tool_name,
+                    side_effect_key=side_effect_key,
+                    status="failed",
+                    request_data=args,
+                    error=str(exc),
+                )
         raise
 
     if recorder:
@@ -2057,10 +2427,22 @@ async def _execute_simple_tool_call(
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 error=error_message,
                 output_data=result,
                 metadata={**(metadata or {}), "soft_failure": True},
             )
+            if is_side_effect and side_effect_key:
+                recorder.record_side_effect(
+                    step_key=step_key,
+                    tool_name=tool_name,
+                    side_effect_key=side_effect_key,
+                    status="failed",
+                    request_data=args,
+                    response_data=result,
+                    error=error_message,
+                )
         else:
             recorder.complete_step(
                 step_key=step_key,
@@ -2068,9 +2450,20 @@ async def _execute_simple_tool_call(
                 step_index=step_index,
                 tool_name=tool_name,
                 mode=mode,
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 output_data=result,
                 metadata=metadata or {},
             )
+            if is_side_effect and side_effect_key:
+                recorder.record_side_effect(
+                    step_key=step_key,
+                    tool_name=tool_name,
+                    side_effect_key=side_effect_key,
+                    status="completed",
+                    request_data=args,
+                    response_data=result,
+                )
     return result
 
 
@@ -2660,6 +3053,8 @@ async def _execute_named_workflow(
         limits = override_limits.get(stage.name, stage.limits) if override_limits else stage.limits
         stage_inputs = {**stage.arguments, **current_data}
         stage_key = stage.name
+        is_side_effect = _is_side_effect_tool(stage.tool)
+        side_effect_key = _build_side_effect_key(stage.tool, stage_inputs) if is_side_effect else None
 
         if recorder:
             recorder.start_step(
@@ -2668,12 +3063,16 @@ async def _execute_named_workflow(
                 step_index=stage_index,
                 tool_name=stage.tool,
                 mode="named_stage",
+                is_side_effect=is_side_effect,
+                side_effect_key=side_effect_key,
                 input_data=stage_inputs,
                 metadata={
                     "depends_on": stage.depends_on,
                     "limits": _serialize_limits(limits),
                     "retry_on_failure": stage.retry_on_failure,
                     "max_retries": stage.max_retries,
+                    "is_side_effect": is_side_effect,
+                    "side_effect_key": side_effect_key,
                 },
             )
 
@@ -2716,11 +3115,23 @@ async def _execute_named_workflow(
                             step_index=stage_index,
                             tool_name=stage.tool,
                             mode="named_stage",
+                            is_side_effect=is_side_effect,
+                            side_effect_key=side_effect_key,
                             error=error_message,
                             output_data=result,
                             retries=max(0, attempts - 1),
                             metadata={"soft_failure": True, "usage": stage_usage},
                         )
+                        if is_side_effect and side_effect_key:
+                            recorder.record_side_effect(
+                                step_key=stage_key,
+                                tool_name=stage.tool,
+                                side_effect_key=side_effect_key,
+                                status="failed",
+                                request_data=stage_inputs,
+                                response_data=result,
+                                error=error_message,
+                            )
                     else:
                         recorder.complete_step(
                             step_key=stage_key,
@@ -2728,10 +3139,21 @@ async def _execute_named_workflow(
                             step_index=stage_index,
                             tool_name=stage.tool,
                             mode="named_stage",
+                            is_side_effect=is_side_effect,
+                            side_effect_key=side_effect_key,
                             output_data=result,
                             retries=max(0, attempts - 1),
                             metadata={"usage": stage_usage},
                         )
+                        if is_side_effect and side_effect_key:
+                            recorder.record_side_effect(
+                                step_key=stage_key,
+                                tool_name=stage.tool,
+                                side_effect_key=side_effect_key,
+                                status="completed",
+                                request_data=stage_inputs,
+                                response_data=result,
+                            )
 
                 break
 
@@ -2758,10 +3180,21 @@ async def _execute_named_workflow(
                         step_index=stage_index,
                         tool_name=stage.tool,
                         mode="named_stage",
+                        is_side_effect=is_side_effect,
+                        side_effect_key=side_effect_key,
                         error=str(stage_error),
                         retries=max(0, attempts - 1),
                         metadata={"limits": _serialize_limits(limits)},
                     )
+                    if is_side_effect and side_effect_key:
+                        recorder.record_side_effect(
+                            step_key=stage_key,
+                            tool_name=stage.tool,
+                            side_effect_key=side_effect_key,
+                            status="failed",
+                            request_data=stage_inputs,
+                            error=str(stage_error),
+                        )
                 raise stage_error
 
     # Check global limits
