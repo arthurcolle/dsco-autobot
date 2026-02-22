@@ -161,8 +161,10 @@ async def lifespan(app: FastAPI):
     _cleanup_task = None
     try:
         from .core.streaming import create_tool_executor_for_jobs, get_streaming_executor
+        from .persistence import get_execution_store
         tool_executor_fn = create_tool_executor_for_jobs()
         streaming_executor = get_streaming_executor(tool_executor=tool_executor_fn)
+        execution_store = get_execution_store()
         logger.info("Streaming executor initialized for async jobs")
 
         async def _cleanup_old_jobs():
@@ -174,6 +176,13 @@ async def lifespan(app: FastAPI):
                         logger.info(f"Cleaned up {removed} old job executions")
                 except Exception as exc:
                     logger.warning(f"Job cleanup error: {exc}")
+                try:
+                    workflow_ttl = int(os.getenv("WORKFLOW_EXECUTION_TTL_SECONDS", "86400"))
+                    removed_workflows = execution_store.cleanup_old_workflows(max_age_seconds=workflow_ttl)
+                    if removed_workflows:
+                        logger.info(f"Cleaned up {removed_workflows} old workflow executions")
+                except Exception as exc:
+                    logger.warning(f"Workflow cleanup error: {exc}")
                 # Also clean up stale rate limiter entries
                 try:
                     from .core.rate_limit import get_quota_manager

@@ -13,17 +13,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field, create_model
 import httpx
 
 from ..registry import get_registry
 from ..queue import get_task_queue
+from ..persistence import get_execution_store
 from .workflow_library import (
     get_workflow_library,
     get_workflow_by_id,
@@ -168,6 +170,269 @@ class WorkflowComposition(BaseModel):
 
 # In-memory workflow registry
 _workflow_registry: Dict[str, WorkflowComposition] = {}
+
+
+def _extract_error_message(payload: Any) -> Optional[str]:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+    return None
+
+
+def _serialize_limits(limits: Optional[ResourceLimits]) -> Dict[str, Any]:
+    if not limits:
+        return {}
+    if hasattr(limits, "model_dump"):
+        return limits.model_dump()
+    if hasattr(limits, "dict"):
+        return limits.dict()
+    return {"value": str(limits)}
+
+
+class WorkflowRunRecorder:
+    """Persists workflow executions and step lineage for durability."""
+
+    def __init__(self, execution_id: str):
+        self.execution_id = execution_id
+        self._store = get_execution_store()
+        self._step_started_at: Dict[str, float] = {}
+        self._run_started_at: Optional[float] = None
+        self._run_meta: Dict[str, Any] = {}
+
+    def start_run(
+        self,
+        *,
+        workflow_id: Optional[str],
+        workflow_name: str,
+        workflow_kind: str,
+        workflow_type: Optional[str],
+        inputs: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self._run_started_at = time.time()
+        self._run_meta = {
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "workflow_kind": workflow_kind,
+            "workflow_type": workflow_type,
+            "inputs": inputs,
+            "metadata": metadata or {},
+        }
+        try:
+            self._store.upsert_workflow_execution(
+                execution_id=self.execution_id,
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                workflow_kind=workflow_kind,
+                workflow_type=workflow_type,
+                status="running",
+                inputs=inputs,
+                started_at=self._run_started_at,
+                metadata=metadata or {},
+            )
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                event_type="run_started",
+                message=f"Workflow started: {workflow_name}",
+                data={
+                    "workflow_kind": workflow_kind,
+                    "workflow_type": workflow_type,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder start_run failed ({self.execution_id}): {exc}")
+
+    def complete_run(
+        self,
+        *,
+        status: str,
+        output: Any = None,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        completed_at = time.time()
+        started_at = self._run_started_at
+        duration_ms = ((completed_at - started_at) * 1000.0) if started_at else None
+        merged_metadata = dict(self._run_meta.get("metadata", {}))
+        if metadata:
+            merged_metadata.update(metadata)
+        try:
+            self._store.upsert_workflow_execution(
+                execution_id=self.execution_id,
+                workflow_id=self._run_meta.get("workflow_id"),
+                workflow_name=self._run_meta.get("workflow_name", "unknown_workflow"),
+                workflow_kind=self._run_meta.get("workflow_kind", "workflow"),
+                workflow_type=self._run_meta.get("workflow_type"),
+                status=status,
+                output=output,
+                error=error,
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                metadata=merged_metadata,
+            )
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                event_type=f"run_{status}",
+                message=f"Workflow {status}",
+                data={
+                    "error": error,
+                    "duration_ms": duration_ms,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder complete_run failed ({self.execution_id}): {exc}")
+
+    def start_step(
+        self,
+        *,
+        step_key: str,
+        step_name: str,
+        step_index: Optional[int],
+        tool_name: Optional[str],
+        mode: Optional[str],
+        input_data: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        started_at = time.time()
+        self._step_started_at[step_key] = started_at
+        try:
+            self._store.upsert_workflow_step(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                status="running",
+                input_data=input_data,
+                started_at=started_at,
+                metadata=metadata or {},
+            )
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                event_type="step_started",
+                message=f"Step started: {step_name}",
+                data={
+                    "step_index": step_index,
+                    "tool_name": tool_name,
+                    "mode": mode,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder start_step failed ({self.execution_id}/{step_key}): {exc}")
+
+    def complete_step(
+        self,
+        *,
+        step_key: str,
+        step_name: str,
+        step_index: Optional[int],
+        tool_name: Optional[str],
+        mode: Optional[str],
+        output_data: Any = None,
+        retries: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        completed_at = time.time()
+        started_at = self._step_started_at.get(step_key)
+        duration_ms = ((completed_at - started_at) * 1000.0) if started_at else None
+        try:
+            self._store.upsert_workflow_step(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                status="completed",
+                output_data=output_data,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                retries=retries,
+                metadata=metadata or {},
+            )
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                event_type="step_completed",
+                message=f"Step completed: {step_name}",
+                data={
+                    "step_index": step_index,
+                    "duration_ms": duration_ms,
+                    "retries": retries,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder complete_step failed ({self.execution_id}/{step_key}): {exc}")
+
+    def fail_step(
+        self,
+        *,
+        step_key: str,
+        step_name: str,
+        step_index: Optional[int],
+        tool_name: Optional[str],
+        mode: Optional[str],
+        error: str,
+        output_data: Any = None,
+        retries: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        completed_at = time.time()
+        started_at = self._step_started_at.get(step_key)
+        duration_ms = ((completed_at - started_at) * 1000.0) if started_at else None
+        try:
+            self._store.upsert_workflow_step(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                status="failed",
+                output_data=output_data,
+                error=error,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                retries=retries,
+                metadata=metadata or {},
+            )
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                event_type="step_failed",
+                message=f"Step failed: {step_name}",
+                data={
+                    "step_index": step_index,
+                    "duration_ms": duration_ms,
+                    "retries": retries,
+                    "error": error,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder fail_step failed ({self.execution_id}/{step_key}): {exc}")
+
+    def event(
+        self,
+        event_type: str,
+        *,
+        step_key: Optional[str] = None,
+        message: Optional[str] = None,
+        data: Any = None,
+    ):
+        try:
+            self._store.append_workflow_event(
+                execution_id=self.execution_id,
+                step_key=step_key,
+                event_type=event_type,
+                message=message,
+                data=data,
+            )
+        except Exception as exc:
+            logger.warning(f"Workflow recorder event failed ({self.execution_id}/{event_type}): {exc}")
 
 
 class CompositionExecutionRequest(BaseModel):
@@ -376,10 +641,24 @@ async def execute_composition(
         raise HTTPException(400, "Either workflow_id or workflow must be provided")
 
     execution_id = str(uuid4())
+    recorder = WorkflowRunRecorder(execution_id)
+    recorder.start_run(
+        workflow_id=workflow.id,
+        workflow_name=workflow.name,
+        workflow_kind="composition",
+        workflow_type=None,
+        inputs=request.inputs,
+        metadata={
+            "workflow_version": workflow.version,
+            "step_count": len(workflow.steps),
+            "tags": workflow.tags,
+            "stream_requested": request.stream,
+        },
+    )
 
     # Execute workflow
     try:
-        result = await _execute_workflow(workflow, request.inputs, execution_id)
+        result = await _execute_workflow(workflow, request.inputs, execution_id, recorder=recorder)
 
         # Apply output guard
         try:
@@ -395,6 +674,14 @@ async def execute_composition(
         # Update stats
         workflow.execution_count += 1
         workflow.success_count += 1
+        recorder.complete_run(
+            status="completed",
+            output=result.get("output"),
+            metadata={
+                "duration_ms": result.get("duration_ms", 0),
+                "steps_executed": len(result.get("step_results", {})),
+            },
+        )
 
         return CompositionExecutionResponse(
             execution_id=execution_id,
@@ -411,6 +698,11 @@ async def execute_composition(
         workflow.failure_count += 1
 
         logger.error(f"Workflow execution failed: {e}")
+        recorder.complete_run(
+            status="failed",
+            error=str(e),
+            metadata={"steps_defined": len(workflow.steps)},
+        )
 
         return CompositionExecutionResponse(
             execution_id=execution_id,
@@ -425,18 +717,19 @@ async def execute_composition(
 async def _execute_workflow(
     workflow: WorkflowComposition,
     inputs: Dict[str, Any],
-    execution_id: str
+    execution_id: str,
+    recorder: Optional[WorkflowRunRecorder] = None,
 ) -> Dict[str, Any]:
     """Execute a workflow composition."""
-    import time
     start_time = time.time()
 
     step_results = {}
     current_data = inputs
 
     # Execute steps in order
-    for step in workflow.steps:
+    for step_index, step in enumerate(workflow.steps):
         logger.info(f"Executing step: {step.name} (mode={step.mode})")
+        step_key = step.id or f"step_{step_index}"
 
         # Get input data
         if step.input_from and step.input_from in step_results:
@@ -450,8 +743,59 @@ async def _execute_workflow(
                     mapped_data[target_key] = current_data[source_key]
             current_data = mapped_data
 
+        if recorder:
+            recorder.start_step(
+                step_key=step_key,
+                step_name=step.name,
+                step_index=step_index,
+                tool_name=step.tool,
+                mode=step.mode.value,
+                input_data=current_data,
+                metadata={
+                    "input_from": step.input_from,
+                    "input_mapping": step.input_mapping,
+                    "retry_on_failure": step.retry_on_failure,
+                    "max_retries": step.max_retries,
+                },
+            )
+
         # Execute based on mode
-        result = await _execute_step(step, current_data, step_results)
+        try:
+            result = await _execute_step(step, current_data, step_results)
+        except Exception as exc:
+            if recorder:
+                recorder.fail_step(
+                    step_key=step_key,
+                    step_name=step.name,
+                    step_index=step_index,
+                    tool_name=step.tool,
+                    mode=step.mode.value,
+                    error=str(exc),
+                )
+            raise
+
+        if recorder:
+            error_message = _extract_error_message(result)
+            if error_message:
+                recorder.fail_step(
+                    step_key=step_key,
+                    step_name=step.name,
+                    step_index=step_index,
+                    tool_name=step.tool,
+                    mode=step.mode.value,
+                    error=error_message,
+                    output_data=result,
+                    metadata={"soft_failure": True},
+                )
+            else:
+                recorder.complete_step(
+                    step_key=step_key,
+                    step_name=step.name,
+                    step_index=step_index,
+                    tool_name=step.tool,
+                    mode=step.mode.value,
+                    output_data=result,
+                )
 
         step_results[step.id] = result
         current_data = result
@@ -463,6 +807,57 @@ async def _execute_workflow(
         "step_results": step_results,
         "duration_ms": duration_ms
     }
+
+
+@router.get("/executions")
+async def list_composition_executions(
+    status: Optional[str] = Query(default=None, description="Filter by run status"),
+    workflow_kind: Optional[str] = Query(default=None, description="composition|simple_composition|named_workflow"),
+    workflow_id: Optional[str] = Query(default=None, description="Workflow identifier"),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """List durable workflow executions with lineage metadata."""
+    store = get_execution_store()
+    executions = store.list_workflow_executions(
+        status=status,
+        workflow_kind=workflow_kind,
+        workflow_id=workflow_id,
+        limit=limit,
+    )
+    return {
+        "count": len(executions),
+        "executions": executions,
+    }
+
+
+@router.get("/executions/analytics")
+async def get_composition_execution_analytics(
+    hours: int = Query(default=24, ge=1, le=720, description="Lookback window in hours"),
+):
+    """Get durable analytics for workflow runs and stages."""
+    store = get_execution_store()
+    return {
+        "analytics": store.get_workflow_analytics(hours=hours),
+    }
+
+
+@router.get("/executions/{execution_id}")
+async def get_composition_execution(
+    execution_id: str,
+    include_events: bool = Query(default=False, description="Include per-event lineage"),
+    event_limit: int = Query(default=200, ge=1, le=2000),
+):
+    """Get a durable workflow run including steps and optional events."""
+    store = get_execution_store()
+    execution = store.get_workflow_execution(
+        execution_id,
+        include_steps=True,
+        include_events=include_events,
+        event_limit=event_limit,
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+    return execution
 
 
 async def _execute_step(
@@ -925,9 +1320,22 @@ async def compose_simple(composition: SimpleComposition):
     ```
     """
     execution_id = str(uuid4())
+    recorder = WorkflowRunRecorder(execution_id)
+    recorder.start_run(
+        workflow_id=f"simple:{composition.workflow_type.value}",
+        workflow_name=f"simple_{composition.workflow_type.value}",
+        workflow_kind="simple_composition",
+        workflow_type=composition.workflow_type.value,
+        inputs=composition.inputs,
+        metadata={
+            "tools": composition.tools,
+            "timeout_seconds": composition.timeout_seconds,
+            "parallel_limit": composition.parallel_limit,
+        },
+    )
 
     try:
-        result = await _execute_simple_composition(composition, execution_id)
+        result = await _execute_simple_composition(composition, execution_id, recorder=recorder)
 
         # Apply output guard to composition results
         try:
@@ -940,6 +1348,15 @@ async def compose_simple(composition: SimpleComposition):
         except ImportError:
             pass
 
+        recorder.complete_run(
+            status="completed",
+            output=result,
+            metadata={
+                "tool_count": len(composition.tools),
+                "workflow_type": composition.workflow_type.value,
+            },
+        )
+
         return {
             "execution_id": execution_id,
             "workflow_type": composition.workflow_type.value,
@@ -950,6 +1367,14 @@ async def compose_simple(composition: SimpleComposition):
 
     except Exception as e:
         logger.error(f"Simple composition failed: {e}")
+        recorder.complete_run(
+            status="failed",
+            error=str(e),
+            metadata={
+                "tool_count": len(composition.tools),
+                "workflow_type": composition.workflow_type.value,
+            },
+        )
         return {
             "execution_id": execution_id,
             "workflow_type": composition.workflow_type.value,
@@ -959,9 +1384,73 @@ async def compose_simple(composition: SimpleComposition):
         }
 
 
+async def _execute_simple_tool_call(
+    *,
+    recorder: Optional[WorkflowRunRecorder],
+    step_key: str,
+    step_name: str,
+    step_index: int,
+    tool_name: str,
+    mode: str,
+    args: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    if recorder:
+        recorder.start_step(
+            step_key=step_key,
+            step_name=step_name,
+            step_index=step_index,
+            tool_name=tool_name,
+            mode=mode,
+            input_data=args,
+            metadata=metadata or {},
+        )
+
+    try:
+        result = await _execute_tool(tool_name, args)
+    except Exception as exc:
+        if recorder:
+            recorder.fail_step(
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                error=str(exc),
+                metadata=metadata or {},
+            )
+        raise
+
+    if recorder:
+        error_message = _extract_error_message(result)
+        if error_message:
+            recorder.fail_step(
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                error=error_message,
+                output_data=result,
+                metadata={**(metadata or {}), "soft_failure": True},
+            )
+        else:
+            recorder.complete_step(
+                step_key=step_key,
+                step_name=step_name,
+                step_index=step_index,
+                tool_name=tool_name,
+                mode=mode,
+                output_data=result,
+                metadata=metadata or {},
+            )
+    return result
+
+
 async def _execute_simple_composition(
     composition: SimpleComposition,
-    execution_id: str
+    execution_id: str,
+    recorder: Optional[WorkflowRunRecorder] = None,
 ) -> Any:
     """Execute a simple composition based on workflow type."""
 
@@ -974,6 +1463,15 @@ async def _execute_simple_composition(
     while len(arguments) < len(tools):
         arguments.append({})
 
+    if recorder:
+        recorder.event(
+            "simple_workflow_dispatch",
+            data={
+                "workflow_type": workflow_type.value,
+                "tool_count": len(tools),
+            },
+        )
+
     if workflow_type == WorkflowType.SEQUENTIAL:
         # Sequential: tool1(input) → tool2(output1) → tool3(output2)
         current_data = inputs
@@ -981,7 +1479,16 @@ async def _execute_simple_composition(
 
         for i, tool_name in enumerate(tools):
             args = {**arguments[i], **current_data} if isinstance(current_data, dict) else arguments[i]
-            result = await _execute_tool(tool_name, args)
+            result = await _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"sequential:{i}",
+                step_name=f"sequential_{tool_name}",
+                step_index=i,
+                tool_name=tool_name,
+                mode=workflow_type.value,
+                args=args,
+                metadata={"position": i},
+            )
             results.append(result)
             current_data = result
 
@@ -1002,8 +1509,17 @@ async def _execute_simple_composition(
 
         # Apply tool to each item in parallel (with timeout guard)
         map_tasks = [
-            _execute_tool(tool_name, {**tool_args, "input": item})
-            for item in items
+            _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"map:{idx}",
+                step_name=f"map_{tool_name}_{idx}",
+                step_index=idx,
+                tool_name=tool_name,
+                mode=workflow_type.value,
+                args={**tool_args, "input": item},
+                metadata={"item_index": idx},
+            )
+            for idx, item in enumerate(items)
         ]
         try:
             raw_results = await asyncio.wait_for(
@@ -1011,7 +1527,10 @@ async def _execute_simple_composition(
                 timeout=300.0,
             )
         except asyncio.TimeoutError:
-            raw_results = [TimeoutError(f"Map phase exceeded 300s timeout")]
+            timeout_message = "Map phase exceeded 300s timeout"
+            if recorder:
+                recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "map"})
+            raw_results = [TimeoutError(timeout_message) for _ in items]
         results = [
             {"error": str(r)} if isinstance(r, Exception) else r
             for r in raw_results
@@ -1025,7 +1544,16 @@ async def _execute_simple_composition(
             raise ValueError("REDUCE requires at least one tool")
 
         reduce_tasks = [
-            _execute_tool(tool_name, arguments[i] if i < len(arguments) else {})
+            _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"reduce:{i}",
+                step_name=f"reduce_{tool_name}_{i}",
+                step_index=i,
+                tool_name=tool_name,
+                mode=workflow_type.value,
+                args=arguments[i] if i < len(arguments) else {},
+                metadata={"position": i},
+            )
             for i, tool_name in enumerate(tools)
         ]
         try:
@@ -1034,7 +1562,10 @@ async def _execute_simple_composition(
                 timeout=300.0,
             )
         except asyncio.TimeoutError:
-            raw_results = [TimeoutError(f"Reduce phase exceeded 300s timeout")]
+            timeout_message = "Reduce phase exceeded 300s timeout"
+            if recorder:
+                recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "reduce"})
+            raw_results = [TimeoutError(timeout_message) for _ in tools]
         results = [
             {"error": str(r)} if isinstance(r, Exception) else r
             for r in raw_results
@@ -1059,8 +1590,17 @@ async def _execute_simple_composition(
             items = [items]
 
         mr_tasks = [
-            _execute_tool(map_tool, {**map_args, "input": item})
-            for item in items
+            _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"map_reduce:map:{idx}",
+                step_name=f"map_reduce_map_{idx}",
+                step_index=idx,
+                tool_name=map_tool,
+                mode=f"{workflow_type.value}:map",
+                args={**map_args, "input": item},
+                metadata={"item_index": idx},
+            )
+            for idx, item in enumerate(items)
         ]
         try:
             raw_map_results = await asyncio.wait_for(
@@ -1068,7 +1608,10 @@ async def _execute_simple_composition(
                 timeout=300.0,
             )
         except asyncio.TimeoutError:
-            raw_map_results = [TimeoutError(f"Map-reduce map phase exceeded 300s timeout")]
+            timeout_message = "Map-reduce map phase exceeded 300s timeout"
+            if recorder:
+                recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "map_reduce.map"})
+            raw_map_results = [TimeoutError(timeout_message) for _ in items]
         map_results = [
             {"error": str(r)} if isinstance(r, Exception) else r
             for r in raw_map_results
@@ -1076,7 +1619,16 @@ async def _execute_simple_composition(
 
         # Reduce phase
         reduce_input = {**reduce_args, "items": map_results}
-        final_result = await _execute_tool(reduce_tool, reduce_input)
+        final_result = await _execute_simple_tool_call(
+            recorder=recorder,
+            step_key="map_reduce:reduce",
+            step_name=f"map_reduce_reduce_{reduce_tool}",
+            step_index=len(items),
+            tool_name=reduce_tool,
+            mode=f"{workflow_type.value}:reduce",
+            args=reduce_input,
+            metadata={"mapped_count": len(map_results)},
+        )
 
         return {
             "map_results": map_results,
@@ -1089,7 +1641,18 @@ async def _execute_simple_composition(
         tasks = []
         for i, tool_name in enumerate(tools):
             args = {**arguments[i], **inputs} if isinstance(inputs, dict) else arguments[i]
-            tasks.append(_execute_tool(tool_name, args))
+            tasks.append(
+                _execute_simple_tool_call(
+                    recorder=recorder,
+                    step_key=f"parallel:{i}",
+                    step_name=f"parallel_{tool_name}_{i}",
+                    step_index=i,
+                    tool_name=tool_name,
+                    mode=workflow_type.value,
+                    args=args,
+                    metadata={"position": i},
+                )
+            )
 
         try:
             results = await asyncio.wait_for(
@@ -1097,7 +1660,10 @@ async def _execute_simple_composition(
                 timeout=300.0,
             )
         except asyncio.TimeoutError:
-            results = [TimeoutError(f"Parallel phase exceeded 300s timeout")]
+            timeout_message = "Parallel phase exceeded 300s timeout"
+            if recorder:
+                recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "parallel"})
+            results = [TimeoutError(timeout_message) for _ in tools]
 
         # Merge results
         merged = {}
@@ -1123,15 +1689,32 @@ async def _execute_simple_composition(
         aggregate_args = arguments[2] if len(arguments) > 2 else {}
 
         # Segment
-        segment_result = await _execute_tool(segment_tool, {**segment_args, **inputs})
+        segment_result = await _execute_simple_tool_call(
+            recorder=recorder,
+            step_key="segment_process:segment",
+            step_name=f"segment_{segment_tool}",
+            step_index=0,
+            tool_name=segment_tool,
+            mode=f"{workflow_type.value}:segment",
+            args={**segment_args, **inputs},
+        )
 
         # Get segments
         segments = segment_result if isinstance(segment_result, list) else [segment_result]
 
         # Process each segment in parallel
         seg_tasks = [
-            _execute_tool(process_tool, {**process_args, "input": segment})
-            for segment in segments
+            _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"segment_process:process:{idx}",
+                step_name=f"segment_process_{process_tool}_{idx}",
+                step_index=idx + 1,
+                tool_name=process_tool,
+                mode=f"{workflow_type.value}:process",
+                args={**process_args, "input": segment},
+                metadata={"segment_index": idx},
+            )
+            for idx, segment in enumerate(segments)
         ]
         try:
             processed_raw = await asyncio.wait_for(
@@ -1139,7 +1722,10 @@ async def _execute_simple_composition(
                 timeout=300.0,
             )
         except asyncio.TimeoutError:
-            processed_raw = [TimeoutError(f"Segment-process phase exceeded 300s timeout")]
+            timeout_message = "Segment-process phase exceeded 300s timeout"
+            if recorder:
+                recorder.event("simple_phase_timeout", message=timeout_message, data={"phase": "segment_process.process"})
+            processed_raw = [TimeoutError(timeout_message) for _ in segments]
         processed = [
             {"error": str(r)} if isinstance(r, Exception) else r
             for r in processed_raw
@@ -1148,7 +1734,16 @@ async def _execute_simple_composition(
         # Aggregate (optional)
         if aggregate_tool:
             agg_input = {**aggregate_args, "items": processed}
-            final_result = await _execute_tool(aggregate_tool, agg_input)
+            final_result = await _execute_simple_tool_call(
+                recorder=recorder,
+                step_key="segment_process:aggregate",
+                step_name=f"segment_aggregate_{aggregate_tool}",
+                step_index=len(segments) + 1,
+                tool_name=aggregate_tool,
+                mode=f"{workflow_type.value}:aggregate",
+                args=agg_input,
+                metadata={"segment_count": len(segments)},
+            )
             return {
                 "segments": segments,
                 "processed": processed,
@@ -1166,7 +1761,17 @@ async def _execute_simple_composition(
         for i in range(len(tools) - 1, -1, -1):
             tool_name = tools[i]
             args = {**arguments[i], **current} if isinstance(current, dict) else arguments[i]
-            result = await _execute_tool(tool_name, args)
+            execution_index = (len(tools) - 1) - i
+            result = await _execute_simple_tool_call(
+                recorder=recorder,
+                step_key=f"pipe:{execution_index}",
+                step_name=f"pipe_{tool_name}_{execution_index}",
+                step_index=execution_index,
+                tool_name=tool_name,
+                mode=workflow_type.value,
+                args=args,
+                metadata={"tool_position": i},
+            )
             results.insert(0, result)
             current = result
 
@@ -1283,10 +1888,33 @@ async def execute_named_workflow(
             raise HTTPException(400, f"Missing required input: {required}")
 
     execution_id = str(uuid4())
+    recorder = WorkflowRunRecorder(execution_id)
+    recorder.start_run(
+        workflow_id=workflow.id,
+        workflow_name=workflow.name,
+        workflow_kind="named_workflow",
+        workflow_type=workflow.category.value,
+        inputs=inputs,
+        metadata={
+            "required_inputs": workflow.required_inputs,
+            "stage_count": len(workflow.stages),
+            "total_max_tokens": workflow.total_max_tokens,
+            "total_max_cost_cents": workflow.total_max_cost_cents,
+        },
+    )
 
     try:
         # Execute the workflow with token limits enforced
-        result = await _execute_named_workflow(workflow, inputs, execution_id, override_limits)
+        result = await _execute_named_workflow(workflow, inputs, execution_id, override_limits, recorder=recorder)
+
+        recorder.complete_run(
+            status="completed",
+            output=result.get("output"),
+            metadata={
+                "resource_usage": result.get("resource_usage", {}),
+                "stages_executed": result.get("stages_executed", []),
+            },
+        )
 
         return {
             "execution_id": execution_id,
@@ -1300,6 +1928,11 @@ async def execute_named_workflow(
 
     except Exception as e:
         logger.error(f"Named workflow execution failed: {e}")
+        recorder.complete_run(
+            status="failed",
+            error=str(e),
+            metadata={"stage_count": len(workflow.stages)},
+        )
         return {
             "execution_id": execution_id,
             "workflow_id": workflow.id,
@@ -1313,10 +1946,10 @@ async def _execute_named_workflow(
     workflow: NamedWorkflow,
     inputs: Dict[str, Any],
     execution_id: str,
-    override_limits: Optional[Dict[str, ResourceLimits]] = None
+    override_limits: Optional[Dict[str, ResourceLimits]] = None,
+    recorder: Optional[WorkflowRunRecorder] = None,
 ) -> Dict[str, Any]:
     """Execute a named workflow with token limits."""
-    import time
     start_time = time.time()
 
     stage_results = {}
@@ -1327,7 +1960,7 @@ async def _execute_named_workflow(
         "stages": {}
     }
 
-    for stage in workflow.stages:
+    for stage_index, stage in enumerate(workflow.stages):
         # Check if dependencies are met
         for dep in stage.depends_on:
             if dep not in stage_results:
@@ -1335,53 +1968,111 @@ async def _execute_named_workflow(
 
         # Get limits (use override if provided)
         limits = override_limits.get(stage.name, stage.limits) if override_limits else stage.limits
+        stage_inputs = {**stage.arguments, **current_data}
+        stage_key = stage.name
 
-        # Execute stage with limits
-        stage_start = time.time()
+        if recorder:
+            recorder.start_step(
+                step_key=stage_key,
+                step_name=stage.name,
+                step_index=stage_index,
+                tool_name=stage.tool,
+                mode="named_stage",
+                input_data=stage_inputs,
+                metadata={
+                    "depends_on": stage.depends_on,
+                    "limits": _serialize_limits(limits),
+                    "retry_on_failure": stage.retry_on_failure,
+                    "max_retries": stage.max_retries,
+                },
+            )
 
-        try:
-            # Prepare inputs
-            stage_inputs = {**stage.arguments, **current_data}
+        attempts = 0
+        while True:
+            attempts += 1
+            stage_start = time.time()
+            try:
+                # Execute tool (with token limit enforcement)
+                result = await _execute_tool_with_limits(stage.tool, stage_inputs, limits)
 
-            # Execute tool (with token limit enforcement)
-            result = await _execute_tool_with_limits(stage.tool, stage_inputs, limits)
+                # Track usage
+                stage_duration = time.time() - stage_start
+                stage_usage = {
+                    "duration_seconds": stage_duration,
+                    "tokens_used": result.get("_tokens_used", 0),
+                    "cost_cents": result.get("_cost_cents", 0)
+                }
 
-            # Track usage
-            stage_duration = time.time() - stage_start
-            stage_usage = {
-                "duration_seconds": stage_duration,
-                "tokens_used": result.get("_tokens_used", 0),
-                "cost_cents": result.get("_cost_cents", 0)
-            }
+                resource_usage["total_tokens"] += stage_usage["tokens_used"]
+                resource_usage["total_cost_cents"] += stage_usage["cost_cents"]
+                resource_usage["stages"][stage.name] = stage_usage
 
-            resource_usage["total_tokens"] += stage_usage["tokens_used"]
-            resource_usage["total_cost_cents"] += stage_usage["cost_cents"]
-            resource_usage["stages"][stage.name] = stage_usage
+                # Check limits
+                if limits.max_tokens and stage_usage["tokens_used"] > limits.max_tokens:
+                    raise ValueError(f"Stage {stage.name} exceeded token limit: {stage_usage['tokens_used']} > {limits.max_tokens}")
 
-            # Check limits
-            if limits.max_tokens and stage_usage["tokens_used"] > limits.max_tokens:
-                raise ValueError(f"Stage {stage.name} exceeded token limit: {stage_usage['tokens_used']} > {limits.max_tokens}")
+                if limits.max_cost_cents and stage_usage["cost_cents"] > limits.max_cost_cents:
+                    raise ValueError(f"Stage {stage.name} exceeded cost limit: {stage_usage['cost_cents']} > {limits.max_cost_cents}")
 
-            if limits.max_cost_cents and stage_usage["cost_cents"] > limits.max_cost_cents:
-                raise ValueError(f"Stage {stage.name} exceeded cost limit: {stage_usage['cost_cents']} > {limits.max_cost_cents}")
+                stage_results[stage.name] = result
+                current_data = result
 
-            stage_results[stage.name] = result
-            current_data = result
+                if recorder:
+                    error_message = _extract_error_message(result)
+                    if error_message:
+                        recorder.fail_step(
+                            step_key=stage_key,
+                            step_name=stage.name,
+                            step_index=stage_index,
+                            tool_name=stage.tool,
+                            mode="named_stage",
+                            error=error_message,
+                            output_data=result,
+                            retries=max(0, attempts - 1),
+                            metadata={"soft_failure": True, "usage": stage_usage},
+                        )
+                    else:
+                        recorder.complete_step(
+                            step_key=stage_key,
+                            step_name=stage.name,
+                            step_index=stage_index,
+                            tool_name=stage.tool,
+                            mode="named_stage",
+                            output_data=result,
+                            retries=max(0, attempts - 1),
+                            metadata={"usage": stage_usage},
+                        )
 
-        except Exception as e:
-            if stage.retry_on_failure and stage.max_retries > 0:
-                # Retry logic
-                for attempt in range(stage.max_retries):
-                    try:
-                        result = await _execute_tool_with_limits(stage.tool, stage_inputs, limits)
-                        stage_results[stage.name] = result
-                        current_data = result
-                        break
-                    except Exception as retry_error:
-                        if attempt == stage.max_retries - 1:
-                            raise retry_error
-            else:
-                raise e
+                break
+
+            except Exception as stage_error:
+                can_retry = stage.retry_on_failure and attempts <= stage.max_retries
+                if can_retry:
+                    if recorder:
+                        recorder.event(
+                            "stage_retry",
+                            step_key=stage_key,
+                            message=f"Retrying stage {stage.name}",
+                            data={
+                                "attempt": attempts,
+                                "max_retries": stage.max_retries,
+                                "error": str(stage_error),
+                            },
+                        )
+                    continue
+
+                if recorder:
+                    recorder.fail_step(
+                        step_key=stage_key,
+                        step_name=stage.name,
+                        step_index=stage_index,
+                        tool_name=stage.tool,
+                        mode="named_stage",
+                        error=str(stage_error),
+                        retries=max(0, attempts - 1),
+                        metadata={"limits": _serialize_limits(limits)},
+                    )
+                raise stage_error
 
     # Check global limits
     if workflow.total_max_tokens and resource_usage["total_tokens"] > workflow.total_max_tokens:
