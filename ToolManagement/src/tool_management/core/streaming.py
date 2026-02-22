@@ -1087,6 +1087,7 @@ def create_tool_executor_for_jobs():
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+        tool_id = f"{backend_id}:{resolved_name}"
         breaker = get_backend_circuit_breaker()
         allowed, state = breaker.allow_request(backend_id)
         if not allowed:
@@ -1099,6 +1100,7 @@ def create_tool_executor_for_jobs():
         if progress_callback:
             await progress_callback(progress=30, message="invoking_backend")
 
+        started = time.time()
         try:
             response = await _shared_client.post(
                 f"{backend_url}/mcp",
@@ -1114,6 +1116,16 @@ def create_tool_executor_for_jobs():
             )
         except Exception as exc:
             breaker.record_failure(backend_id, error=str(exc))
+            store.record_call(
+                tool_id,
+                (time.time() - started) * 1000,
+                False,
+                execution_mode="job",
+                trace_id=inputs.get("_trace_id"),
+                session_id=inputs.get("_session_id"),
+                error_code="TRANSPORT_ERROR",
+                error_message=str(exc),
+            )
             raise
 
         if progress_callback:
@@ -1121,15 +1133,46 @@ def create_tool_executor_for_jobs():
 
         if response.status_code != 200:
             breaker.record_failure(backend_id, error=f"http {response.status_code}")
+            store.record_call(
+                tool_id,
+                (time.time() - started) * 1000,
+                False,
+                execution_mode="job",
+                trace_id=inputs.get("_trace_id"),
+                session_id=inputs.get("_session_id"),
+                error_code=f"HTTP_{response.status_code}",
+                error_message=response.text[:500],
+            )
             raise RuntimeError(f"Backend {backend_id} returned HTTP {response.status_code}: {response.text[:300]}")
 
         data = response.json()
         if "error" in data and data["error"]:
             breaker.record_failure(backend_id, error=str(data["error"]))
+            err_obj = data.get("error")
+            err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
+            err_message = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+            store.record_call(
+                tool_id,
+                (time.time() - started) * 1000,
+                False,
+                execution_mode="job",
+                trace_id=inputs.get("_trace_id"),
+                session_id=inputs.get("_session_id"),
+                error_code=err_code,
+                error_message=err_message,
+            )
             raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
 
         result = data.get("result")
         breaker.record_success(backend_id)
+        store.record_call(
+            tool_id,
+            (time.time() - started) * 1000,
+            True,
+            execution_mode="job",
+            trace_id=inputs.get("_trace_id"),
+            session_id=inputs.get("_session_id"),
+        )
 
         # Apply output guard if available
         try:

@@ -10,14 +10,15 @@ import hashlib
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 import httpx
 
-from ..persistence import get_tool_store, RegisteredTool
+from ..persistence import get_tool_store, RegisteredTool, get_execution_store
 from ..core.circuit_breaker import get_backend_circuit_breaker
 
 # Output guard for enforcing size limits and URL capture
@@ -135,6 +136,22 @@ class AnnounceRequest(BaseModel):
     tools: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class DependencyUpsertRequest(BaseModel):
+    source_tool: str = Field(..., description="Source tool name or backend:tool")
+    target_tool: str = Field(..., description="Dependent tool name or backend:tool")
+    dependency_type: str = Field(default="explicit", description="explicit|inferred|runtime")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    call_count: int = Field(default=1, ge=1, le=1_000_000)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class InferDependenciesRequest(BaseModel):
+    hours: int = Field(default=24, ge=1, le=720)
+    limit: int = Field(default=100, ge=1, le=500)
+    min_support: int = Field(default=2, ge=1, le=1000)
+    persist: bool = True
+
+
 # ==================== Tool Execution ====================
 
 async def execute_tool(call: ToolCall) -> ToolResult:
@@ -143,10 +160,12 @@ async def execute_tool(call: ToolCall) -> ToolResult:
     breaker = get_backend_circuit_breaker()
     start = time.time()
     backend_id: Optional[str] = None
+    resolved_tool_id: Optional[str] = None
 
     try:
         # Resolve the tool to backend
         backend_id, backend_url, tool_name = store.resolve_tool(call.tool)
+        resolved_tool_id = f"{backend_id}:{tool_name}"
         allowed, circuit_state = breaker.allow_request(backend_id)
         if not allowed:
             retry_after = circuit_state.get("retry_after_seconds")
@@ -223,7 +242,19 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             data = response.json()
 
             if "error" in data:
-                store.record_call(f"{backend_id}:{tool_name}", latency_ms, False)
+                err_obj = data.get("error")
+                err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
+                err_message = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                store.record_call(
+                    f"{backend_id}:{tool_name}",
+                    latency_ms,
+                    False,
+                    execution_mode="sync",
+                    trace_id=call.trace_id,
+                    session_id=call.session_id,
+                    error_code=err_code,
+                    error_message=err_message,
+                )
                 breaker.record_failure(backend_id, error=str(data.get("error")))
                 return ToolResult(
                     tool=call.tool,
@@ -233,7 +264,14 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                     latency_ms=latency_ms
                 )
 
-            store.record_call(f"{backend_id}:{tool_name}", latency_ms, True)
+            store.record_call(
+                f"{backend_id}:{tool_name}",
+                latency_ms,
+                True,
+                execution_mode="sync",
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+            )
             breaker.record_success(backend_id)
 
             result_data = data.get("result")
@@ -263,7 +301,16 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 latency_ms=latency_ms
             )
         else:
-            store.record_call(f"{backend_id}:{tool_name}", latency_ms, False)
+            store.record_call(
+                f"{backend_id}:{tool_name}",
+                latency_ms,
+                False,
+                execution_mode="sync",
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+                error_code=f"HTTP_{response.status_code}",
+                error_message=response.text[:500],
+            )
             breaker.record_failure(backend_id, error=f"http {response.status_code}")
             return ToolResult(
                 tool=call.tool,
@@ -284,6 +331,17 @@ async def execute_tool(call: ToolCall) -> ToolResult:
     except httpx.TimeoutException:
         if backend_id:
             breaker.record_failure(backend_id, error=f"timeout after {call.timeout}s")
+        if resolved_tool_id:
+            store.record_call(
+                resolved_tool_id,
+                (time.time() - start) * 1000,
+                False,
+                execution_mode="sync",
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+                error_code="TIMEOUT",
+                error_message=f"Timeout after {call.timeout}s",
+            )
         return ToolResult(
             tool=call.tool,
             success=False,
@@ -293,6 +351,17 @@ async def execute_tool(call: ToolCall) -> ToolResult:
     except Exception as e:
         if backend_id:
             breaker.record_failure(backend_id, error=str(e))
+        if resolved_tool_id:
+            store.record_call(
+                resolved_tool_id,
+                (time.time() - start) * 1000,
+                False,
+                execution_mode="sync",
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+                error_code="EXCEPTION",
+                error_message=str(e),
+            )
         logger.exception(f"Tool execution error: {call.tool}")
         return ToolResult(
             tool=call.tool,
@@ -664,6 +733,346 @@ async def batch_get_tools(request: BatchGetRequest):
         return {"tools": tools, "count": len(tools), "not_found": not_found, "format": "full"}
 
 
+@router.get("/metrics/{tool_name}")
+async def get_tool_metrics(
+    tool_name: str,
+    hours: int = Query(default=24, ge=1, le=720),
+):
+    """Get durable latency/error metrics for one tool."""
+    store = get_tool_store()
+    metrics = store.get_tool_latency_metrics(tool_name, hours=hours)
+    if not metrics:
+        raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
+    return metrics
+
+
+@router.get("/analytics/usage")
+async def get_tool_usage_analytics(
+    hours: int = Query(default=24, ge=1, le=720),
+    bucket_minutes: int = Query(default=60, ge=1, le=1440),
+    tool_name: Optional[str] = Query(default=None),
+    limit: int = Query(default=2000, ge=1, le=10000),
+):
+    """Get bucketed usage and latency trends from durable call history."""
+    store = get_tool_store()
+    return store.get_tool_usage_timeseries(
+        hours=hours,
+        bucket_minutes=bucket_minutes,
+        tool_ref=tool_name,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/failures")
+async def get_tool_failure_analytics(
+    hours: int = Query(default=24, ge=1, le=720),
+    tool_name: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+):
+    """Get top failure modes from durable call history."""
+    store = get_tool_store()
+    return store.get_failure_modes(hours=hours, tool_ref=tool_name, limit=limit)
+
+
+@router.post("/dependencies")
+async def upsert_tool_dependency(request: DependencyUpsertRequest):
+    """Create/update a dependency edge between two tools."""
+    store = get_tool_store()
+    try:
+        return store.upsert_tool_dependency(
+            source_tool_ref=request.source_tool,
+            target_tool_ref=request.target_tool,
+            dependency_type=request.dependency_type,
+            confidence=request.confidence,
+            call_count=request.call_count,
+            metadata=request.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/dependencies")
+async def list_tool_dependencies(
+    tool_name: Optional[str] = Query(default=None),
+    dependency_type: Optional[str] = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    """List durable dependency edges for tools."""
+    store = get_tool_store()
+    dependencies = store.list_tool_dependencies(
+        tool_ref=tool_name,
+        dependency_type=dependency_type,
+        min_confidence=min_confidence,
+        limit=limit,
+    )
+    return {
+        "count": len(dependencies),
+        "dependencies": dependencies,
+    }
+
+
+@router.post("/dependencies/infer")
+async def infer_tool_dependencies(request: InferDependenciesRequest):
+    """
+    Infer dependency edges from persisted workflow chains and optionally persist them.
+    """
+    store = get_tool_store()
+    execution_store = get_execution_store()
+    chain_data = execution_store.get_workflow_chain_analytics(
+        hours=request.hours,
+        limit=request.limit,
+        min_chain_length=2,
+    )
+    inferred_map: Dict[str, Dict[str, Any]] = {}
+
+    for chain in chain_data.get("chains", []):
+        steps = chain.get("steps") or []
+        runs = int(chain.get("runs") or 0)
+        completed = int(chain.get("completed") or 0)
+        failed = int(chain.get("failed") or 0)
+        if len(steps) < 2:
+            continue
+        for idx in range(len(steps) - 1):
+            source_name = str(steps[idx] or "").strip()
+            target_name = str(steps[idx + 1] or "").strip()
+            if not source_name or not target_name:
+                continue
+            source_tool_id = store.resolve_tool_id(source_name)
+            target_tool_id = store.resolve_tool_id(target_name)
+            if not source_tool_id or not target_tool_id:
+                continue
+            edge_key = f"{source_tool_id}->{target_tool_id}"
+            bucket = inferred_map.setdefault(
+                edge_key,
+                {
+                    "source_tool_id": source_tool_id,
+                    "source_name": source_name,
+                    "target_tool_id": target_tool_id,
+                    "target_name": target_name,
+                    "support": 0,
+                    "completed": 0,
+                    "failed": 0,
+                },
+            )
+            bucket["support"] += runs
+            bucket["completed"] += completed
+            bucket["failed"] += failed
+
+    inferred_edges: List[Dict[str, Any]] = []
+    persisted = 0
+    for edge in inferred_map.values():
+        support = int(edge["support"])
+        if support < request.min_support:
+            continue
+        confidence = float(edge["completed"]) / support if support else 0.0
+        edge_record = {
+            "source_tool_id": edge["source_tool_id"],
+            "source_name": edge["source_name"],
+            "target_tool_id": edge["target_tool_id"],
+            "target_name": edge["target_name"],
+            "dependency_type": "inferred",
+            "confidence": confidence,
+            "support": support,
+            "completed": int(edge["completed"]),
+            "failed": int(edge["failed"]),
+            "window_hours": request.hours,
+        }
+        inferred_edges.append(edge_record)
+
+        if request.persist:
+            try:
+                store.upsert_tool_dependency(
+                    source_tool_ref=edge["source_tool_id"],
+                    target_tool_ref=edge["target_tool_id"],
+                    dependency_type="inferred",
+                    confidence=confidence,
+                    call_count=support,
+                    metadata={
+                        "window_hours": request.hours,
+                        "completed": int(edge["completed"]),
+                        "failed": int(edge["failed"]),
+                    },
+                )
+                persisted += 1
+            except Exception as exc:
+                logger.warning(f"Failed to persist inferred dependency {edge['source_tool_id']}->{edge['target_tool_id']}: {exc}")
+
+    inferred_edges.sort(key=lambda item: (-int(item["support"]), -float(item["confidence"])))
+    return {
+        "window_hours": request.hours,
+        "min_support": request.min_support,
+        "count": len(inferred_edges),
+        "persisted": persisted,
+        "dependencies": inferred_edges,
+    }
+
+
+@router.get("/export/schema-bundle")
+async def export_schema_bundle(
+    limit: int = Query(default=1000, ge=1, le=10000),
+):
+    """Export registry schemas as a JSON Schema bundle keyed by tool_id."""
+    store = get_tool_store()
+    tools = store.list_tools(limit=limit, offset=0)
+    bundle: Dict[str, Any] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "generated_at": datetime.utcnow().isoformat(),
+        "count": len(tools),
+        "tools": {},
+    }
+    for tool in tools:
+        bundle["tools"][tool.tool_id] = {
+            "name": tool.name,
+            "backend_id": tool.backend_id,
+            "description": tool.description,
+            "input_schema": tool.input_schema or {"type": "object", "properties": {}},
+            "output_schema": tool.output_schema or {"type": "object", "properties": {}},
+            "tags": tool.tags or [],
+            "category": tool.category,
+            "version": tool.version,
+        }
+    return bundle
+
+
+@router.get("/export/mcp-tools")
+async def export_mcp_tools(
+    limit: int = Query(default=1000, ge=1, le=10000),
+):
+    """Export durable registry entries in MCP tool-list format."""
+    store = get_tool_store()
+    tools = store.list_tools(limit=limit, offset=0)
+    result: List[Dict[str, Any]] = []
+    for tool in tools:
+        result.append(
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": tool.input_schema or {"type": "object", "properties": {}},
+                "outputSchema": tool.output_schema or None,
+                "annotations": {
+                    "tool_id": tool.tool_id,
+                    "backend": tool.backend_id,
+                    "category": tool.category,
+                    "tags": tool.tags or [],
+                    "version": tool.version,
+                    "avg_latency_ms": float(tool.avg_latency_ms or 0.0),
+                    "error_rate": float(tool.error_count or 0) / max(1, int(tool.call_count or 0)),
+                },
+            }
+        )
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "count": len(result),
+        "tools": result,
+    }
+
+
+@router.get("/export/openapi")
+async def export_openapi_tool_catalog(
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    """
+    Export an OpenAPI-compatible catalog for general REST clients.
+
+    The exported schema focuses on dynamic execution endpoints while embedding
+    per-tool argument schemas under components for client-side validation.
+    """
+    store = get_tool_store()
+    tools = store.list_tools(limit=limit, offset=0)
+
+    tool_components: Dict[str, Any] = {}
+    tool_index: List[Dict[str, Any]] = []
+    for tool in tools:
+        component_name = tool.tool_id.replace(":", "__").replace("-", "_")
+        tool_components[component_name] = {
+            "type": "object",
+            "properties": tool.input_schema.get("properties", {}) if isinstance(tool.input_schema, dict) else {},
+            "required": tool.input_schema.get("required", []) if isinstance(tool.input_schema, dict) else [],
+            "additionalProperties": True,
+            "description": tool.description or f"Arguments for {tool.tool_id}",
+        }
+        tool_index.append(
+            {
+                "tool_id": tool.tool_id,
+                "name": tool.name,
+                "backend_id": tool.backend_id,
+                "component": f"#/components/schemas/{component_name}",
+            }
+        )
+
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "DSCO Tool Management API - Tool Catalog",
+            "version": "1.0.0",
+            "description": "Dynamic execution API with durable tool registry metadata.",
+        },
+        "servers": [{"url": "/"}],
+        "paths": {
+            "/api/v1/execute": {
+                "post": {
+                    "summary": "Execute a tool (sync/stream/job/auto)",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "tool_name": {"type": "string"},
+                                        "arguments": {"type": "object"},
+                                        "execution_mode": {
+                                            "type": "string",
+                                            "enum": ["auto", "sync", "stream", "job"],
+                                            "default": "auto",
+                                        },
+                                        "stream": {"type": "boolean", "default": False},
+                                        "timeout_ms": {"type": "integer", "default": 30000},
+                                        "sync_timeout_ms": {"type": "integer", "default": 5000},
+                                        "idempotency_key": {"type": "string"},
+                                    },
+                                    "required": ["tool_name", "arguments"],
+                                    "additionalProperties": False,
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Execution result or job handle",
+                            "content": {"application/json": {"schema": {"type": "object"}}},
+                        }
+                    },
+                }
+            },
+            "/api/v1/tools/execute": {
+                "post": {
+                    "summary": "Execute a single tool through tools API",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"type": "object"}}},
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Tool result",
+                            "content": {"application/json": {"schema": {"type": "object"}}},
+                        }
+                    },
+                }
+            },
+        },
+        "components": {
+            "schemas": tool_components,
+        },
+        "x-tool-catalog": {
+            "generated_at": datetime.utcnow().isoformat(),
+            "count": len(tool_index),
+            "tools": tool_index,
+        },
+    }
+
+
 @router.get("/schema/{tool_name}")
 async def get_tool_schema_summary(tool_name: str):
     """
@@ -687,6 +1096,8 @@ async def get_tool(tool_name: str):
     tool = store.get_tool_by_name(tool_name)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
+    window_metrics = store.get_tool_latency_metrics(tool.tool_id, hours=24) or {}
+    dependencies = store.list_tool_dependencies(tool_ref=tool.tool_id, limit=20)
     return {
         "tool_id": tool.tool_id,
         "name": tool.name,
@@ -700,6 +1111,8 @@ async def get_tool(tool_name: str):
         "avg_latency_ms": tool.avg_latency_ms,
         "error_count": tool.error_count,
         "error_rate": tool.error_count / max(1, tool.call_count),
+        "latency_metrics_24h": window_metrics,
+        "dependencies": dependencies,
     }
 
 

@@ -723,6 +723,78 @@ class MCPServer:
                         }
                     }
                 }
+            },
+            {
+                "name": "get_tool_metrics",
+                "description": "Get per-tool latency percentiles, reliability, and most recent error from durable call history.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Tool name or backend:tool"
+                        },
+                        "hours": {
+                            "type": "integer",
+                            "description": "Lookback window in hours",
+                            "default": 24
+                        }
+                    },
+                    "required": ["tool_name"]
+                }
+            },
+            {
+                "name": "get_tool_usage_timeseries",
+                "description": "Get bucketed call-volume and latency trends for one tool or all tools.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string"},
+                        "hours": {"type": "integer", "default": 24},
+                        "bucket_minutes": {"type": "integer", "default": 60}
+                    }
+                }
+            },
+            {
+                "name": "get_tool_dependencies",
+                "description": "List durable dependency edges between tools (explicit or inferred).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string"},
+                        "dependency_type": {"type": "string"},
+                        "min_confidence": {"type": "number", "default": 0.0},
+                        "limit": {"type": "integer", "default": 200}
+                    }
+                }
+            },
+            {
+                "name": "infer_tool_dependencies",
+                "description": "Infer tool dependency edges from workflow chain history and optionally persist them.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "default": 24},
+                        "limit": {"type": "integer", "default": 100},
+                        "min_support": {"type": "integer", "default": 2},
+                        "persist": {"type": "boolean", "default": True}
+                    }
+                }
+            },
+            {
+                "name": "export_tool_catalog",
+                "description": "Export tool catalog artifacts for clients. format=mcp|openapi|schemas.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["mcp", "openapi", "schemas"],
+                            "default": "mcp"
+                        },
+                        "limit": {"type": "integer", "default": 500}
+                    }
+                }
             }
         ]
 
@@ -1708,6 +1780,184 @@ class MCPServer:
                     "isError": True
                 }
 
+        elif tool_name == "get_tool_metrics":
+            try:
+                client = get_http_client()
+                target_tool = tool_args.get("tool_name") or tool_args.get("tool")
+                if not target_tool:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps({"error": "tool_name is required"})}],
+                        "isError": True,
+                    }
+                hours = int(tool_args.get("hours", 24))
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/metrics/{target_tool}",
+                    params={"hours": hours},
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_metrics failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_metrics failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_tool_usage_timeseries":
+            try:
+                client = get_http_client()
+                params = {
+                    "hours": int(tool_args.get("hours", 24)),
+                    "bucket_minutes": int(tool_args.get("bucket_minutes", 60)),
+                }
+                target_tool = tool_args.get("tool_name") or tool_args.get("tool")
+                if target_tool:
+                    params["tool_name"] = target_tool
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/analytics/usage",
+                    params=params,
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_usage_timeseries failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_usage_timeseries failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "get_tool_dependencies":
+            try:
+                client = get_http_client()
+                params = {
+                    "min_confidence": float(tool_args.get("min_confidence", 0.0)),
+                    "limit": int(tool_args.get("limit", 200)),
+                }
+                if tool_args.get("tool_name"):
+                    params["tool_name"] = tool_args.get("tool_name")
+                if tool_args.get("dependency_type"):
+                    params["dependency_type"] = tool_args.get("dependency_type")
+                response = await client.get(
+                    f"{API_BASE_URL}/api/v1/tools/dependencies",
+                    params=params,
+                    timeout=12.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_dependencies failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"get_tool_dependencies failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "infer_tool_dependencies":
+            try:
+                client = get_http_client()
+                persist_raw = tool_args.get("persist", True)
+                if isinstance(persist_raw, bool):
+                    persist_flag = persist_raw
+                else:
+                    persist_flag = str(persist_raw).strip().lower() not in {"0", "false", "no", "off"}
+                response = await client.post(
+                    f"{API_BASE_URL}/api/v1/tools/dependencies/infer",
+                    json={
+                        "hours": int(tool_args.get("hours", 24)),
+                        "limit": int(tool_args.get("limit", 100)),
+                        "min_support": int(tool_args.get("min_support", 2)),
+                        "persist": persist_flag,
+                    },
+                    timeout=20.0,
+                )
+                if response.status_code == 200:
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(response.json(), indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"infer_tool_dependencies failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"infer_tool_dependencies failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
+        elif tool_name == "export_tool_catalog":
+            try:
+                client = get_http_client()
+                limit = int(tool_args.get("limit", 500))
+                export_format = str(tool_args.get("format", "mcp")).strip().lower()
+                if export_format == "openapi":
+                    url = f"{API_BASE_URL}/api/v1/tools/export/openapi"
+                elif export_format == "schemas":
+                    url = f"{API_BASE_URL}/api/v1/tools/export/schema-bundle"
+                else:
+                    url = f"{API_BASE_URL}/api/v1/tools/export/mcp-tools"
+                response = await client.get(url, params={"limit": limit}, timeout=20.0)
+                if response.status_code == 200:
+                    payload = response.json()
+                    payload["format"] = export_format
+                    return {
+                        "content": [{"type": "text", "text": json_module.dumps(payload, indent=2)}],
+                        "isError": False,
+                    }
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"export_tool_catalog failed with status {response.status_code}",
+                        "details": response.text[:300],
+                    }, indent=2)}],
+                    "isError": True,
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": json_module.dumps({
+                        "error": f"export_tool_catalog failed: {str(e)}"
+                    }, indent=2)}],
+                    "isError": True,
+                }
+
         # Unknown meta-tool
         return {
             "content": [
@@ -1730,7 +1980,12 @@ class MCPServer:
                             "submit_job",
                             "get_job_status",
                             "cancel_job",
-                            "get_usage_stats"
+                            "get_usage_stats",
+                            "get_tool_metrics",
+                            "get_tool_usage_timeseries",
+                            "get_tool_dependencies",
+                            "infer_tool_dependencies",
+                            "export_tool_catalog",
                         ]
                     }, indent=2)
                 }

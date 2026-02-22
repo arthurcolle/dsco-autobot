@@ -7,6 +7,7 @@ No more in-memory-only registration that disappears on restart.
 
 import os
 import json
+import time
 import duckdb
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -178,11 +179,52 @@ class ToolStore:
                 )
             """)
 
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tool_call_history (
+                    id BIGINT PRIMARY KEY,
+                    tool_id VARCHAR NOT NULL,
+                    backend_id VARCHAR NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    latency_ms DOUBLE DEFAULT 0.0,
+                    execution_mode VARCHAR DEFAULT 'sync',
+                    trace_id VARCHAR,
+                    session_id VARCHAR,
+                    error_code VARCHAR,
+                    error_message VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS tool_call_history_id_seq START 1
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tool_dependencies (
+                    source_tool_id VARCHAR NOT NULL,
+                    target_tool_id VARCHAR NOT NULL,
+                    dependency_type VARCHAR DEFAULT 'explicit',
+                    confidence DOUBLE DEFAULT 1.0,
+                    call_count INTEGER DEFAULT 0,
+                    metadata JSON DEFAULT '{}',
+                    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (source_tool_id, target_tool_id, dependency_type)
+                )
+            """)
+
             # Indexes for fast lookup
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_name ON tools(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_backend ON tools(backend_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_category ON tools(category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_records(expires_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_history_tool ON tool_call_history(tool_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_history_created ON tool_call_history(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_call_history_success ON tool_call_history(success)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_dependencies_source ON tool_dependencies(source_tool_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_dependencies_target ON tool_dependencies(target_tool_id)")
 
     # ==================== Backend Operations ====================
 
@@ -729,11 +771,390 @@ class ToolStore:
             "signature": _build_signature(tool.name, props, required),
         }
 
+    # ==================== Rich Analytics & Dependencies ====================
+
+    def resolve_tool_id(self, tool_ref: str) -> Optional[str]:
+        """Resolve a tool reference (name or backend:name) to canonical tool_id."""
+        if not tool_ref:
+            return None
+        if ":" in tool_ref:
+            tool = self.get_tool_by_name(tool_ref)
+            if tool:
+                return tool.tool_id
+            return None
+        tool = self.get_tool_by_name(tool_ref)
+        return tool.tool_id if tool else None
+
+    @staticmethod
+    def _since_timestamp(hours: int) -> datetime:
+        hours = max(1, int(hours))
+        return datetime.utcfromtimestamp(time.time() - (hours * 3600))
+
+    def get_tool_latency_metrics(self, tool_ref: str, hours: int = 24) -> Optional[Dict[str, Any]]:
+        """Get percentile latency and reliability metrics from durable call history."""
+        tool_id = self.resolve_tool_id(tool_ref)
+        if not tool_id:
+            return None
+
+        since_ts = self._since_timestamp(hours)
+        with self._get_conn(read_only=True) as conn:
+            summary = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS calls,
+                    SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
+                    AVG(latency_ms) AS avg_latency_ms,
+                    MIN(latency_ms) AS min_latency_ms,
+                    MAX(latency_ms) AS max_latency_ms,
+                    quantile_cont(latency_ms, 0.50) AS p50_latency_ms,
+                    quantile_cont(latency_ms, 0.95) AS p95_latency_ms,
+                    quantile_cont(latency_ms, 0.99) AS p99_latency_ms,
+                    MAX(created_at) AS last_call_at
+                FROM tool_call_history
+                WHERE tool_id = ? AND created_at >= ?
+                """,
+                [tool_id, since_ts],
+            ).fetchone()
+            last_error = conn.execute(
+                """
+                SELECT error_code, error_message, created_at
+                FROM tool_call_history
+                WHERE tool_id = ? AND NOT success
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [tool_id],
+            ).fetchone()
+
+            tool_row = conn.execute(
+                """
+                SELECT name, backend_id, call_count, error_count, avg_latency_ms
+                FROM tools
+                WHERE tool_id = ?
+                """,
+                [tool_id],
+            ).fetchone()
+
+        calls = int(summary[0] or 0) if summary else 0
+        successes = int(summary[1] or 0) if summary else 0
+        failures = int(summary[2] or 0) if summary else 0
+        all_time_calls = int(tool_row[2] or 0) if tool_row else 0
+        all_time_errors = int(tool_row[3] or 0) if tool_row else 0
+
+        response: Dict[str, Any] = {
+            "tool_id": tool_id,
+            "name": tool_row[0] if tool_row else tool_ref,
+            "backend_id": tool_row[1] if tool_row else None,
+            "window_hours": max(1, int(hours)),
+            "calls": calls,
+            "successes": successes,
+            "failures": failures,
+            "success_rate": (float(successes) / calls) if calls else 0.0,
+            "error_rate": (float(failures) / calls) if calls else 0.0,
+            "avg_latency_ms": float(summary[3] or 0.0) if summary else 0.0,
+            "min_latency_ms": float(summary[4] or 0.0) if summary else 0.0,
+            "max_latency_ms": float(summary[5] or 0.0) if summary else 0.0,
+            "p50_latency_ms": float(summary[6] or 0.0) if summary else 0.0,
+            "p95_latency_ms": float(summary[7] or 0.0) if summary else 0.0,
+            "p99_latency_ms": float(summary[8] or 0.0) if summary else 0.0,
+            "last_call_at": str(summary[9]) if summary and summary[9] else None,
+            "all_time": {
+                "calls": all_time_calls,
+                "errors": all_time_errors,
+                "avg_latency_ms": float(tool_row[4] or 0.0) if tool_row else 0.0,
+                "error_rate": (float(all_time_errors) / all_time_calls) if all_time_calls else 0.0,
+            },
+        }
+
+        if last_error:
+            response["last_error"] = {
+                "code": last_error[0],
+                "message": last_error[1],
+                "at": str(last_error[2]) if last_error[2] else None,
+            }
+        else:
+            response["last_error"] = None
+        return response
+
+    def get_tool_usage_timeseries(
+        self,
+        *,
+        hours: int = 24,
+        bucket_minutes: int = 60,
+        tool_ref: Optional[str] = None,
+        limit: int = 2000,
+    ) -> Dict[str, Any]:
+        """Get bucketed call volume/latency series for charting and anomaly detection."""
+        since_ts = self._since_timestamp(hours)
+        bucket_seconds = max(60, int(bucket_minutes) * 60)
+        max_rows = max(1, int(limit))
+
+        where_sql = "created_at >= ?"
+        params: List[Any] = [bucket_seconds, bucket_seconds, since_ts]
+        resolved_tool_id = None
+        if tool_ref:
+            resolved_tool_id = self.resolve_tool_id(tool_ref)
+            if not resolved_tool_id:
+                return {
+                    "window_hours": max(1, int(hours)),
+                    "bucket_minutes": max(1, int(bucket_minutes)),
+                    "tool_id": None,
+                    "series": [],
+                }
+            where_sql += " AND tool_id = ?"
+            params.append(resolved_tool_id)
+
+        params.append(max_rows)
+        with self._get_conn(read_only=True) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    to_timestamp(floor(epoch(created_at) / ?) * ?) AS bucket_start,
+                    COUNT(*) AS calls,
+                    SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
+                    AVG(latency_ms) AS avg_latency_ms,
+                    quantile_cont(latency_ms, 0.95) AS p95_latency_ms
+                FROM tool_call_history
+                WHERE {where_sql}
+                GROUP BY bucket_start
+                ORDER BY bucket_start ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return {
+            "window_hours": max(1, int(hours)),
+            "bucket_minutes": max(1, int(bucket_minutes)),
+            "tool_id": resolved_tool_id,
+            "series": [
+                {
+                    "bucket_start": str(row[0]),
+                    "calls": int(row[1] or 0),
+                    "successes": int(row[2] or 0),
+                    "failures": int(row[3] or 0),
+                    "success_rate": (float(row[2] or 0) / float(row[1])) if row[1] else 0.0,
+                    "avg_latency_ms": float(row[4] or 0.0),
+                    "p95_latency_ms": float(row[5] or 0.0),
+                }
+                for row in rows
+            ],
+        }
+
+    def get_failure_modes(
+        self,
+        *,
+        hours: int = 24,
+        tool_ref: Optional[str] = None,
+        limit: int = 25,
+    ) -> Dict[str, Any]:
+        """Get top failure classes for debugging and reliability work."""
+        since_ts = self._since_timestamp(hours)
+        max_rows = max(1, int(limit))
+        where_sql = "created_at >= ? AND NOT success"
+        params: List[Any] = [since_ts]
+        resolved_tool_id = None
+        if tool_ref:
+            resolved_tool_id = self.resolve_tool_id(tool_ref)
+            if not resolved_tool_id:
+                return {
+                    "window_hours": max(1, int(hours)),
+                    "tool_id": None,
+                    "modes": [],
+                }
+            where_sql += " AND tool_id = ?"
+            params.append(resolved_tool_id)
+        params.append(max_rows)
+
+        with self._get_conn(read_only=True) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    COALESCE(error_code, 'unknown') AS error_code,
+                    COUNT(*) AS failures,
+                    MAX(created_at) AS last_seen_at
+                FROM tool_call_history
+                WHERE {where_sql}
+                GROUP BY error_code
+                ORDER BY failures DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return {
+            "window_hours": max(1, int(hours)),
+            "tool_id": resolved_tool_id,
+            "modes": [
+                {
+                    "error_code": row[0],
+                    "failures": int(row[1] or 0),
+                    "last_seen_at": str(row[2]) if row[2] else None,
+                }
+                for row in rows
+            ],
+        }
+
+    def upsert_tool_dependency(
+        self,
+        *,
+        source_tool_ref: str,
+        target_tool_ref: str,
+        dependency_type: str = "explicit",
+        confidence: float = 1.0,
+        call_count: int = 1,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Insert/update a dependency edge between two tools."""
+        source_tool_id = self.resolve_tool_id(source_tool_ref)
+        target_tool_id = self.resolve_tool_id(target_tool_ref)
+        if not source_tool_id:
+            raise ValueError(f"Source tool not found: {source_tool_ref}")
+        if not target_tool_id:
+            raise ValueError(f"Target tool not found: {target_tool_ref}")
+
+        now = datetime.utcnow().isoformat()
+        dep_type = (dependency_type or "explicit").strip().lower()
+        confidence = min(1.0, max(0.0, float(confidence)))
+        increment = max(1, int(call_count))
+        payload = json.dumps(metadata or {})
+
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_dependencies (
+                    source_tool_id, target_tool_id, dependency_type, confidence,
+                    call_count, metadata, first_seen_at, last_seen_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (source_tool_id, target_tool_id, dependency_type) DO UPDATE SET
+                    confidence = GREATEST(tool_dependencies.confidence, EXCLUDED.confidence),
+                    call_count = tool_dependencies.call_count + EXCLUDED.call_count,
+                    metadata = EXCLUDED.metadata,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                [
+                    source_tool_id,
+                    target_tool_id,
+                    dep_type,
+                    confidence,
+                    increment,
+                    payload,
+                    now,
+                    now,
+                    now,
+                    now,
+                ],
+            )
+
+        return {
+            "source_tool_id": source_tool_id,
+            "target_tool_id": target_tool_id,
+            "dependency_type": dep_type,
+            "confidence": confidence,
+            "incremented_by": increment,
+        }
+
+    def list_tool_dependencies(
+        self,
+        *,
+        tool_ref: Optional[str] = None,
+        dependency_type: Optional[str] = None,
+        min_confidence: float = 0.0,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List dependency edges with optional filters."""
+        where = ["1=1"]
+        params: List[Any] = []
+
+        tool_id = None
+        if tool_ref:
+            tool_id = self.resolve_tool_id(tool_ref)
+            if not tool_id:
+                return []
+            where.append("(d.source_tool_id = ? OR d.target_tool_id = ?)")
+            params.extend([tool_id, tool_id])
+
+        if dependency_type:
+            where.append("d.dependency_type = ?")
+            params.append(dependency_type.strip().lower())
+
+        min_confidence = min(1.0, max(0.0, float(min_confidence)))
+        where.append("d.confidence >= ?")
+        params.append(min_confidence)
+        params.append(max(1, int(limit)))
+
+        where_sql = " AND ".join(where)
+        with self._get_conn(read_only=True) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    d.source_tool_id,
+                    COALESCE(src.name, d.source_tool_id) AS source_name,
+                    d.target_tool_id,
+                    COALESCE(dst.name, d.target_tool_id) AS target_name,
+                    d.dependency_type,
+                    d.confidence,
+                    d.call_count,
+                    d.first_seen_at,
+                    d.last_seen_at,
+                    d.metadata
+                FROM tool_dependencies d
+                LEFT JOIN tools src ON src.tool_id = d.source_tool_id
+                LEFT JOIN tools dst ON dst.tool_id = d.target_tool_id
+                WHERE {where_sql}
+                ORDER BY d.call_count DESC, d.confidence DESC, d.last_seen_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        dependencies: List[Dict[str, Any]] = []
+        for row in rows:
+            metadata = row[9]
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {"raw": metadata}
+            dependencies.append(
+                {
+                    "source_tool_id": row[0],
+                    "source_name": row[1],
+                    "target_tool_id": row[2],
+                    "target_name": row[3],
+                    "dependency_type": row[4],
+                    "confidence": float(row[5] or 0.0),
+                    "call_count": int(row[6] or 0),
+                    "first_seen_at": str(row[7]) if row[7] else None,
+                    "last_seen_at": str(row[8]) if row[8] else None,
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+            )
+        return dependencies
+
 
     # ==================== Statistics ====================
 
-    def record_call(self, tool_id: str, latency_ms: float, success: bool):
-        """Record a tool call for statistics."""
+    def record_call(
+        self,
+        tool_id: str,
+        latency_ms: float,
+        success: bool,
+        *,
+        execution_mode: str = "sync",
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ):
+        """Record a tool call for statistics and durable time-series analytics."""
+        tool = self.get_tool(tool_id)
+        backend_id = tool.backend_id if tool else (tool_id.split(":", 1)[0] if ":" in tool_id else "unknown")
+        now = datetime.utcnow().isoformat()
         with self._get_conn() as conn:
             if success:
                 conn.execute("""
@@ -750,6 +1171,31 @@ class ToolStore:
                     WHERE tool_id = ?
                 """, [tool_id])
 
+            conn.execute(
+                """
+                INSERT INTO tool_call_history (
+                    id, tool_id, backend_id, success, latency_ms, execution_mode,
+                    trace_id, session_id, error_code, error_message, created_at
+                )
+                VALUES (
+                    nextval('tool_call_history_id_seq'),
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                [
+                    tool_id,
+                    backend_id,
+                    bool(success),
+                    float(latency_ms or 0.0),
+                    execution_mode or "sync",
+                    trace_id,
+                    session_id,
+                    error_code,
+                    (error_message or "")[:1000] if error_message else None,
+                    now,
+                ],
+            )
+
     def get_stats(self) -> Dict:
         """Get overall statistics."""
         with self._get_conn(read_only=True) as conn:
@@ -758,6 +1204,8 @@ class ToolStore:
             healthy_backends = conn.execute("SELECT COUNT(*) FROM backends WHERE is_healthy = true").fetchone()[0]
             total_calls = conn.execute("SELECT SUM(call_count) FROM tools").fetchone()[0] or 0
             total_errors = conn.execute("SELECT SUM(error_count) FROM tools").fetchone()[0] or 0
+            total_call_history = conn.execute("SELECT COUNT(*) FROM tool_call_history").fetchone()[0] or 0
+            dependency_edges = conn.execute("SELECT COUNT(*) FROM tool_dependencies").fetchone()[0] or 0
 
             return {
                 "tool_count": tool_count,
@@ -765,7 +1213,9 @@ class ToolStore:
                 "healthy_backends": healthy_backends,
                 "total_calls": total_calls,
                 "total_errors": total_errors,
-                "error_rate": total_errors / total_calls if total_calls > 0 else 0
+                "error_rate": total_errors / total_calls if total_calls > 0 else 0,
+                "total_call_history_rows": int(total_call_history),
+                "dependency_edges": int(dependency_edges),
             }
 
 
