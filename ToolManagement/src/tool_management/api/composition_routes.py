@@ -170,6 +170,31 @@ class WorkflowComposition(BaseModel):
 
 # In-memory workflow registry
 _workflow_registry: Dict[str, WorkflowComposition] = {}
+_workflow_registry_loaded: bool = False
+
+
+def _ensure_workflow_registry_loaded():
+    """Hydrate in-memory workflow registry from durable storage once per process."""
+    global _workflow_registry_loaded
+    if _workflow_registry_loaded:
+        return
+
+    store = get_execution_store()
+    loaded = 0
+    for record in store.list_workflow_definitions(limit=2000):
+        definition = record.get("definition") or {}
+        try:
+            workflow = WorkflowComposition.model_validate(definition)
+            _workflow_registry[workflow.id] = workflow
+            loaded += 1
+        except Exception as exc:
+            logger.warning(
+                f"Skipping invalid persisted workflow {record.get('workflow_id')}: {exc}"
+            )
+
+    _workflow_registry_loaded = True
+    if loaded:
+        logger.info(f"Loaded {loaded} workflows from durable store")
 
 
 def _extract_error_message(payload: Any) -> Optional[str]:
@@ -576,6 +601,8 @@ async def create_workflow(workflow: WorkflowComposition):
     }
     ```
     """
+    _ensure_workflow_registry_loaded()
+
     # Validate schema references
     for step in workflow.steps:
         if step.input_schema and step.input_schema not in [s.name for s in _schema_registry.values()]:
@@ -584,6 +611,12 @@ async def create_workflow(workflow: WorkflowComposition):
             raise HTTPException(400, f"Unknown output schema: {step.output_schema}")
 
     _workflow_registry[workflow.id] = workflow
+    get_execution_store().upsert_workflow_definition(
+        workflow_id=workflow.id,
+        workflow_name=workflow.name,
+        definition=workflow.model_dump(mode="json"),
+        tags=workflow.tags,
+    )
 
     logger.info(f"Created workflow: {workflow.name} ({workflow.id})")
 
@@ -596,6 +629,7 @@ async def list_workflows(
     limit: int = 100
 ):
     """List all registered workflows."""
+    _ensure_workflow_registry_loaded()
     workflows = list(_workflow_registry.values())
 
     if tag:
@@ -607,6 +641,7 @@ async def list_workflows(
 @router.get("/workflows/{workflow_id}", response_model=WorkflowComposition)
 async def get_workflow(workflow_id: str):
     """Get a workflow by ID."""
+    _ensure_workflow_registry_loaded()
     if workflow_id not in _workflow_registry:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
@@ -630,6 +665,8 @@ async def execute_composition(
     - input → transform (LLM) → validate → store
     - data → map → filter → reduce → output
     """
+    _ensure_workflow_registry_loaded()
+
     # Get workflow
     if request.workflow_id:
         if request.workflow_id not in _workflow_registry:

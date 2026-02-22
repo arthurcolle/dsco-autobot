@@ -138,3 +138,31 @@ def test_workflow_analytics_and_filters(tmp_path):
     assert analytics["totals"]["failed"] == 1
     assert analytics["kind_mix"]["simple_composition"] == 1
     assert analytics["kind_mix"]["named_workflow"] == 1
+
+
+def test_workflow_definition_persistence(tmp_path):
+    store = ExecutionStore(db_path=str(tmp_path / "workflow_defs.db"))
+    definition = {
+        "id": "wf_durable",
+        "name": "durable_workflow",
+        "description": "Persisted workflow definition",
+        "steps": [],
+        "version": "1.0.0",
+        "tags": ["durable", "test"],
+    }
+
+    store.upsert_workflow_definition(
+        workflow_id="wf_durable",
+        workflow_name="durable_workflow",
+        definition=definition,
+        tags=["durable", "test"],
+    )
+
+    stored = store.get_workflow_definition("wf_durable")
+    assert stored is not None
+    assert stored["workflow_name"] == "durable_workflow"
+    assert stored["definition"]["id"] == "wf_durable"
+    assert "durable" in stored["tags"]
+
+    listed = store.list_workflow_definitions(limit=10)
+    assert any(item["workflow_id"] == "wf_durable" for item in listed)

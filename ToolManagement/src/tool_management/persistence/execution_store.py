@@ -104,6 +104,15 @@ class ExecutionStore:
                     updated_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS workflow_definitions (
+                    workflow_id TEXT PRIMARY KEY,
+                    workflow_name TEXT NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    tags_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS workflow_steps (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     execution_id TEXT NOT NULL,
@@ -141,6 +150,8 @@ class ExecutionStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON workflow_executions(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_kind ON workflow_executions(workflow_kind);
                 CREATE INDEX IF NOT EXISTS idx_workflow_executions_updated ON workflow_executions(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workflow_definitions_name ON workflow_definitions(workflow_name);
+                CREATE INDEX IF NOT EXISTS idx_workflow_definitions_updated ON workflow_definitions(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_execution ON workflow_steps(execution_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_steps_status ON workflow_steps(status);
                 CREATE INDEX IF NOT EXISTS idx_workflow_events_execution ON workflow_events(execution_id);
@@ -437,6 +448,76 @@ class ExecutionStore:
             return json.loads(value)
         except Exception:
             return default
+
+    def upsert_workflow_definition(
+        self,
+        *,
+        workflow_id: str,
+        workflow_name: str,
+        definition: Dict[str, Any],
+        tags: Optional[List[str]] = None,
+    ):
+        now = time.time()
+        definition_json = json.dumps(definition, default=str)
+        tags_json = json.dumps(tags or [], default=str)
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO workflow_definitions (
+                        workflow_id, workflow_name, definition_json, tags_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        workflow_name = excluded.workflow_name,
+                        definition_json = excluded.definition_json,
+                        tags_json = excluded.tags_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        workflow_id,
+                        workflow_name,
+                        definition_json,
+                        tags_json,
+                        now,
+                        now,
+                    ),
+                )
+
+    def get_workflow_definition(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM workflow_definitions
+                WHERE workflow_id = ?
+                """,
+                (workflow_id,),
+            ).fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            data["definition"] = self._safe_json_loads(data.get("definition_json"), {})
+            data["tags"] = self._safe_json_loads(data.get("tags_json"), [])
+            return data
+
+    def list_workflow_definitions(self, limit: int = 500) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM workflow_definitions
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+
+        definitions: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["definition"] = self._safe_json_loads(data.get("definition_json"), {})
+            data["tags"] = self._safe_json_loads(data.get("tags_json"), [])
+            definitions.append(data)
+        return definitions
 
     def upsert_workflow_execution(
         self,
