@@ -16,7 +16,9 @@ import json
 import logging
 import math
 import os
+import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
@@ -32,6 +34,8 @@ from ..persistence import get_execution_store, get_tool_store
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["execution"])
+
+_USE_CASE_PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z0-9_.-]+)\}\}")
 
 
 ExecutionMode = Literal["auto", "sync", "stream", "job"]
@@ -355,6 +359,87 @@ class FollowUpStatusUpdateRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class UseCaseCatalogItem(BaseModel):
+    use_case_id: str
+    title: str
+    domain: str
+    summary: str
+    objective: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    outcomes: List[str] = Field(default_factory=list)
+    data_assets: List[str] = Field(default_factory=list)
+    economic_hooks: List[str] = Field(default_factory=list)
+    risk_controls: List[str] = Field(default_factory=list)
+    template_names: List[str] = Field(default_factory=list)
+    default_template: str = "default"
+    defaults: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    fit_score: float = 0.0
+
+
+class UseCaseListResponse(BaseModel):
+    version: str
+    count: int
+    use_cases: List[UseCaseCatalogItem]
+
+
+class UseCaseDetailResponse(BaseModel):
+    version: str
+    use_case: Dict[str, Any]
+
+
+class UseCasePlanRequest(BaseModel):
+    template: str = Field(default="default", description="Template key inside use-case.templates")
+    objective: Optional[str] = Field(default=None, description="Optional caller objective bound into {{objective}}")
+    overrides: Dict[str, Any] = Field(default_factory=dict, description="Template variables for {{placeholders}}")
+    strict_placeholders: bool = Field(
+        default=True,
+        description="When true, unresolved placeholders reject the plan/execute request",
+    )
+    execution: Optional[BatchExecutionMode] = None
+    max_parallel: Optional[int] = Field(default=None, ge=1, le=512)
+    dedupe_calls: Optional[bool] = None
+    dedupe_on_tool: Optional[bool] = None
+    max_canonical_calls: Optional[int] = Field(default=None, ge=1, le=10000)
+    overflow_policy: Optional[BatchOverflowPolicy] = None
+    max_reintegration_cost: Optional[float] = Field(default=None, ge=0.0)
+    reintegration_overflow_policy: Optional[BatchOverflowPolicy] = None
+    auto_tune_parallel: Optional[bool] = None
+    min_parallel: Optional[int] = Field(default=None, ge=1, le=512)
+    max_total_cost_cents: Optional[int] = Field(default=None, ge=0)
+    auto_follow_up: Optional[bool] = None
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class UseCaseExecuteRequest(UseCasePlanRequest):
+    pass
+
+
+class UseCasePlanResponse(BaseModel):
+    use_case_id: str
+    catalog_version: str
+    template: str
+    objective: Optional[str] = None
+    unresolved_placeholders: List[str] = Field(default_factory=list)
+    rendered_batch: Dict[str, Any] = Field(default_factory=dict)
+    admitted: bool
+    reasons: List[str] = Field(default_factory=list)
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    plan: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UseCaseExecuteResponse(BaseModel):
+    use_case_id: str
+    catalog_version: str
+    template: str
+    objective: Optional[str] = None
+    unresolved_placeholders: List[str] = Field(default_factory=list)
+    rendered_batch: Dict[str, Any] = Field(default_factory=dict)
+    execution: BatchExecuteResponse
+
+
 def _resolve_tool_name(tool_name: Optional[str], tool: Optional[str]) -> str:
     resolved = tool_name or tool
     if not resolved:
@@ -465,6 +550,348 @@ def _structured_error(
     if backend is not None:
         payload["backend"] = backend
     return payload
+
+
+def _default_use_case_catalog() -> Dict[str, Any]:
+    return {
+        "version": "fallback-2026-02-23",
+        "use_cases": [
+            {
+                "use_case_id": "fallback_market_briefing",
+                "title": "Fallback Market Briefing",
+                "domain": "market_intelligence",
+                "summary": "Parallel search and synthesis baseline for autonomous briefing.",
+                "objective": "Produce a concise market briefing from current signals.",
+                "tags": ["fallback", "market", "briefing"],
+                "outcomes": [
+                    "Latest market highlights",
+                    "Cross-source synthesis",
+                    "Persisted insights for future recall",
+                ],
+                "data_assets": ["search_results", "synthesis_summary", "belief_records"],
+                "economic_hooks": ["max_total_cost_cents", "idempotency_key"],
+                "risk_controls": ["admission_check", "reintegration_budget", "follow_up_actions"],
+                "defaults": {"query": "distributed systems market outlook", "num_results": 8},
+                "default_template": "default",
+                "templates": {
+                    "default": {
+                        "execution": "parallel",
+                        "dedupe_calls": True,
+                        "auto_tune_parallel": True,
+                        "max_reintegration_cost": 12.0,
+                        "reintegration_overflow_policy": "truncate",
+                        "calls": [
+                            {
+                                "tool_name": "search",
+                                "execution_mode": "auto",
+                                "arguments": {"query": "{{query}}", "num_results": "{{num_results}}"},
+                            },
+                            {
+                                "tool_name": "synthesize",
+                                "execution_mode": "auto",
+                                "arguments": {"topic": "{{query}}"},
+                            },
+                            {
+                                "tool_name": "store_belief",
+                                "execution_mode": "auto",
+                                "arguments": {"belief": "{{query}}", "source": "fallback"},
+                            },
+                        ],
+                    }
+                },
+            }
+        ],
+    }
+
+
+def _default_use_case_catalog_path() -> Path:
+    configured = os.getenv("EXECUTION_USE_CASE_CATALOG_PATH")
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).resolve().parents[3] / "data" / "use_case_catalog.json"
+
+
+def _load_use_case_catalog() -> Dict[str, Any]:
+    path = _default_use_case_catalog_path()
+    if not path.exists():
+        logger.warning(f"Use-case catalog not found at {path}; using fallback catalog")
+        return _default_use_case_catalog()
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        logger.error(f"Failed to read use-case catalog at {path}: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=_structured_error(
+                "USE_CASE_CATALOG_READ_FAILED",
+                f"Failed reading use-case catalog at {path}",
+                category="internal",
+                retryable=False,
+            ),
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=500,
+            detail=_structured_error(
+                "USE_CASE_CATALOG_INVALID",
+                "Use-case catalog must be a JSON object",
+                category="internal",
+                retryable=False,
+            ),
+        )
+    if not isinstance(payload.get("use_cases"), list):
+        raise HTTPException(
+            status_code=500,
+            detail=_structured_error(
+                "USE_CASE_CATALOG_INVALID",
+                "Use-case catalog requires a 'use_cases' array",
+                category="internal",
+                retryable=False,
+            ),
+        )
+    return payload
+
+
+def _normalize_use_case(raw: Dict[str, Any]) -> Dict[str, Any]:
+    templates = raw.get("templates")
+    if not isinstance(templates, dict):
+        templates = {}
+    defaults = raw.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+    normalized = {
+        "use_case_id": str(raw.get("use_case_id") or "").strip(),
+        "title": str(raw.get("title") or "").strip(),
+        "domain": str(raw.get("domain") or "general").strip(),
+        "summary": str(raw.get("summary") or "").strip(),
+        "objective": raw.get("objective"),
+        "tags": [str(tag) for tag in (raw.get("tags") or []) if str(tag).strip()],
+        "outcomes": [str(item) for item in (raw.get("outcomes") or []) if str(item).strip()],
+        "data_assets": [str(item) for item in (raw.get("data_assets") or []) if str(item).strip()],
+        "economic_hooks": [str(item) for item in (raw.get("economic_hooks") or []) if str(item).strip()],
+        "risk_controls": [str(item) for item in (raw.get("risk_controls") or []) if str(item).strip()],
+        "default_template": str(raw.get("default_template") or "default"),
+        "templates": templates,
+        "defaults": defaults,
+        "metadata": raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+    }
+    if not normalized["use_case_id"]:
+        normalized["use_case_id"] = f"use_case_{uuid4().hex[:10]}"
+    if not normalized["title"]:
+        normalized["title"] = normalized["use_case_id"]
+    return normalized
+
+
+def _iter_use_cases(catalog: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = catalog.get("use_cases")
+    if not isinstance(rows, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(_normalize_use_case(row))
+    return normalized
+
+
+def _score_use_case(
+    *,
+    use_case: Dict[str, Any],
+    domain: Optional[str],
+    query: Optional[str],
+    require_economic_hooks: Optional[bool],
+) -> float:
+    if domain and str(use_case.get("domain") or "").lower() != str(domain).lower():
+        return -1.0
+    if require_economic_hooks and not use_case.get("economic_hooks"):
+        return -1.0
+
+    score = 1.0
+    terms = [term.strip().lower() for term in str(query or "").split() if term.strip()]
+    if terms:
+        corpus = " ".join(
+            [
+                str(use_case.get("title") or ""),
+                str(use_case.get("summary") or ""),
+                str(use_case.get("objective") or ""),
+                " ".join(use_case.get("tags") or []),
+                " ".join(use_case.get("outcomes") or []),
+                " ".join(use_case.get("data_assets") or []),
+            ]
+        ).lower()
+        hits = sum(1 for term in terms if term in corpus)
+        score += float(hits) / float(max(1, len(terms)))
+        if hits == 0:
+            score *= 0.5
+
+    score += min(0.5, 0.05 * float(len(use_case.get("templates") or {})))
+    score += min(0.5, 0.03 * float(len(use_case.get("economic_hooks") or {})))
+    return score
+
+
+def _resolve_use_case_or_404(use_case_id: str) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
+    catalog = _load_use_case_catalog()
+    catalog_version = str(catalog.get("version") or "unknown")
+    for item in _iter_use_cases(catalog):
+        if str(item.get("use_case_id")) == use_case_id:
+            return catalog_version, item, catalog
+    raise HTTPException(
+        status_code=404,
+        detail=_structured_error(
+            "USE_CASE_NOT_FOUND",
+            f"Use-case not found: {use_case_id}",
+            category="not_found",
+            retryable=False,
+        ),
+    )
+
+
+def _lookup_placeholder(context: Dict[str, Any], key: str) -> Any:
+    current: Any = context
+    for part in key.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            raise KeyError(key)
+    return current
+
+
+def _render_placeholders(value: Any, context: Dict[str, Any], unresolved: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            k: _render_placeholders(v, context=context, unresolved=unresolved)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_render_placeholders(item, context=context, unresolved=unresolved) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    exact = _USE_CASE_PLACEHOLDER_RE.fullmatch(value)
+    if exact:
+        key = exact.group(1)
+        try:
+            return _lookup_placeholder(context, key)
+        except KeyError:
+            unresolved.add(key)
+            return value
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        try:
+            replacement = _lookup_placeholder(context, key)
+            return str(replacement)
+        except KeyError:
+            unresolved.add(key)
+            return match.group(0)
+
+    return _USE_CASE_PLACEHOLDER_RE.sub(_replace, value)
+
+
+def _build_use_case_batch_request(
+    *,
+    use_case: Dict[str, Any],
+    request: UseCasePlanRequest,
+) -> tuple[BatchExecuteRequest, Dict[str, Any], List[str], str]:
+    template_name = str(request.template or use_case.get("default_template") or "default")
+    templates = use_case.get("templates") if isinstance(use_case.get("templates"), dict) else {}
+    template_payload = templates.get(template_name)
+    if not isinstance(template_payload, dict):
+        raise HTTPException(
+            status_code=404,
+            detail=_structured_error(
+                "USE_CASE_TEMPLATE_NOT_FOUND",
+                f"Template '{template_name}' not found for use-case {use_case.get('use_case_id')}",
+                category="not_found",
+                retryable=False,
+            ),
+        )
+
+    context: Dict[str, Any] = {}
+    if isinstance(use_case.get("defaults"), dict):
+        context.update(use_case.get("defaults") or {})
+    context["objective"] = request.objective or use_case.get("objective") or context.get("objective")
+    context["use_case_id"] = use_case.get("use_case_id")
+    context["timestamp_unix"] = int(time.time())
+    context["today_utc"] = time.strftime("%Y-%m-%d", time.gmtime())
+    if request.trace_id:
+        context["trace_id"] = request.trace_id
+    if request.session_id:
+        context["session_id"] = request.session_id
+    if isinstance(request.overrides, dict):
+        context.update(request.overrides)
+
+    unresolved: set[str] = set()
+    rendered = _render_placeholders(template_payload, context=context, unresolved=unresolved)
+    if not isinstance(rendered, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=_structured_error(
+                "USE_CASE_TEMPLATE_INVALID",
+                f"Template '{template_name}' must render to an object",
+                category="validation",
+                retryable=False,
+            ),
+        )
+
+    if request.strict_placeholders and unresolved:
+        unresolved_sorted = sorted(unresolved)
+        raise HTTPException(
+            status_code=400,
+            detail=_structured_error(
+                "USE_CASE_PLACEHOLDER_UNRESOLVED",
+                f"Unresolved placeholders: {', '.join(unresolved_sorted)}",
+                category="validation",
+                retryable=False,
+            ),
+        )
+
+    payload: Dict[str, Any] = dict(rendered)
+    if request.execution is not None:
+        payload["execution"] = request.execution
+    if request.max_parallel is not None:
+        payload["max_parallel"] = int(request.max_parallel)
+    if request.dedupe_calls is not None:
+        payload["dedupe_calls"] = bool(request.dedupe_calls)
+    if request.dedupe_on_tool is not None:
+        payload["dedupe_on_tool"] = bool(request.dedupe_on_tool)
+    if request.max_canonical_calls is not None:
+        payload["max_canonical_calls"] = int(request.max_canonical_calls)
+    if request.overflow_policy is not None:
+        payload["overflow_policy"] = request.overflow_policy
+    if request.max_reintegration_cost is not None:
+        payload["max_reintegration_cost"] = float(request.max_reintegration_cost)
+    if request.reintegration_overflow_policy is not None:
+        payload["reintegration_overflow_policy"] = request.reintegration_overflow_policy
+    if request.auto_tune_parallel is not None:
+        payload["auto_tune_parallel"] = bool(request.auto_tune_parallel)
+    if request.min_parallel is not None:
+        payload["min_parallel"] = int(request.min_parallel)
+    if request.max_total_cost_cents is not None:
+        payload["max_total_cost_cents"] = int(request.max_total_cost_cents)
+    if request.auto_follow_up is not None:
+        payload["auto_follow_up"] = bool(request.auto_follow_up)
+    if request.trace_id:
+        payload["trace_id"] = request.trace_id
+    if request.session_id:
+        payload["session_id"] = request.session_id
+
+    try:
+        batch_request = BatchExecuteRequest.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_structured_error(
+                "USE_CASE_BATCH_REQUEST_INVALID",
+                str(exc),
+                category="validation",
+                retryable=False,
+            ),
+        ) from exc
+
+    return batch_request, payload, sorted(unresolved), template_name
 
 
 def _latency_class_for_tool(tool_ref: str) -> str:
@@ -2098,6 +2525,105 @@ async def get_policy_decision_analytics(
         "latency_class_mix": latency_mix,
         "top_tools": [{"tool_name": name, "decisions": count} for name, count in top_tools],
     }
+
+
+@router.get("/use-cases", response_model=UseCaseListResponse)
+async def list_real_world_use_cases(
+    domain: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None, description="Free-text objective/query match"),
+    require_economic_hooks: Optional[bool] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    catalog = _load_use_case_catalog()
+    version = str(catalog.get("version") or "unknown")
+    items: List[UseCaseCatalogItem] = []
+    for use_case in _iter_use_cases(catalog):
+        score = _score_use_case(
+            use_case=use_case,
+            domain=domain,
+            query=q,
+            require_economic_hooks=require_economic_hooks,
+        )
+        if score < 0:
+            continue
+        templates = use_case.get("templates") if isinstance(use_case.get("templates"), dict) else {}
+        item = UseCaseCatalogItem(
+            use_case_id=str(use_case.get("use_case_id")),
+            title=str(use_case.get("title") or use_case.get("use_case_id") or "unknown"),
+            domain=str(use_case.get("domain") or "general"),
+            summary=str(use_case.get("summary") or ""),
+            objective=use_case.get("objective"),
+            tags=list(use_case.get("tags") or []),
+            outcomes=list(use_case.get("outcomes") or []),
+            data_assets=list(use_case.get("data_assets") or []),
+            economic_hooks=list(use_case.get("economic_hooks") or []),
+            risk_controls=list(use_case.get("risk_controls") or []),
+            template_names=sorted([str(name) for name in templates.keys()]),
+            default_template=str(use_case.get("default_template") or "default"),
+            defaults=use_case.get("defaults") if isinstance(use_case.get("defaults"), dict) else {},
+            metadata=use_case.get("metadata") if isinstance(use_case.get("metadata"), dict) else {},
+            fit_score=round(float(score), 4),
+        )
+        items.append(item)
+
+    items.sort(key=lambda row: (float(row.fit_score), len(row.economic_hooks), len(row.template_names)), reverse=True)
+    trimmed = items[:limit]
+    return UseCaseListResponse(
+        version=version,
+        count=len(trimmed),
+        use_cases=trimmed,
+    )
+
+
+@router.post("/use-cases/{use_case_id}/plan", response_model=UseCasePlanResponse)
+async def plan_real_world_use_case(use_case_id: str, request: UseCasePlanRequest):
+    catalog_version, use_case, _catalog = _resolve_use_case_or_404(use_case_id)
+    batch_request, rendered_batch, unresolved, template_name = _build_use_case_batch_request(
+        use_case=use_case,
+        request=request,
+    )
+    plan_result = await plan_execute_batch(batch_request)
+    return UseCasePlanResponse(
+        use_case_id=use_case_id,
+        catalog_version=catalog_version,
+        template=template_name,
+        objective=request.objective or use_case.get("objective"),
+        unresolved_placeholders=unresolved,
+        rendered_batch=rendered_batch,
+        admitted=bool(plan_result.get("admitted")),
+        reasons=list(plan_result.get("reasons") or []),
+        trace_id=plan_result.get("trace_id"),
+        session_id=plan_result.get("session_id"),
+        plan=plan_result.get("plan") if isinstance(plan_result.get("plan"), dict) else {},
+    )
+
+
+@router.post("/use-cases/{use_case_id}/execute", response_model=UseCaseExecuteResponse)
+async def execute_real_world_use_case(use_case_id: str, request: UseCaseExecuteRequest):
+    catalog_version, use_case, _catalog = _resolve_use_case_or_404(use_case_id)
+    batch_request, rendered_batch, unresolved, template_name = _build_use_case_batch_request(
+        use_case=use_case,
+        request=request,
+    )
+    execution = await execute_batch(batch_request)
+    return UseCaseExecuteResponse(
+        use_case_id=use_case_id,
+        catalog_version=catalog_version,
+        template=template_name,
+        objective=request.objective or use_case.get("objective"),
+        unresolved_placeholders=unresolved,
+        rendered_batch=rendered_batch,
+        execution=execution,
+    )
+
+
+@router.get("/use-cases/{use_case_id}", response_model=UseCaseDetailResponse)
+async def get_real_world_use_case(use_case_id: str):
+    catalog_version, use_case, _catalog = _resolve_use_case_or_404(use_case_id)
+    return UseCaseDetailResponse(
+        version=catalog_version,
+        use_case=use_case,
+    )
 
 
 @router.post("/execute/batch/plan")

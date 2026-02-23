@@ -1,0 +1,634 @@
+{
+  "version": "2026-02-23",
+  "use_cases": [
+    {
+      "use_case_id": "market_intel_compound_briefing",
+      "title": "Market Intelligence Compound Briefing",
+      "domain": "market_intelligence",
+      "summary": "Continuously harvest market signals, synthesize them, and persist durable beliefs for agent memory.",
+      "objective": "Generate a reliable daily strategic market brief with traceable evidence.",
+      "tags": ["market", "research", "memory", "agents"],
+      "outcomes": [
+        "Fresh cross-source briefing",
+        "Persisted thesis updates",
+        "Reduced repeated deep-search cost"
+      ],
+      "data_assets": [
+        "search_result_cache",
+        "source_extracts",
+        "synthesized_briefs",
+        "belief_embeddings"
+      ],
+      "economic_hooks": [
+        "max_total_cost_cents",
+        "max_reintegration_cost",
+        "idempotency_key",
+        "auto_follow_up"
+      ],
+      "risk_controls": [
+        "admission_check",
+        "batch_plan_preflight",
+        "reintegration_policy",
+        "durable_follow_ups"
+      ],
+      "defaults": {
+        "query": "distributed systems market outlook",
+        "segment": "infrastructure and autonomy",
+        "num_results": 8,
+        "deep_num_results": 18
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "dedupe_on_tool": true,
+          "auto_tune_parallel": true,
+          "max_parallel": 8,
+          "max_reintegration_cost": 12.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 380,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{query}}",
+                "segment": "{{segment}}",
+                "num_results": "{{num_results}}"
+              }
+            },
+            {
+              "tool_name": "deep_search",
+              "execution_mode": "job",
+              "arguments": {
+                "query": "{{query}}",
+                "num_results": "{{deep_num_results}}",
+                "mode": "thorough"
+              }
+            },
+            {
+              "tool_name": "synthesize",
+              "execution_mode": "auto",
+              "arguments": {
+                "topic": "{{query}}",
+                "style": "executive"
+              }
+            },
+            {
+              "tool_name": "store_belief",
+              "execution_mode": "auto",
+              "arguments": {
+                "belief": "{{objective}}",
+                "source": "market_intel_compound_briefing"
+              },
+              "idempotency_key": "belief:{{query}}:{{today_utc}}"
+            }
+          ]
+        },
+        "quick": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "max_parallel": 4,
+          "max_reintegration_cost": 6.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 150,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{query}}",
+                "num_results": 5
+              }
+            },
+            {
+              "tool_name": "synthesize",
+              "execution_mode": "auto",
+              "arguments": {
+                "topic": "{{query}}",
+                "style": "brief"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "incident_response_live_ops",
+      "title": "Incident Response Live Ops",
+      "domain": "operations",
+      "summary": "Run real-time incident triage with streaming search and event publication while maintaining cost controls.",
+      "objective": "Detect, summarize, and broadcast incident state changes quickly.",
+      "tags": ["incident", "ops", "alerts", "streaming"],
+      "outcomes": [
+        "Rapid incident detection",
+        "Actionable status updates",
+        "Durable event lineage"
+      ],
+      "data_assets": [
+        "incident_timeline",
+        "event_stream",
+        "operator_notes"
+      ],
+      "economic_hooks": [
+        "max_total_cost_cents",
+        "max_reintegration_cost",
+        "callback_events"
+      ],
+      "risk_controls": [
+        "queue_backpressure",
+        "priority_control",
+        "fast_fail_errors"
+      ],
+      "defaults": {
+        "incident_query": "regional outage status",
+        "severity": "high"
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "max_parallel": 6,
+          "auto_tune_parallel": true,
+          "max_reintegration_cost": 8.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 220,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "stream",
+              "arguments": {
+                "query": "{{incident_query}}",
+                "num_results": 12,
+                "sort": "latest"
+              },
+              "priority": "p0"
+            },
+            {
+              "tool_name": "read",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{incident_query}}"
+              },
+              "priority": "p0"
+            },
+            {
+              "tool_name": "publish_event",
+              "execution_mode": "auto",
+              "arguments": {
+                "event_type": "incident.update",
+                "severity": "{{severity}}",
+                "summary": "{{objective}}"
+              },
+              "idempotency_key": "incident:update:{{incident_query}}:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "memory_compounding_research_loop",
+      "title": "Memory-Compounding Research Loop",
+      "domain": "knowledge_compounding",
+      "summary": "Retrieve prior beliefs, augment with fresh evidence, and store upgraded memory representations.",
+      "objective": "Compounding knowledge quality over repeated autonomous research cycles.",
+      "tags": ["memory", "research", "beliefs", "compounding"],
+      "outcomes": [
+        "Lower repeated token/tool cost",
+        "Higher quality continuity across sessions",
+        "Faster context rehydration"
+      ],
+      "data_assets": [
+        "belief_index",
+        "embedding_cache",
+        "research_episodes"
+      ],
+      "economic_hooks": [
+        "idempotency_key",
+        "max_total_cost_cents",
+        "dedupe_calls"
+      ],
+      "risk_controls": [
+        "dependency_visibility",
+        "policy_decisions",
+        "admission_guardrails"
+      ],
+      "defaults": {
+        "topic": "autonomous agents",
+        "fresh_query": "autonomous agents reliability benchmarks"
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "auto_tune_parallel": true,
+          "max_parallel": 6,
+          "max_reintegration_cost": 10.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 260,
+          "calls": [
+            {
+              "tool_name": "semantic_search_beliefs",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{topic}}",
+                "top_k": 12
+              }
+            },
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{fresh_query}}",
+                "num_results": 10
+              }
+            },
+            {
+              "tool_name": "synthesize",
+              "execution_mode": "auto",
+              "arguments": {
+                "topic": "{{topic}}",
+                "style": "research"
+              }
+            },
+            {
+              "tool_name": "store_belief",
+              "execution_mode": "auto",
+              "arguments": {
+                "belief": "{{topic}}",
+                "source": "memory_compounding_research_loop"
+              },
+              "idempotency_key": "memory-loop:{{topic}}:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "compliance_evidence_pack_generator",
+      "title": "Compliance Evidence Pack Generator",
+      "domain": "compliance",
+      "summary": "Generate auditable evidence packets from external sources with explicit cost and lineage controls.",
+      "objective": "Produce compliance-grade evidence and preserve durable provenance.",
+      "tags": ["compliance", "audit", "lineage", "risk"],
+      "outcomes": [
+        "Auditable source chain",
+        "Repeatable packet generation",
+        "Reduced legal review cycle time"
+      ],
+      "data_assets": [
+        "source_lineage",
+        "audit_packets",
+        "policy_decisions"
+      ],
+      "economic_hooks": [
+        "max_total_cost_cents",
+        "max_reintegration_cost",
+        "idempotency_key"
+      ],
+      "risk_controls": [
+        "structured_errors",
+        "trace_id_propagation",
+        "circuit_breaker_visibility"
+      ],
+      "defaults": {
+        "regulation_topic": "financial data retention regulation",
+        "jurisdiction": "US"
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "sequential",
+          "dedupe_calls": true,
+          "max_parallel": 3,
+          "max_reintegration_cost": 7.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 210,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{regulation_topic}} {{jurisdiction}}",
+                "num_results": 8
+              }
+            },
+            {
+              "tool_name": "read",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{regulation_topic}}"
+              }
+            },
+            {
+              "tool_name": "synthesize",
+              "execution_mode": "auto",
+              "arguments": {
+                "topic": "{{regulation_topic}}",
+                "style": "compliance"
+              }
+            },
+            {
+              "tool_name": "publish_event",
+              "execution_mode": "auto",
+              "arguments": {
+                "event_type": "compliance.evidence_pack.created",
+                "topic": "{{regulation_topic}}"
+              },
+              "idempotency_key": "compliance-pack:{{regulation_topic}}:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "economic_settlement_watchtower",
+      "title": "Economic Settlement Watchtower",
+      "domain": "economics",
+      "summary": "Monitor revenue-impacting signals and enforce spend discipline while preserving event-grade records.",
+      "objective": "Keep autonomous operations economically aligned and settlement-safe.",
+      "tags": ["economics", "billing", "settlement", "governance"],
+      "outcomes": [
+        "Spend-aware execution",
+        "Durable economic events",
+        "Lower duplicate charge risk"
+      ],
+      "data_assets": [
+        "economic_events",
+        "balance_snapshots",
+        "policy_decisions"
+      ],
+      "economic_hooks": [
+        "admission_check",
+        "max_cost_cents",
+        "idempotency_key"
+      ],
+      "risk_controls": [
+        "budget_overflow_rejection",
+        "idempotent_replay",
+        "structured_error_codes"
+      ],
+      "defaults": {
+        "signal_query": "autonomous systems monetization trends"
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "auto_tune_parallel": true,
+          "max_parallel": 5,
+          "max_reintegration_cost": 6.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 180,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{signal_query}}",
+                "num_results": 7
+              },
+              "max_cost_cents": 60
+            },
+            {
+              "tool_name": "list_events",
+              "execution_mode": "auto",
+              "arguments": {}
+            },
+            {
+              "tool_name": "publish_event",
+              "execution_mode": "auto",
+              "arguments": {
+                "event_type": "economics.watchtower.snapshot",
+                "summary": "{{objective}}"
+              },
+              "idempotency_key": "watchtower:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "swarm_strategy_control_tower",
+      "title": "Swarm Strategy Control Tower",
+      "domain": "swarm_operations",
+      "summary": "Coordinate multi-agent swarm planning, execution, and telemetry in one governed pipeline.",
+      "objective": "Route autonomous work to specialized agents while preserving owner and economic controls.",
+      "tags": ["swarm", "agents", "control", "routing"],
+      "outcomes": [
+        "Higher throughput per dollar",
+        "Task-level governance",
+        "Improved mission completion reliability"
+      ],
+      "data_assets": [
+        "swarm_task_log",
+        "agent_profiles",
+        "execution_groups"
+      ],
+      "economic_hooks": [
+        "fanout_budget",
+        "max_total_cost_cents",
+        "follow_up_actions"
+      ],
+      "risk_controls": [
+        "owner_wallet_auth",
+        "fanout_limits",
+        "queue_backpressure"
+      ],
+      "defaults": {
+        "mission": "evaluate distributed systems opportunities",
+        "fanout_budget": 6
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "max_parallel": 6,
+          "auto_tune_parallel": true,
+          "max_reintegration_cost": 9.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 300,
+          "calls": [
+            {
+              "tool_name": "run_task",
+              "execution_mode": "job",
+              "fanout_budget": "{{fanout_budget}}",
+              "arguments": {
+                "task": "{{mission}}",
+                "profile": "research"
+              }
+            },
+            {
+              "tool_name": "deep_search",
+              "execution_mode": "job",
+              "arguments": {
+                "query": "{{mission}}",
+                "num_results": 20,
+                "mode": "thorough"
+              }
+            },
+            {
+              "tool_name": "store_belief",
+              "execution_mode": "auto",
+              "arguments": {
+                "belief": "{{mission}}",
+                "source": "swarm_strategy_control_tower"
+              },
+              "idempotency_key": "swarm-mission:{{mission}}:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "autonomous_customer_signal_radar",
+      "title": "Autonomous Customer Signal Radar",
+      "domain": "customer_intelligence",
+      "summary": "Continuously ingest and summarize customer sentiment and product-signal drift.",
+      "objective": "Detect customer signal changes early and route to product strategy loops.",
+      "tags": ["customer", "signals", "radar", "product"],
+      "outcomes": [
+        "Faster signal detection",
+        "Prioritized product opportunities",
+        "Durable insight archive"
+      ],
+      "data_assets": [
+        "signal_clusters",
+        "weekly_summaries",
+        "episode_records"
+      ],
+      "economic_hooks": [
+        "max_reintegration_cost",
+        "auto_tune_parallel",
+        "dedupe_calls"
+      ],
+      "risk_controls": [
+        "admission_control",
+        "batch_truncation",
+        "follow_up_generation"
+      ],
+      "defaults": {
+        "market": "developer tooling",
+        "window": "last 7 days"
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "max_parallel": 7,
+          "auto_tune_parallel": true,
+          "max_reintegration_cost": 9.5,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 240,
+          "calls": [
+            {
+              "tool_name": "search",
+              "execution_mode": "auto",
+              "arguments": {
+                "query": "{{market}} sentiment {{window}}",
+                "num_results": 10
+              }
+            },
+            {
+              "tool_name": "deep_search",
+              "execution_mode": "job",
+              "arguments": {
+                "query": "{{market}} product pain points {{window}}",
+                "num_results": 14
+              }
+            },
+            {
+              "tool_name": "synthesize",
+              "execution_mode": "auto",
+              "arguments": {
+                "topic": "{{market}} customer signals",
+                "style": "product"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "use_case_id": "knowledge_graph_bootstrap_pipeline",
+      "title": "Knowledge Graph Bootstrap Pipeline",
+      "domain": "knowledge_infrastructure",
+      "summary": "Build initial graph-backed knowledge state from distributed tool outputs with guardrailed fanout.",
+      "objective": "Bootstrap a high-value knowledge substrate that gets stronger with each cycle.",
+      "tags": ["knowledge", "graph", "bootstrap", "durability"],
+      "outcomes": [
+        "Structured knowledge foundation",
+        "Reusable retrieval substrate",
+        "Lower incremental recompute cost"
+      ],
+      "data_assets": [
+        "graph_nodes",
+        "graph_edges",
+        "execution_lineage"
+      ],
+      "economic_hooks": [
+        "max_total_cost_cents",
+        "fanout_budget",
+        "max_reintegration_cost"
+      ],
+      "risk_controls": [
+        "canonical_cap",
+        "reintegration_budget",
+        "group_compaction"
+      ],
+      "defaults": {
+        "bootstrap_topic": "distributed autonomy platforms",
+        "fanout_budget": 8
+      },
+      "default_template": "default",
+      "templates": {
+        "default": {
+          "execution": "parallel",
+          "dedupe_calls": true,
+          "max_parallel": 8,
+          "auto_tune_parallel": true,
+          "max_canonical_calls": 16,
+          "overflow_policy": "truncate",
+          "max_reintegration_cost": 14.0,
+          "reintegration_overflow_policy": "truncate",
+          "max_total_cost_cents": 420,
+          "calls": [
+            {
+              "tool_name": "find_all",
+              "execution_mode": "job",
+              "fanout_budget": "{{fanout_budget}}",
+              "arguments": {
+                "query": "{{bootstrap_topic}}",
+                "limit": 20
+              }
+            },
+            {
+              "tool_name": "deep_search",
+              "execution_mode": "job",
+              "arguments": {
+                "query": "{{bootstrap_topic}} architecture",
+                "num_results": 20,
+                "mode": "thorough"
+              }
+            },
+            {
+              "tool_name": "store_belief",
+              "execution_mode": "auto",
+              "arguments": {
+                "belief": "{{bootstrap_topic}}",
+                "source": "knowledge_graph_bootstrap_pipeline"
+              },
+              "idempotency_key": "graph-bootstrap:{{bootstrap_topic}}:{{today_utc}}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

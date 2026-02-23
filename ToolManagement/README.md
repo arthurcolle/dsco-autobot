@@ -153,6 +153,15 @@ After deployment, Modal will provide you with a URL for your service.
 - `POST /api/v1/tools/execute` - Execute a single tool
 - `POST /api/v1/tools/search` - Search for tools using semantic search
 
+### Real-World Use-Case Catalog
+
+- `GET /api/v1/use-cases` - Discover production use-case templates by domain/objective
+- `GET /api/v1/use-cases/{use_case_id}` - Inspect full template details and defaults
+- `POST /api/v1/use-cases/{use_case_id}/plan` - Build a guarded execution plan with cost/reintegration checks
+- `POST /api/v1/use-cases/{use_case_id}/execute` - Execute a rendered use-case as a batch workflow
+
+See `REAL_WORLD_USE_CASES.md` for scenario details and example payloads.
+
 ### MCP (Model Context Protocol) Endpoints
 
 - `WS /mcp` - WebSocket endpoint for MCP protocol communication
