@@ -58,6 +58,21 @@ python fastapi_app.py
 
 The API will be available at `http://localhost:8000`
 
+### One-Command CLI
+
+Use `./do` for fast interaction with the deployed Tool Management API:
+
+```bash
+./do health
+./do list
+./do "run a daily strategic market brief"
+./do plan "evaluate autonomous agent market shifts"
+```
+
+Defaults:
+- API URL: `https://tools.distributed.systems`
+- Use case: `market_intel_compound_briefing`
+
 ### API Documentation
 
 When running locally, you can access:

@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_API_URL="https://tools.distributed.systems"
+DEFAULT_USE_CASE="market_intel_compound_briefing"
+DEFAULT_OBJECTIVE="Generate a daily strategic market brief"
+
+API_URL="${TOOLS_API_URL:-${TOOL_MANAGEMENT_API_URL:-$DEFAULT_API_URL}}"
+USE_CASE="${DO_USE_CASE:-$DEFAULT_USE_CASE}"
+TOKEN="${TOOLS_API_TOKEN:-${AUTH_TOKEN:-}}"
+MAX_TOTAL_COST_CENTS="${DO_MAX_TOTAL_COST_CENTS:-}"
+MAX_REINTEGRATION_COST="${DO_MAX_REINTEGRATION_COST:-}"
+
+usage() {
+  cat <<USAGE
+Usage:
+  ./do health
+  ./do list
+  ./do run "<objective>" [--use-case <id>] [--url <api_url>] [--token <bearer>] [--max-total-cost <cents>] [--max-reintegration-cost <cost>]
+  ./do plan "<objective>" [same flags as run]
+  ./do "<objective>"   # shorthand for run
+
+Defaults:
+  API URL:   ${DEFAULT_API_URL}
+  Use case:  ${DEFAULT_USE_CASE}
+
+Env overrides:
+  TOOLS_API_URL / TOOL_MANAGEMENT_API_URL
+  TOOLS_API_TOKEN / AUTH_TOKEN
+  DO_USE_CASE
+  DO_MAX_TOTAL_COST_CENTS
+  DO_MAX_REINTEGRATION_COST
+
+Notes:
+  - Tries /api/v1/use-cases/* first.
+  - If deployed API is older, it auto-falls back to /api/v1/execute*.
+USAGE
+}
+
+pretty_print_json() {
+  if command -v jq >/dev/null 2>&1; then
+    jq .
+  else
+    python -m json.tool 2>/dev/null || cat
+  fi
+}
+
+is_success_status() {
+  [[ "$1" =~ ^2[0-9][0-9]$ ]]
+}
+
+API_STATUS=""
+API_BODY=""
+API_CURL_ERROR=""
+
+call_api() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+
+  local -a curl_args
+  curl_args=(
+    -sS
+    --connect-timeout 5
+    --max-time 20
+    -X "$method"
+    "$API_URL$path"
+    -H "content-type: application/json"
+  )
+
+  if [[ -n "$TOKEN" ]]; then
+    curl_args+=( -H "authorization: Bearer $TOKEN" )
+  fi
+
+  if [[ -n "$body" ]]; then
+    curl_args+=( -d "$body" )
+  fi
+
+  local tmp_body tmp_err rc
+  tmp_body="$(mktemp)"
+  tmp_err="$(mktemp)"
+  set +e
+  API_STATUS="$(curl "${curl_args[@]}" -o "$tmp_body" -w "%{http_code}" 2>"$tmp_err")"
+  rc=$?
+  set -e
+
+  API_BODY="$(cat "$tmp_body")"
+  API_CURL_ERROR="$(cat "$tmp_err")"
+  rm -f "$tmp_body" "$tmp_err"
+
+  if [[ $rc -ne 0 && -z "$API_BODY" ]]; then
+    API_BODY="{\"error\":\"${API_CURL_ERROR//\"/\\\"}\"}"
+  fi
+}
+
+print_api_or_error() {
+  local method="$1"
+  local path="$2"
+  local status="$API_STATUS"
+
+  if is_success_status "$status"; then
+    if [[ -n "$API_BODY" ]]; then
+      printf '%s\n' "$API_BODY" | pretty_print_json
+    fi
+    return 0
+  fi
+
+  echo "HTTP ${status:-000} from $API_URL$path" >&2
+  if [[ -n "$API_BODY" ]]; then
+    printf '%s\n' "$API_BODY" | pretty_print_json >&2
+  elif [[ -n "$API_CURL_ERROR" ]]; then
+    printf '%s\n' "$API_CURL_ERROR" >&2
+  fi
+  if [[ "${status:-000}" == "000" ]]; then
+    echo "Hint: try --token <bearer> (or TOOLS_API_TOKEN) if your deployed API protects POST routes." >&2
+    echo "Hint: or run against local API with --url http://localhost:2016" >&2
+  fi
+  return 1
+}
+
+build_objective_payload() {
+  local objective="$1"
+  OBJECTIVE="$objective" \
+  MAX_TOTAL_COST_CENTS="$MAX_TOTAL_COST_CENTS" \
+  MAX_REINTEGRATION_COST="$MAX_REINTEGRATION_COST" \
+  python - <<'PY'
+import json
+import os
+
+objective = os.getenv("OBJECTIVE", "").strip()
+payload = {"objective": objective}
+
+max_total = os.getenv("MAX_TOTAL_COST_CENTS", "").strip()
+if max_total:
+    payload["max_total_cost_cents"] = int(max_total)
+
+max_reintegration = os.getenv("MAX_REINTEGRATION_COST", "").strip()
+if max_reintegration:
+    payload["max_reintegration_cost"] = float(max_reintegration)
+
+print(json.dumps(payload))
+PY
+}
+
+build_legacy_execute_payload() {
+  local objective="$1"
+  OBJECTIVE="$objective" MAX_TOTAL_COST_CENTS="$MAX_TOTAL_COST_CENTS" python - <<'PY'
+import json
+import os
+
+payload = {
+    "tool_name": "search",
+    "arguments": {
+        "query": os.getenv("OBJECTIVE", "").strip(),
+        "num_results": 8,
+    },
+    "execution_mode": "auto",
+    "stream": False,
+}
+max_total = os.getenv("MAX_TOTAL_COST_CENTS", "").strip()
+if max_total:
+    payload["max_cost_cents"] = int(max_total)
+print(json.dumps(payload))
+PY
+}
+
+build_legacy_tools_payload() {
+  local objective="$1"
+  OBJECTIVE="$objective" python - <<'PY'
+import json
+import os
+
+payload = {
+    "tool": "search",
+    "arguments": {
+        "query": os.getenv("OBJECTIVE", "").strip(),
+        "num_results": 8,
+    },
+}
+print(json.dumps(payload))
+PY
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+command="run"
+case "${1:-}" in
+  health|list|run|plan|execute)
+    command="$1"
+    shift
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    command="run"
+    ;;
+esac
+
+objective_parts=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --use-case)
+      USE_CASE="$2"
+      shift 2
+      ;;
+    --url)
+      API_URL="$2"
+      shift 2
+      ;;
+    --token)
+      TOKEN="$2"
+      shift 2
+      ;;
+    --max-total-cost)
+      MAX_TOTAL_COST_CENTS="$2"
+      shift 2
+      ;;
+    --max-reintegration-cost)
+      MAX_REINTEGRATION_COST="$2"
+      shift 2
+      ;;
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    *)
+      objective_parts+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ "$command" == "health" ]]; then
+  call_api GET "/health"
+  print_api_or_error GET "/health"
+  exit 0
+fi
+
+if [[ "$command" == "list" ]]; then
+  call_api GET "/api/v1/use-cases?limit=50"
+  if is_success_status "$API_STATUS"; then
+    print_api_or_error GET "/api/v1/use-cases?limit=50"
+    exit 0
+  fi
+  if [[ "$API_STATUS" == "404" ]]; then
+    echo "Use-case catalog endpoint is not deployed yet on this API; falling back to tool list." >&2
+    call_api GET "/api/v1/tools?limit=50"
+    print_api_or_error GET "/api/v1/tools?limit=50"
+    exit 0
+  fi
+  print_api_or_error GET "/api/v1/use-cases?limit=50"
+  exit 0
+fi
+
+if [[ "$command" == "execute" ]]; then
+  command="run"
+fi
+
+objective="${objective_parts[*]:-}"
+if [[ -z "$objective" ]]; then
+  objective="$DEFAULT_OBJECTIVE"
+fi
+
+payload="$(build_objective_payload "$objective")"
+
+endpoint="/api/v1/use-cases/${USE_CASE}/execute"
+if [[ "$command" == "plan" ]]; then
+  endpoint="/api/v1/use-cases/${USE_CASE}/plan"
+fi
+
+call_api POST "$endpoint" "$payload"
+if is_success_status "$API_STATUS"; then
+  print_api_or_error POST "$endpoint"
+  exit 0
+fi
+
+if [[ "$API_STATUS" != "404" ]]; then
+  print_api_or_error POST "$endpoint"
+  exit 1
+fi
+
+legacy_payload="$(build_legacy_execute_payload "$objective")"
+if [[ "$command" == "plan" ]]; then
+  echo "Use-case plan endpoint not deployed; falling back to admission-check." >&2
+  call_api POST "/api/v1/execute/admission-check" "$legacy_payload"
+  if is_success_status "$API_STATUS"; then
+    print_api_or_error POST "/api/v1/execute/admission-check"
+    exit 0
+  fi
+  print_api_or_error POST "/api/v1/execute/admission-check"
+  exit 1
+fi
+
+echo "Use-case execute endpoint not deployed; falling back to /api/v1/execute." >&2
+call_api POST "/api/v1/execute" "$legacy_payload"
+if is_success_status "$API_STATUS"; then
+  print_api_or_error POST "/api/v1/execute"
+  exit 0
+fi
+
+if [[ "$API_STATUS" == "404" ]]; then
+  echo "/api/v1/execute not available; falling back to /api/v1/tools/execute." >&2
+  tools_payload="$(build_legacy_tools_payload "$objective")"
+  call_api POST "/api/v1/tools/execute" "$tools_payload"
+  print_api_or_error POST "/api/v1/tools/execute"
+  exit 0
+fi
+
+print_api_or_error POST "/api/v1/execute"
