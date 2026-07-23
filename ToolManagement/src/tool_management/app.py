@@ -36,7 +36,9 @@ from .api.tools_api import router as tools_api_router
 from .api.execution_routes import router as execution_router
 from .api.advanced_search_routes import router as advanced_search_router
 from .api.job_routes import router as job_router
-from .oauth import router as oauth_router
+from .api.codex_apps_routes import router as codex_apps_router
+from .api.feedback_routes import router as feedback_router
+from .oauth import router as oauth_router, require_bearer, make_401_response
 from .registry import get_registry, get_service_registry
 from .persistence import get_tool_store
 from .queue import get_task_queue, MCPBackend
@@ -140,11 +142,14 @@ async def lifespan(app: FastAPI):
         await queue.start()
         logger.info("Task queue processor started")
 
-    # Start native MCP servers
+    # Start native MCP servers in the BACKGROUND so the HTTP listener binds
+    # instantly. Spawning + health-checking ~8 subprocesses must not block the
+    # lifespan startup (uvicorn refuses connections until startup returns).
+    # Backends register themselves as they come online.
     auto_start_native = os.getenv("AUTO_START_NATIVE_MCPS", "1") == "1"
-    native_manager = None
     if auto_start_native:
-        try:
+        async def _start_native_backends():
+          try:
             host = os.getenv("HOST", "0.0.0.0")
             port = int(os.getenv("PORT", "2016"))
             native_manager = await init_native_mcp_manager(
@@ -156,10 +161,11 @@ async def lifespan(app: FastAPI):
             for mcp_id, state in native_manager.servers.items():
                 if state.status.value == "running":
                     config = state.config
+                    native_url = f"http://localhost:{config.port}"
                     queue.register_backend(MCPBackend(
                         id=config.id,
                         name=config.name,
-                        url=f"http://localhost:{config.port}",
+                        url=native_url,
                         health_endpoint=config.health_endpoint,
                         mcp_endpoint=config.mcp_endpoint,
                         capabilities=config.capabilities,
@@ -169,8 +175,49 @@ async def lifespan(app: FastAPI):
                     ))
                     logger.info(f"Registered native backend: {config.name}")
 
-        except Exception as e:
+                    # Persist into the tool_store so backend:tool refs resolve for the
+                    # synchronous execute path. These are heavy DuckDB writes (one
+                    # per tool, thousands for the fabrics), so run them OFF the event
+                    # loop in a worker thread — otherwise the listener wedges during
+                    # warmup. (Mirrors the announce path's asyncio.to_thread persist.)
+                    def _persist_backend(config=config, state=state, native_url=native_url):
+                        from .persistence import RegisteredTool as _RegTool
+                        _store = get_tool_store()
+                        _store.register_backend(
+                            backend_id=config.id,
+                            name=config.name,
+                            url=native_url,
+                            health_endpoint=config.health_endpoint,
+                            mcp_endpoint=config.mcp_endpoint,
+                            capabilities=list(config.capabilities),
+                        )
+                        _cat = config.id.replace("distributed-", "").replace("-mcp", "").strip() or "general"
+                        for _td in (state.tools or []):
+                            _name = _td.get("name")
+                            if not _name:
+                                continue
+                            _schema = _td.get("inputSchema", {})
+                            _tags = _td.get("tags") or list(_schema.get("properties", {}).keys())[:5]
+                            _store.register_tool(_RegTool(
+                                tool_id=f"{config.id}:{_name}",
+                                name=_name,
+                                backend_id=config.id,
+                                backend_url=native_url,
+                                description=_td.get("description", ""),
+                                input_schema=_schema,
+                                tags=_tags,
+                                category=_td.get("category", _cat),
+                            ))
+                        _store.update_backend_health(config.id, True)
+                    try:
+                        await asyncio.to_thread(_persist_backend)
+                    except Exception as _e:
+                        logger.warning(f"tool_store persist failed for {config.name}: {_e}")
+
+          except Exception as e:
             logger.error(f"Failed to start native MCPs: {e}")
+
+        asyncio.create_task(_start_native_backends())
 
     # Initialize streaming executor for async jobs
     _cleanup_task = None
@@ -306,8 +353,9 @@ async def lifespan(app: FastAPI):
                                 async with _httpx.AsyncClient(timeout=5.0) as client:
                                     resp = await client.get(f"{url}{health_ep}")
                                     is_healthy = resp.status_code == 200
-                            except Exception:
+                            except Exception as e:
                                 is_healthy = False
+                                logger.debug(f"Health check failed for {backend_id} at {url}{health_ep}: {e}")
                             store.update_backend_health(backend_id, is_healthy)
                     except Exception as exc:
                         logger.warning(f"Backend health poll error: {exc}")
@@ -463,6 +511,7 @@ async def lifespan(app: FastAPI):
                 pass
 
     # Stop native MCP servers
+    native_manager = get_native_mcp_manager()
     if native_manager:
         await native_manager.stop()
         logger.info("Native MCP servers stopped")
@@ -532,8 +581,8 @@ async def _register_persistent_backends():
 
 async def _register_default_backends(queue):
     """Register MCP backends from environment variables."""
-    # Parallel AI backend
-    parallel_url = os.getenv("PARALLEL_AI_URL", "http://localhost:2040")
+    # Parallel AI backend (optional external service - only register if explicitly configured)
+    parallel_url = os.getenv("PARALLEL_AI_URL")
     if parallel_url:
         queue.register_backend(MCPBackend(
             id="parallel-ai",
@@ -547,8 +596,8 @@ async def _register_default_backends(queue):
         ))
         logger.info(f"Registered Parallel AI backend at {parallel_url}")
 
-    # Jina AI backend
-    jina_url = os.getenv("JINA_MCP_URL", "http://localhost:8787")
+    # Jina AI backend (optional external service - only register if explicitly configured)
+    jina_url = os.getenv("JINA_MCP_URL")
     if jina_url:
         queue.register_backend(MCPBackend(
             id="jina-mcp",
@@ -639,14 +688,49 @@ def create_app() -> FastAPI:
     )
 
     # CORS
-    origins = ["*"] if cors_origins == "*" else [o.strip() for o in cors_origins.split(",")]
+    is_wildcard = cors_origins == "*"
+    origins = ["*"] if is_wildcard else [o.strip() for o in cors_origins.split(",")]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=not is_wildcard,  # credentials invalid with wildcard
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Optional global bearer auth gate for all non-public endpoints.
+    require_bearer_auth = os.getenv("REQUIRE_BEARER_AUTH", "0") == "1"
+    allow_anonymous_announce = os.getenv("ALLOW_ANON_ANNOUNCE", "1") == "1"
+    public_exact_paths = {
+        "/", "/health", "/openapi.json", "/favicon.ico",
+        # Account bootstrap + browser-facing integration-auth surfaces
+        "/api/v1/users/signup", "/api/v1/users/login",
+        "/connect", "/account", "/api/v1/codex-oauth/callback",
+        "/api/v1/me/billing/confirm-card",  # Stripe browser redirect, no bearer
+    }
+    if allow_anonymous_announce:
+        public_exact_paths.add("/api/v1/tools/announce")
+    # Feedback submission is public (any AI agent calling a tool should be able to
+    # report back without a token); listing/stats stay behind bearer auth.
+    public_post_paths = {"/api/v1/integration-feedback"} if allow_anonymous_announce else set()
+    public_prefixes = ("/docs", "/redoc", "/oauth", "/.well-known")
+
+    @app.middleware("http")
+    async def bearer_auth_gate(request, call_next):
+        if not require_bearer_auth:
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        path = request.url.path or "/"
+        if path in public_exact_paths or any(path.startswith(prefix) for prefix in public_prefixes):
+            return await call_next(request)
+        if request.method == "POST" and path in public_post_paths:
+            return await call_next(request)
+
+        if require_bearer(request) is None:
+            return make_401_response(request)
+        return await call_next(request)
 
     # Backpressure middleware — shed load before hitting Modal's 2000 pending input queue limit
     _inflight = 0
@@ -674,7 +758,6 @@ def create_app() -> FastAPI:
     # Root endpoint
     @app.get("/")
     async def root():
-        registry = get_registry()
         service_registry = get_service_registry()
 
         # Remote backends from DuckDB (the real source of truth on Modal)
@@ -686,11 +769,16 @@ def create_app() -> FastAPI:
         native_manager = get_native_mcp_manager()
         native_status = native_manager.get_status() if native_manager else {}
 
+        # Headline count is the union of in-process tools + durable backend tools.
+        from .catalog_view import counts_breakdown
+        tool_counts = counts_breakdown()
+
         return {
             "name": "Tool Management API",
             "version": "1.0.0",
             "status": "running",
-            "tools_registered": len(registry),
+            "tools_registered": tool_counts["total"],
+            "tools_breakdown": tool_counts,
             "services_registered": len(service_registry),
             "backends": {
                 "total": len(backends),
@@ -766,6 +854,10 @@ def create_app() -> FastAPI:
             "circuit_breakers": circuit_breakers,
         }
 
+    # Top-level batch execution — uses in-memory registry (fast, no backend proxy)
+    from .api.batch_route import batch_router
+    app.include_router(batch_router, prefix="/api/v1")
+
     # Include retrieval routes FIRST (specific paths before wildcards)
     app.include_router(retrieval_router, prefix="/api/v1")
 
@@ -786,6 +878,9 @@ def create_app() -> FastAPI:
 
     # Include URL queue routes for search URL tracking
     app.include_router(url_queue_router, prefix="/api/v1")
+
+    # Include integration feedback routes (AI-agent usage feedback per backend)
+    app.include_router(feedback_router, prefix="/api/v1")
 
     # Include desktop/filesystem MCP server routes
     app.include_router(desktop_router, prefix="/api/v1")
@@ -823,6 +918,27 @@ def create_app() -> FastAPI:
 
     # Include async jobs API (/api/v1/jobs for submit/poll/stream/cancel)
     app.include_router(job_router, prefix="/api/v1")
+
+    # Include Codex Apps connector catalog wrappers (/api/v1/codex-apps/*)
+    app.include_router(codex_apps_router)
+
+    # User accounts + per-user integration connections (/api/v1/users, /api/v1/me, /connect)
+    from .api.user_routes import router as user_router, connect_page_router
+    app.include_router(user_router)
+    app.include_router(connect_page_router)
+
+    # Billing + resource provisioning (/api/v1/me/billing, /api/v1/me/resources)
+    from .api.billing_routes import router as billing_router
+    app.include_router(billing_router)
+
+    # Include Codex Apps OAuth callback (must be public; browser redirects here)
+    from .api.codex_apps_routes import callback_router
+    app.include_router(callback_router)
+
+    # Include Codex Apps virtual bridge in-process mount if configured
+    if os.getenv("CODEX_BRIDGE_MODE", "subprocess") == "inprocess":
+        from .integrations.codex_apps_virtual_bridge import create_subapp
+        app.mount("/codex-bridge", create_subapp(prefix="/codex-bridge"))
 
     # OAuth 2.0 endpoints at root level (/.well-known/*, /oauth/*)
     app.include_router(oauth_router)

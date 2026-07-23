@@ -20,10 +20,7 @@ from uuid import uuid4
 import httpx
 
 # OpenRouter configuration
-OPENROUTER_API_KEY = os.environ.get(
-    "OPENROUTER_API_KEY",
-    "[REDACTED-OPENROUTER-KEY]"
-)
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "moonshotai/kimi-k2.5"  # Kimi K2.5 - better than Claude per user
 
@@ -156,7 +153,7 @@ Respond with JSON:
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
             return json.loads(content.strip())
-        except:
+        except (json.JSONDecodeError, ValueError):
             return {"tools": [], "reasoning": content, "parameters": {}}
 
     async def close(self):
@@ -472,7 +469,7 @@ class SwarmMCPBridge:
                     success=False,
                     latency_ms=latency_ms,
                 )
-            except:
+            except Exception:
                 pass
 
             return {

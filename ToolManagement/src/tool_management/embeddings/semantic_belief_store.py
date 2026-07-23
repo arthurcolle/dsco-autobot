@@ -17,7 +17,11 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .openrouter_embeddings import get_embedding_service, cosine_similarity
+from .openrouter_embeddings import (
+    get_embedding_service,
+    get_resilient_embedding_service,
+    cosine_similarity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,15 +76,32 @@ class SemanticBeliefStore:
     - Batch embedding generation for efficiency
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, embedding_service: Any = None):
         if db_path is None:
             db_path = str(DATA_DIR / "belief_embeddings.db")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"SemanticBeliefStore using database at {self.db_path}")
 
-        self.embedding_service = get_embedding_service()
+        # Resilient service: uses Jina when the key works, otherwise falls
+        # back to deterministic local hash embeddings (sticky per-process).
+        self.embedding_service = embedding_service or get_resilient_embedding_service()
         self._init_db()
+
+    def _active_embedder_tag(self) -> str:
+        """Tag naming the embedder the next embed() call will use."""
+        return getattr(
+            self.embedding_service, "active_name",
+            getattr(self.embedding_service, "name", "unknown"),
+        )
+
+    async def _embed_tagged(self, texts: List[str]) -> Tuple[np.ndarray, str]:
+        """Embed texts and return (vectors, embedder_tag actually used)."""
+        embed_tagged = getattr(self.embedding_service, "embed_tagged", None)
+        if embed_tagged is not None:
+            return await embed_tagged(texts)
+        vectors = await self.embedding_service.embed(texts)
+        return vectors, self._active_embedder_tag()
 
     def _init_db(self):
         """Initialize the belief embeddings database."""
@@ -110,6 +131,12 @@ class SemanticBeliefStore:
             CREATE INDEX IF NOT EXISTS idx_access
             ON beliefs(access_count DESC, created_at DESC)
         """)
+
+        # Migration: tag each stored vector with the embedder that produced it
+        # so vectors from different embedding spaces are never compared.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(beliefs)")}
+        if "embedder" not in columns:
+            conn.execute("ALTER TABLE beliefs ADD COLUMN embedder TEXT")
 
         conn.commit()
         conn.close()
@@ -144,8 +171,8 @@ class SemanticBeliefStore:
         belief_text = f"{subject} {predicate} {obj}"
 
         try:
-            # Generate embedding
-            embeddings = await self.embedding_service.embed([belief_text])
+            # Generate embedding (tagged with the embedder that produced it)
+            embeddings, embedder_tag = await self._embed_tagged([belief_text])
             embedding = embeddings[0] if len(embeddings) > 0 else None
             embedding_bytes = embedding.tobytes() if embedding is not None else None
 
@@ -161,18 +188,27 @@ class SemanticBeliefStore:
                 # Update existing belief (weighted average confidence)
                 old_confidence, _ = existing
                 new_confidence = (old_confidence + confidence) / 2
-                conn.execute("""
-                    UPDATE beliefs
-                    SET confidence = ?, source = COALESCE(?, source),
-                        embedding = COALESCE(?, embedding), access_count = access_count + 1
-                    WHERE id = ?
-                """, (new_confidence, source, embedding_bytes, belief_id))
+                if embedding_bytes is not None:
+                    conn.execute("""
+                        UPDATE beliefs
+                        SET confidence = ?, source = COALESCE(?, source),
+                            embedding = ?, embedder = ?, access_count = access_count + 1
+                        WHERE id = ?
+                    """, (new_confidence, source, embedding_bytes, embedder_tag, belief_id))
+                else:
+                    conn.execute("""
+                        UPDATE beliefs
+                        SET confidence = ?, source = COALESCE(?, source),
+                            access_count = access_count + 1
+                        WHERE id = ?
+                    """, (new_confidence, source, belief_id))
             else:
                 # Insert new belief
                 conn.execute("""
-                    INSERT INTO beliefs (id, subject, predicate, object, confidence, source, embedding, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO beliefs (id, subject, predicate, object, confidence, source, embedding, embedder, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (belief_id, subject, predicate, obj, confidence, source, embedding_bytes,
+                      embedder_tag if embedding_bytes is not None else None,
                       datetime.now(timezone.utc).isoformat()))
 
             conn.commit()
@@ -233,7 +269,7 @@ class SemanticBeliefStore:
                 belief_texts.append(f"{b['subject']} {b['predicate']} {b['object']}")
 
             # Batch generate embeddings
-            embeddings = await self.embedding_service.embed(belief_texts)
+            embeddings, embedder_tag = await self._embed_tagged(belief_texts)
 
             # Store all beliefs
             conn = sqlite3.connect(str(self.db_path))
@@ -243,8 +279,8 @@ class SemanticBeliefStore:
 
                 conn.execute("""
                     INSERT OR REPLACE INTO beliefs
-                    (id, subject, predicate, object, confidence, source, embedding, created_at, access_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
+                    (id, subject, predicate, object, confidence, source, embedding, embedder, created_at, access_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
                         (SELECT access_count FROM beliefs WHERE id = ?),
                         0
                     ))
@@ -256,6 +292,7 @@ class SemanticBeliefStore:
                     belief.get("confidence", 1.0),
                     belief.get("source"),
                     embedding_bytes,
+                    embedder_tag if embedding_bytes is not None else None,
                     datetime.now(timezone.utc).isoformat(),
                     belief_id
                 ))
@@ -359,16 +396,20 @@ class SemanticBeliefStore:
         Returns:
             List of (Belief, similarity_score) tuples
         """
-        # Generate query embedding
-        query_embeddings = await self.embedding_service.embed([query])
+        # Generate query embedding (tagged with the embedder actually used)
+        query_embeddings, active_tag = await self._embed_tagged([query])
         query_embedding = query_embeddings[0]
+
+        # Re-embed any beliefs whose stored vectors came from a different
+        # embedder (or are missing) so we never compare across vector spaces.
+        await self._reembed_stale(active_tag)
 
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.execute("""
             SELECT id, subject, predicate, object, confidence, source, embedding, created_at, access_count
             FROM beliefs
-            WHERE embedding IS NOT NULL
-        """)
+            WHERE embedding IS NOT NULL AND embedder = ?
+        """, (active_tag,))
 
         results = []
         for row in cursor:
@@ -379,6 +420,8 @@ class SemanticBeliefStore:
 
             # Reconstruct embedding
             embedding = np.frombuffer(embedding_bytes, dtype=np.float64)
+            if embedding.shape != query_embedding.shape:
+                continue
 
             # Calculate similarity
             similarity = cosine_similarity(query_embedding, embedding)
@@ -440,6 +483,46 @@ class SemanticBeliefStore:
 
         return results
 
+    async def _reembed_stale(self, active_tag: str, limit: int = 512) -> int:
+        """
+        Re-embed beliefs whose vectors are missing or were produced by a
+        different embedder than the active one (re-embed on demand).
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        rows = conn.execute("""
+            SELECT id, subject, predicate, object
+            FROM beliefs
+            WHERE embedding IS NULL OR embedder IS NULL OR embedder != ?
+            LIMIT ?
+        """, (active_tag, limit)).fetchall()
+        conn.close()
+
+        if not rows:
+            return 0
+
+        texts = [f"{s} {p} {o}" for _, s, p, o in rows]
+        try:
+            embeddings, actual_tag = await self._embed_tagged(texts)
+        except Exception as e:
+            logger.warning(f"Re-embedding stale beliefs failed: {e}")
+            return 0
+
+        conn = sqlite3.connect(str(self.db_path))
+        updated = 0
+        for (belief_id, _, _, _), embedding in zip(rows, embeddings):
+            if embedding is not None:
+                conn.execute(
+                    "UPDATE beliefs SET embedding = ?, embedder = ? WHERE id = ?",
+                    (embedding.tobytes(), actual_tag, belief_id),
+                )
+                updated += 1
+        conn.commit()
+        conn.close()
+
+        if updated:
+            logger.info(f"Re-embedded {updated} beliefs with embedder '{actual_tag}'")
+        return updated
+
     def mark_accessed(self, belief_id: str):
         """Mark a belief as accessed (for tracking)."""
         conn = sqlite3.connect(str(self.db_path))
@@ -485,28 +568,8 @@ class SemanticBeliefStore:
         return beliefs
 
     async def backfill_embeddings(self, batch_size: int = 50) -> int:
-        """Backfill embeddings for beliefs that don't have them."""
-        beliefs = self.get_beliefs_without_embeddings(limit=batch_size)
-        if not beliefs:
-            return 0
-
-        texts = [b.to_text() for b in beliefs]
-        embeddings = await self.embedding_service.embed(texts)
-
-        conn = sqlite3.connect(str(self.db_path))
-        updated = 0
-        for belief, embedding in zip(beliefs, embeddings):
-            if embedding is not None:
-                conn.execute("""
-                    UPDATE beliefs SET embedding = ? WHERE id = ?
-                """, (embedding.tobytes(), belief.id))
-                updated += 1
-
-        conn.commit()
-        conn.close()
-
-        logger.info(f"Backfilled embeddings for {updated} beliefs")
-        return updated
+        """Backfill embeddings for beliefs missing or from a stale embedder."""
+        return await self._reembed_stale(self._active_embedder_tag(), limit=batch_size)
 
     def stats(self) -> Dict[str, Any]:
         """Get statistics about the belief store."""
@@ -533,12 +596,21 @@ class SemanticBeliefStore:
             LIMIT 5
         """).fetchall()
 
+        by_embedder = dict(conn.execute("""
+            SELECT COALESCE(embedder, 'untagged'), COUNT(*)
+            FROM beliefs
+            WHERE embedding IS NOT NULL
+            GROUP BY embedder
+        """).fetchall())
+
         conn.close()
 
         return {
             "total_beliefs": total,
             "with_embeddings": with_embeddings,
             "without_embeddings": total - with_embeddings,
+            "active_embedder": self._active_embedder_tag(),
+            "embeddings_by_embedder": by_embedder,
             "unique_subjects": unique_subjects,
             "unique_predicates": unique_predicates,
             "unique_objects": unique_objects,

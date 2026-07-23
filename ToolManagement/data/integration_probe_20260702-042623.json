@@ -1,0 +1,2010 @@
+{
+  "probe_id": "20260702-042623",
+  "started_at": "2026-07-02T04:26:23.655887+00:00",
+  "finished_at": "2026-07-02T04:27:15.376093+00:00",
+  "project_root": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement",
+  "summary": {
+    "total_integrations": 7,
+    "healthy": 6,
+    "unhealthy": 1,
+    "total_tools_discovered": 64,
+    "codex_apps_connectors": 1974,
+    "codex_apps_curated_pointers": 154,
+    "codex_apps_stale_pointers": 6
+  },
+  "codex_apps_summary": {
+    "total_connectors": 1974,
+    "distribution_channels": {
+      "ECOSYSTEM_DIRECTORY": 1951,
+      "DEFAULT_OAI_CATALOG": 23
+    },
+    "categories": {
+      "FOOD": 38,
+      "DEVELOPER_TOOLS": 73,
+      "PRODUCTIVITY": 390,
+      "BUSINESS": 404,
+      "EDUCATION": 88,
+      "TRAVEL": 210,
+      "LIFESTYLE": 240,
+      "SHOPPING": 168,
+      "ENTERTAINMENT": 74,
+      "FINANCE": 232,
+      "DESIGN": 30,
+      "NEWS": 7,
+      "COLLABORATION": 15
+    },
+    "labels": {
+      "consequential=true": 912,
+      "interactive=true": 1269,
+      "retrievable=true": 71,
+      "sync=true": 22
+    },
+    "accessibility": {
+      "enabled=True,accessible=False": 1974
+    },
+    "curated_pointers": 154,
+    "curated_matched": 148,
+    "curated_stale": 6,
+    "directory_paths": [
+      "/Users/arthurcolle/.codex/cache/codex_app_directory/b67e8e30db68d257be758cbc32e2f78b8830d2d2.json"
+    ],
+    "plugin_manifest_count": 154
+  },
+  "coverage": {
+    "bundles": {
+      "engineering_product": {
+        "name": "Engineering/Product",
+        "description": "Code, product planning, observability, deployment, and developer data systems.",
+        "catalog_total": 19,
+        "catalog_live": 0,
+        "catalog_only": 19,
+        "catalog_missing": 0,
+        "missing_names": [],
+        "live_providers": [
+          "search",
+          "research",
+          "publish"
+        ],
+        "connector_ids": [
+          "asdk_app_691f1f8f72408191afdbbdf8242bdf86",
+          "asdk_app_6939e86417648191b7bda087d872685b",
+          "asdk_app_6967f065ac9481918969c660ff7686e9",
+          "asdk_app_6983c208e5f8819196b7511519f97993",
+          "asdk_app_699caef2d680819188727b0ddbb349dd",
+          "asdk_app_69a089a326dc8191b32a3f2553f5be2c",
+          "asdk_app_69a1d78e929881919bba0dbda1f6436d",
+          "asdk_app_69c18c28f1188191bf5b8445c4ab0a2e",
+          "asdk_app_69d3e5ee6a708191baa733f7b8931995",
+          "asdk_app_69e0086d87088191a3edc052fa50c29f",
+          "asdk_app_69e8c7f174a08191a28b6da96c8062c4",
+          "asdk_app_69ef18c674308191a2f952431f91ea61",
+          "asdk_app_69f2257291c881919607448f14509d37",
+          "asdk_app_69f271663a288191ac98f46bed7cb032",
+          "connector_690a90ec05c881918afb6a55dc9bbaa1",
+          "connector_6923e677f37c8191845e4e0b658dd718",
+          "connector_692de805e3ec8191834719067174a384",
+          "connector_76869538009648d5b282a4bb21c3d157",
+          "connector_da257d66000a45c683fe44e411037409"
+        ]
+      },
+      "gtm_support": {
+        "name": "GTM/Support",
+        "description": "Sales, support, customer context, and revenue workflow systems.",
+        "catalog_total": 15,
+        "catalog_live": 0,
+        "catalog_only": 15,
+        "catalog_missing": 0,
+        "missing_names": [],
+        "live_providers": [
+          "research",
+          "publish"
+        ],
+        "connector_ids": [
+          "asdk_app_69377d07cd9c8191a988f06f15b8c674",
+          "asdk_app_694574813e548191bac45327be0a61d1",
+          "asdk_app_6970230238d8819196e64c67af28ab38",
+          "asdk_app_697acb8e53d88191bf7a79e62012ae14",
+          "asdk_app_6981220f09208191afc299c6cb7a4979",
+          "asdk_app_6981f663d5cc8191ae0d5717a05ccc89",
+          "asdk_app_698a340b9230819188ba5a5eea79022d",
+          "asdk_app_698ebfa1aadc81918b3bb13ae2118af0",
+          "asdk_app_69bd664f2a908191a3a0a47eca8559d1",
+          "asdk_app_6a0783e216e48191957d34a5381e3b06",
+          "asdk_app_6a193ef5e804819197c25f88d92d6bf7",
+          "connector_36803b8cc4164d84aa3fbfc7ddb420e1",
+          "connector_9f3d361ec84b4c6588a7129a2d4e3cb3",
+          "connector_b969d12728c04baeb585eb9299be3b6d",
+          "connector_bc42113c21de4f94a5b5259c2aa914f6"
+        ]
+      },
+      "finance_data": {
+        "name": "Finance/Data",
+        "description": "Financial data, BI, analytics, accounting, and market intelligence.",
+        "catalog_total": 16,
+        "catalog_live": 0,
+        "catalog_only": 16,
+        "catalog_missing": 1,
+        "missing_names": [
+          "Moody's"
+        ],
+        "live_providers": [],
+        "connector_ids": [
+          "asdk_app_69248819fa4c81918047c4b42b1f8823",
+          "asdk_app_693850f6312c8191be5a026bf3538e80",
+          "asdk_app_694e8b8715108191a49fe2db4398d9e2",
+          "asdk_app_6961bc9309ec819199ce7ce38b7d3bf1",
+          "asdk_app_6967ddccc88881918a3733322b6bdf1a",
+          "asdk_app_696a54f1c91c81919002b9153ce0e336",
+          "asdk_app_697aea3231288191b28a0061066e51bd",
+          "asdk_app_698aec3092e48191a4484b43a3fc79b8",
+          "asdk_app_699727751b1c819193883394649579e2",
+          "asdk_app_69a5c0184ae48191a37b0a05ff0f76ec",
+          "asdk_app_69d8425f7a1c8191a438821b9c553b79",
+          "asdk_app_6a215179debc8191a28dd0f3723c0646",
+          "connector_690a9430a270819196671dcb4c95898e",
+          "connector_691f721a77bc8191be115b65c85075c0",
+          "connector_692f6343042c8191b6617e8352444692",
+          "connector_7c3f2c8cdbf64bb0b183ff52f527a06e"
+        ]
+      },
+      "governance_meta": {
+        "name": "Governance/Meta",
+        "description": "Safety, registry, readiness, enterprise knowledge, and cost-control surfaces.",
+        "catalog_total": 13,
+        "catalog_live": 0,
+        "catalog_only": 13,
+        "catalog_missing": 1,
+        "missing_names": [
+          "Glean"
+        ],
+        "live_providers": [
+          "memory"
+        ],
+        "connector_ids": [
+          "asdk_app_693251083bf48191a69098fd0ba36f17",
+          "asdk_app_694462199dd48191bedf3493b499d605",
+          "asdk_app_694756a8563c8191b79b13723b98ec67",
+          "asdk_app_695bfc98071c8191bac7bc479aa27de7",
+          "asdk_app_698f3015287081919ff958565ad957f0",
+          "asdk_app_69d4ed7b2b1c8191a0ba97ee80d3b4db",
+          "asdk_app_69de45400e3881919e42ad9f174aff5b",
+          "asdk_app_69ff65c6614c8191832cc977c582a40b",
+          "asdk_app_6a0f9ab98bf4819197de479522d5367b",
+          "asdk_app_6a14919550ec819187b03a34c1e2c8f3",
+          "asdk_app_6a1cb1116f4881919bfa5e9a3d9d3b48",
+          "asdk_app_6a204b2923fc8191bcbd87ec6dc9d382",
+          "connector_1e4f6a44acf14e3ca1d96672f8c945bc"
+        ]
+      },
+      "enterprise_knowledge": {
+        "name": "Enterprise Knowledge",
+        "description": "Documents, files, email, calendars, chats, and task context for retrieval-first agents.",
+        "catalog_total": 17,
+        "catalog_live": 0,
+        "catalog_only": 17,
+        "catalog_missing": 0,
+        "missing_names": [],
+        "live_providers": [
+          "memory",
+          "video",
+          "document"
+        ],
+        "connector_ids": [
+          "asdk_app_695bfc98071c8191bac7bc479aa27de7",
+          "asdk_app_69a1d78e929881919bba0dbda1f6436d",
+          "asdk_app_69b31dc2110c8191b8b47dc98fe5a052",
+          "asdk_app_69c18c28f1188191bf5b8445c4ab0a2e",
+          "connector_1e4f6a44acf14e3ca1d96672f8c945bc",
+          "connector_2128aebfecb84f64a069897515042a44",
+          "connector_246af0940da3457da0e751171dc1ce60",
+          "connector_251970f16cb647d4b76fc445753f9276",
+          "connector_4886707321be47efb8b9369ebb877881",
+          "connector_4aaab2856305417b993eca9a216aaf6e",
+          "connector_4d2f184d2773465f977823d8d03a059a",
+          "connector_5f3c8c41a1e54ad7a76272c89e2554fa",
+          "connector_691f749cd9088191befeb1d543c37d98",
+          "connector_86de01a2aaf544b0a039013db9bcfae7",
+          "connector_947e0d954944416db111db556030eea6",
+          "connector_e6a7394682e24467ac68c60696f275a4",
+          "connector_f9447fe87aae4b598f8ca9dc03483c9a"
+        ]
+      }
+    },
+    "total_matched_connectors": 60,
+    "inference_map": {
+      "search": [
+        "engineering_product"
+      ],
+      "research": [
+        "engineering_product",
+        "gtm_support"
+      ],
+      "publish": [
+        "gtm_support",
+        "engineering_product"
+      ],
+      "memory": [
+        "governance_meta",
+        "enterprise_knowledge"
+      ],
+      "video": [
+        "enterprise_knowledge"
+      ],
+      "document": [
+        "enterprise_knowledge"
+      ],
+      "dsco-bridge": [
+        "engineering_product"
+      ],
+      "unit-fabric": [
+        "governance_meta"
+      ],
+      "finance-fabric": [
+        "finance_data"
+      ],
+      "integration-fabric": [
+        "engineering_product",
+        "gtm_support",
+        "enterprise_knowledge"
+      ],
+      "jina": [
+        "engineering_product"
+      ],
+      "parallel": [
+        "engineering_product",
+        "gtm_support"
+      ]
+    }
+  },
+  "integrations": [
+    {
+      "id": "search",
+      "name": "distributed-search-mcp",
+      "kind": "native",
+      "port": 4001,
+      "module": "native.distributed_search_mcp.server",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-search-mcp"
+      },
+      "tools": [
+        {
+          "name": "search",
+          "description": "Search the web using Jina AI. Returns relevant results with snippets.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query"
+              },
+              "num_results": {
+                "type": "integer",
+                "description": "Number of results (1-20)",
+                "default": 10
+              },
+              "max_output_chars": {
+                "type": "integer",
+                "description": "Maximum output size in characters. Truncates if exceeded.",
+                "default": 32000
+              },
+              "max_links": {
+                "type": "integer",
+                "description": "Maximum URLs in output. Extra URLs are captured for background processing.",
+                "default": 50
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "read",
+          "description": "Extract and read content from a URL. Returns clean markdown text.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "URL to read"
+              },
+              "include_images": {
+                "type": "boolean",
+                "description": "Include image descriptions",
+                "default": false
+              },
+              "max_output_chars": {
+                "type": "integer",
+                "description": "Maximum output size in characters. Truncates if exceeded.",
+                "default": 32000
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "verify",
+          "description": "Verify a claim or statement against web sources.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "statement": {
+                "type": "string",
+                "description": "Statement to fact-check"
+              }
+            },
+            "required": [
+              "statement"
+            ]
+          }
+        },
+        {
+          "name": "rerank",
+          "description": "Rerank documents by relevance to a query using semantic similarity.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Query to rank against"
+              },
+              "documents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Documents to rerank"
+              },
+              "top_k": {
+                "type": "integer",
+                "description": "Number of top results",
+                "default": 5
+              }
+            },
+            "required": [
+              "query",
+              "documents"
+            ]
+          }
+        },
+        {
+          "name": "embed",
+          "description": "Generate embeddings for text using Jina embedding models.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Text to embed"
+              },
+              "model": {
+                "type": "string",
+                "description": "Embedding model",
+                "default": "jina-embeddings-v3"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          }
+        }
+      ],
+      "tool_count": 5,
+      "startup_ms": 1032.776117324829,
+      "error": null,
+      "env_keys": [
+        "JINA_API_KEY"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\n<frozen runpy>:128: RuntimeWarning: 'native.distributed_search_mcp.server' found in sys.modules after import of package 'native.distributed_search_mcp', but prior to execution of 'native.distributed_search_mcp.server'; this may result in unpredictable behaviour\nINFO:     Started server process [2642]\nINFO:     Waiting for application startup.\nINFO:__main__:Starting Distributed Search MCP...\n/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/native/distributed_search_mcp/server.py:750: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).\n  \"timestamp\": datetime.utcnow().isoformat(),\n/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/native/distributed_search_mcp/server.py:336: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).\n  self._state.connected_at = datetime.utcnow()\n/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/native/distributed_search_mcp/server.py:337: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).\n  self._state.last_heartbeat = datetime.utcnow()\nINFO:__main__:\u2713 Distributed Search MCP connected (session: 1c0daf86...)\nINFO:httpx:H"
+    },
+    {
+      "id": "research",
+      "name": "distributed-research-mcp",
+      "kind": "native",
+      "port": 4002,
+      "module": "native.distributed_research_mcp.server",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-research-mcp"
+      },
+      "tools": [
+        {
+          "name": "deep_search",
+          "description": "Perform deep research on a topic, gathering and synthesizing information from multiple sources.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "objective": {
+                "type": "string",
+                "description": "Research objective or question"
+              },
+              "depth": {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "standard",
+                  "thorough"
+                ],
+                "description": "Research depth level",
+                "default": "standard"
+              },
+              "max_sources": {
+                "type": "integer",
+                "description": "Maximum sources to consult",
+                "default": 10
+              }
+            },
+            "required": [
+              "objective"
+            ]
+          }
+        },
+        {
+          "name": "run_task",
+          "description": "Execute an autonomous task with specified processor. Supports lite, turbo, and premium processing.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "string",
+                "description": "Task input/prompt"
+              },
+              "processor": {
+                "type": "string",
+                "enum": [
+                  "lite",
+                  "turbo",
+                  "premium"
+                ],
+                "description": "Processor type (affects speed/quality)",
+                "default": "lite"
+              },
+              "output_schema": {
+                "type": "object",
+                "description": "Optional JSON schema for structured output"
+              },
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds",
+                "default": 300
+              }
+            },
+            "required": [
+              "input"
+            ]
+          }
+        },
+        {
+          "name": "extract_data",
+          "description": "Extract structured data from a URL based on a schema.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "URL to extract data from"
+              },
+              "schema": {
+                "type": "object",
+                "description": "JSON schema defining what to extract"
+              },
+              "instructions": {
+                "type": "string",
+                "description": "Additional extraction instructions"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "create_task_group",
+          "description": "Create a batch of tasks to execute in parallel.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Group name"
+              },
+              "tasks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "string"
+                    },
+                    "processor": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "description": "List of tasks to execute"
+              },
+              "strategy": {
+                "type": "string",
+                "enum": [
+                  "parallel",
+                  "sequential",
+                  "adaptive"
+                ],
+                "default": "parallel"
+              }
+            },
+            "required": [
+              "tasks"
+            ]
+          }
+        },
+        {
+          "name": "find_all",
+          "description": "Find all entities matching criteria across the web (prospecting).",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "objective": {
+                "type": "string",
+                "description": "What to find (e.g., 'AI startups in San Francisco')"
+              },
+              "schema": {
+                "type": "object",
+                "description": "Schema for extracted entities"
+              },
+              "max_results": {
+                "type": "integer",
+                "description": "Maximum results to return",
+                "default": 50
+              }
+            },
+            "required": [
+              "objective"
+            ]
+          }
+        },
+        {
+          "name": "list_tasks",
+          "description": "List all tasks with their status and results.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "running",
+                  "completed",
+                  "failed",
+                  "all"
+                ],
+                "default": "all"
+              },
+              "limit": {
+                "type": "integer",
+                "default": 20
+              }
+            }
+          }
+        },
+        {
+          "name": "get_task",
+          "description": "Get details and result of a specific task.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "description": "Task ID"
+              }
+            },
+            "required": [
+              "task_id"
+            ]
+          }
+        },
+        {
+          "name": "synthesize",
+          "description": "Synthesize information from multiple sources into a coherent summary.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "List of texts or URLs to synthesize"
+              },
+              "objective": {
+                "type": "string",
+                "description": "What to focus on in synthesis"
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "summary",
+                  "bullets",
+                  "report",
+                  "analysis"
+                ],
+                "default": "summary"
+              }
+            },
+            "required": [
+              "sources"
+            ]
+          }
+        }
+      ],
+      "tool_count": 8,
+      "startup_ms": 1027.7259349822998,
+      "error": null,
+      "env_keys": [
+        "PARALLEL_API_KEY"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\n<frozen runpy>:128: RuntimeWarning: 'native.distributed_research_mcp.server' found in sys.modules after import of package 'native.distributed_research_mcp', but prior to execution of 'native.distributed_research_mcp.server'; this may result in unpredictable behaviour\nINFO:     Started server process [2644]\nINFO:     Waiting for application startup.\nINFO:native.distributed_research_mcp.server:Starting Distributed Research MCP...\nINFO:native.distributed_research_mcp.server:\u2713 Distributed Research MCP connected (session: d02f7c8e...)\nINFO:httpx:HTTP Request: POST https://tools.distributed.systems/api/v1/tools/announce \"HTTP/1.1 200 OK\"\nINFO:native.distributed_research_mcp.server:Announced 8 tools to https://tools.distributed.systems\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:4002 (Press CTRL+C to quit)\n\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n\u2551         DISTRIBUTED RESEARCH MCP - Native Server                 \u2551\n\u2551               Second Native MCP Implementation                   \u2551\n\u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563\n\u2551  Service ID: distributed-research-mcp                            \u2551\n\u2551  Port: 4002                        "
+    },
+    {
+      "id": "publish",
+      "name": "distributed-publish-mcp",
+      "kind": "native",
+      "port": 4003,
+      "module": "native.distributed_publish_mcp.server",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-publish-mcp"
+      },
+      "tools": [
+        {
+          "name": "create_webhook",
+          "description": "Create a new webhook endpoint to receive event notifications.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Webhook name"
+              },
+              "url": {
+                "type": "string",
+                "description": "Target URL to receive webhook payloads"
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Event types to subscribe to",
+                "default": [
+                  "*"
+                ]
+              },
+              "secret": {
+                "type": "string",
+                "description": "Optional secret for payload signing"
+              }
+            },
+            "required": [
+              "name",
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "trigger_webhook",
+          "description": "Manually trigger a webhook with custom payload.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "webhook_id": {
+                "type": "string",
+                "description": "Webhook ID to trigger"
+              },
+              "payload": {
+                "type": "object",
+                "description": "Payload to send"
+              }
+            },
+            "required": [
+              "webhook_id",
+              "payload"
+            ]
+          }
+        },
+        {
+          "name": "list_webhooks",
+          "description": "List all registered webhooks.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "paused",
+                  "failed",
+                  "all"
+                ],
+                "default": "all"
+              }
+            }
+          }
+        },
+        {
+          "name": "delete_webhook",
+          "description": "Delete a webhook.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "webhook_id": {
+                "type": "string",
+                "description": "Webhook ID to delete"
+              }
+            },
+            "required": [
+              "webhook_id"
+            ]
+          }
+        },
+        {
+          "name": "publish_event",
+          "description": "Publish an event to all subscribers and matching webhooks.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Event type (e.g., 'content.published')"
+              },
+              "data": {
+                "type": "object",
+                "description": "Event payload data"
+              },
+              "source": {
+                "type": "string",
+                "description": "Event source identifier"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ]
+          }
+        },
+        {
+          "name": "list_events",
+          "description": "List recent events.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Filter by event type"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum events to return",
+                "default": 50
+              }
+            }
+          }
+        },
+        {
+          "name": "queue_message",
+          "description": "Queue a message for delivery to a channel.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "string",
+                "description": "Channel name"
+              },
+              "payload": {
+                "type": "object",
+                "description": "Message payload"
+              }
+            },
+            "required": [
+              "channel",
+              "payload"
+            ]
+          }
+        },
+        {
+          "name": "get_queue_messages",
+          "description": "Get messages from a queue channel.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "string",
+                "description": "Channel name"
+              },
+              "limit": {
+                "type": "integer",
+                "default": 10
+              },
+              "acknowledge": {
+                "type": "boolean",
+                "description": "Mark messages as delivered",
+                "default": false
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        {
+          "name": "send_notification",
+          "description": "Send a notification to specified targets.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Notification title"
+              },
+              "body": {
+                "type": "string",
+                "description": "Notification body"
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Target channels or webhook IDs"
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "normal",
+                  "high",
+                  "urgent"
+                ],
+                "default": "normal"
+              }
+            },
+            "required": [
+              "title",
+              "body"
+            ]
+          }
+        },
+        {
+          "name": "syndicate_content",
+          "description": "Syndicate content to multiple channels/platforms.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "object",
+                "description": "Content to syndicate",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object"
+                  }
+                }
+              },
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Target channels for syndication"
+              }
+            },
+            "required": [
+              "content",
+              "channels"
+            ]
+          }
+        }
+      ],
+      "tool_count": 10,
+      "startup_ms": 1017.9421901702881,
+      "error": null,
+      "env_keys": [],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\n<frozen runpy>:128: RuntimeWarning: 'native.distributed_publish_mcp.server' found in sys.modules after import of package 'native.distributed_publish_mcp', but prior to execution of 'native.distributed_publish_mcp.server'; this may result in unpredictable behaviour\nINFO:     Started server process [2645]\nINFO:     Waiting for application startup.\nINFO:__main__:Substack tools not registered (SUBSTACK_SID / SUBSTACK_PUBLICATION not set)\nINFO:__main__:Starting Distributed Publish MCP...\nINFO:__main__:\u2713 Distributed Publish MCP connected (session: 587f047b...)\nINFO:__main__:No SUBSTACK_SID/SUBSTACK_PUBLICATION \u2014 Substack tools disabled\nINFO:httpx:HTTP Request: POST https://tools.distributed.systems/api/v1/tools/announce \"HTTP/1.1 200 OK\"\nINFO:__main__:Announced 0 tools to https://tools.distributed.systems\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:4003 (Press CTRL+C to quit)\n\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n\u2551         DISTRIBUTED PUBLISH MCP - Native Server                  \u2551\n\u2551               Third Native MCP Implementation                    \u2551\n\u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563\n\u2551  Service ID: distributed-publish-m"
+    },
+    {
+      "id": "memory",
+      "name": "distributed-memory-mcp",
+      "kind": "native",
+      "port": 4004,
+      "module": "native.distributed_memory_mcp.server",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-memory-mcp"
+      },
+      "tools": [
+        {
+          "name": "focus",
+          "description": "Prime working memory with relevant context. Brings specified items into focus, boosting their activation.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "item_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Item IDs to focus on"
+              },
+              "content": {
+                "type": "string",
+                "description": "New content to add to working memory and focus on"
+              },
+              "importance": {
+                "type": "number",
+                "description": "Importance level (0-1)",
+                "default": 0.7
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tags for the new content"
+              }
+            }
+          }
+        },
+        {
+          "name": "expand_context",
+          "description": "Expand working memory context by retrieving related items from all memory tiers.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Query to expand context around"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum items to retrieve",
+                "default": 10
+              },
+              "include_episodic": {
+                "type": "boolean",
+                "description": "Include episodes",
+                "default": true
+              },
+              "include_semantic": {
+                "type": "boolean",
+                "description": "Include beliefs",
+                "default": true
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "record_episode",
+          "description": "Record an event/episode in episodic memory.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "event_type": {
+                "type": "string",
+                "description": "Type of event (e.g., 'task_completed', 'error', 'interaction')"
+              },
+              "content": {
+                "type": "object",
+                "description": "Event content/details"
+              },
+              "context": {
+                "type": "object",
+                "description": "Contextual information"
+              },
+              "participants": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Entities involved"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Outcome of the event"
+              },
+              "importance": {
+                "type": "number",
+                "description": "Importance (0-1)",
+                "default": 0.5
+              }
+            },
+            "required": [
+              "event_type",
+              "content"
+            ]
+          }
+        },
+        {
+          "name": "recall_episodes",
+          "description": "Recall episodes from episodic memory by various criteria.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Similarity search query"
+              },
+              "event_type": {
+                "type": "string",
+                "description": "Filter by event type"
+              },
+              "participant": {
+                "type": "string",
+                "description": "Filter by participant"
+              },
+              "start_time": {
+                "type": "number",
+                "description": "Start of time range (unix timestamp)"
+              },
+              "end_time": {
+                "type": "number",
+                "description": "End of time range (unix timestamp)"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum episodes to return",
+                "default": 20
+              }
+            }
+          }
+        },
+        {
+          "name": "store_belief",
+          "description": "Store a belief/fact in semantic memory as a subject-predicate-object triple.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "description": "Subject of the belief"
+              },
+              "predicate": {
+                "type": "string",
+                "description": "Relationship/predicate"
+              },
+              "object": {
+                "type": "string",
+                "description": "Object of the belief"
+              },
+              "confidence": {
+                "type": "number",
+                "description": "Confidence level (0-1)",
+                "default": 1.0
+              },
+              "source": {
+                "type": "string",
+                "description": "Source of the belief"
+              }
+            },
+            "required": [
+              "subject",
+              "predicate",
+              "object"
+            ]
+          }
+        },
+        {
+          "name": "query_beliefs",
+          "description": "Query semantic memory for beliefs matching a pattern.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "description": "Subject to match (optional)"
+              },
+              "predicate": {
+                "type": "string",
+                "description": "Predicate to match (optional)"
+              },
+              "object": {
+                "type": "string",
+                "description": "Object to match (optional)"
+              },
+              "min_confidence": {
+                "type": "number",
+                "description": "Minimum confidence threshold",
+                "default": 0.0
+              },
+              "infer": {
+                "type": "boolean",
+                "description": "Enable inference for transitive relationships",
+                "default": false
+              }
+            }
+          }
+        },
+        {
+          "name": "learn_skill",
+          "description": "Store a procedural pattern/skill that can be applied later.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Skill name"
+              },
+              "description": {
+                "type": "string",
+                "description": "What the skill does"
+              },
+              "pattern": {
+                "type": "object",
+                "description": "The executable pattern (steps, parameters, etc.)"
+              },
+              "preconditions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Conditions that must be true to apply"
+              },
+              "postconditions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Conditions that will be true after"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tags for categorization"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "pattern"
+            ]
+          }
+        },
+        {
+          "name": "apply_skill",
+          "description": "Retrieve and potentially execute a learned skill.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Skill name to apply"
+              },
+              "skill_id": {
+                "type": "string",
+                "description": "Skill ID (alternative to name)"
+              },
+              "context": {
+                "type": "object",
+                "description": "Current context for skill application"
+              },
+              "execute": {
+                "type": "boolean",
+                "description": "Whether to actually execute the skill's pattern steps via cross-MCP calls",
+                "default": false
+              },
+              "record_result": {
+                "type": "boolean",
+                "description": "Whether to record execution result",
+                "default": true
+              },
+              "success": {
+                "type": "boolean",
+                "description": "If recording, whether execution succeeded"
+              },
+              "execution_time": {
+                "type": "number",
+                "description": "If recording, execution time in seconds"
+              }
+            }
+          }
+        },
+        {
+          "name": "consolidate",
+          "description": "Consolidate memory: move important working memory items to long-term storage, prune old items.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "working_to_episodic": {
+                "type": "boolean",
+                "description": "Save important working memory as episodes",
+                "default": true
+              },
+              "importance_threshold": {
+                "type": "number",
+                "description": "Minimum importance to consolidate",
+                "default": 0.6
+              },
+              "prune_working": {
+                "type": "boolean",
+                "description": "Clear low-activation items from working memory",
+                "default": true
+              }
+            }
+          }
+        },
+        {
+          "name": "forget",
+          "description": "Explicitly forget/decay items from memory.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "working",
+                  "episodic",
+                  "semantic",
+                  "procedural"
+                ],
+                "description": "Memory tier to forget from"
+              },
+              "id": {
+                "type": "string",
+                "description": "Single item ID to forget (alternative to item_ids)"
+              },
+              "item_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Specific item IDs to forget"
+              },
+              "older_than": {
+                "type": "number",
+                "description": "Forget items older than this (seconds ago)"
+              },
+              "below_importance": {
+                "type": "number",
+                "description": "Forget items below this importance"
+              }
+            },
+            "required": [
+              "tier"
+            ]
+          }
+        },
+        {
+          "name": "search_all",
+          "description": "Unified search across all memory tiers.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query"
+              },
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "working",
+                    "episodic",
+                    "semantic",
+                    "procedural"
+                  ]
+                },
+                "description": "Tiers to search (default: all)"
+              },
+              "limit_per_tier": {
+                "type": "integer",
+                "description": "Max results per tier",
+                "default": 5
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "get_memory_stats",
+          "description": "Get statistics about memory usage across all tiers.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "semantic_search",
+          "description": "Search memory using semantic embeddings from Search MCP. Finds conceptually similar content even without exact word matches.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Natural language query"
+              },
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "episodic",
+                    "working"
+                  ]
+                },
+                "description": "Memory tiers to search (default: all with embeddings)"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum results",
+                "default": 10
+              },
+              "min_similarity": {
+                "type": "number",
+                "description": "Minimum cosine similarity threshold (0-1)",
+                "default": 0.3
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "_connectivity_test",
+          "description": "Test connectivity to the Memory MCP server.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "semantic_search_beliefs",
+          "description": "Search beliefs using semantic embeddings. Finds conceptually similar facts even without exact word matches. Uses Jina v3 embeddings for high-quality semantic understanding.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Natural language query to search for related beliefs"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum number of results",
+                "default": 10
+              },
+              "min_similarity": {
+                "type": "number",
+                "description": "Minimum cosine similarity threshold (0-1)",
+                "default": 0.3
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "find_related_beliefs",
+          "description": "Find all beliefs related to an entity, both exact matches and semantically similar.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "entity": {
+                "type": "string",
+                "description": "Entity to find related beliefs for"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum results per category",
+                "default": 20
+              }
+            },
+            "required": [
+              "entity"
+            ]
+          }
+        }
+      ],
+      "tool_count": 16,
+      "startup_ms": 1021.3277339935303,
+      "error": null,
+      "env_keys": [
+        "MEMORY_DATA_DIR"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\n<frozen runpy>:128: RuntimeWarning: 'native.distributed_memory_mcp.server' found in sys.modules after import of package 'native.distributed_memory_mcp', but prior to execution of 'native.distributed_memory_mcp.server'; this may result in unpredictable behaviour\nINFO:__main__:SemanticBeliefStore initialized with persistence and embeddings\n/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/native/distributed_memory_mcp/server.py:1236: DeprecationWarning: \n        on_event is deprecated, use lifespan event handlers instead.\n\n        Read more about it in the\n        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).\n        \n  @app.on_event(\"startup\")\n/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/native/distributed_memory_mcp/server.py:1251: DeprecationWarning: \n        on_event is deprecated, use lifespan event handlers instead.\n\n        Read more about it in the\n        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).\n        \n  @app.on_event(\"startup\")\nINFO:__main__:SemanticBeliefStore initialized with persistence and embeddings\nINFO:__main__:Starting Distributed Memory MCP on port 4004\nINFO:     Started server process [2646]\nINFO:     Waiting for application startup.\nINFO:__main__:Seeded working memory with boot episode\nINFO:httpx:HTTP Request: POST https://tools.distributed.systems/api/v1/tools/announce \"HTTP/1.1 200 OK\"\nINFO:__main__:Announced 0 memory tools to https://tools.distributed.systems\nINFO:     Application startu"
+    },
+    {
+      "id": "video",
+      "name": "distributed-video-qa",
+      "kind": "native",
+      "port": 4005,
+      "module": "native.distributed_video_qa",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-video-qa",
+        "dependencies_met": true
+      },
+      "tools": [
+        {
+          "name": "process_video",
+          "description": "Download and process a YouTube video for Q&A. Extracts transcript, frames, and embeddings.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "YouTube URL"
+              },
+              "frame_interval": {
+                "type": "number",
+                "default": 10.0
+              },
+              "max_frames": {
+                "type": "integer",
+                "default": 120
+              },
+              "enable_ocr": {
+                "type": "boolean",
+                "default": false
+              },
+              "screencast_mode": {
+                "type": "string",
+                "default": "auto"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "process_videos_batch",
+          "description": "Process multiple YouTube videos in parallel.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "urls": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "List of YouTube URLs"
+              },
+              "max_workers": {
+                "type": "integer",
+                "default": 4
+              },
+              "enable_ocr": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "urls"
+            ]
+          }
+        },
+        {
+          "name": "list_videos",
+          "description": "List all processed videos with metadata.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "ask_video",
+          "description": "Ask a question about a processed video using RAG over transcript and frames.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "video_id": {
+                "type": "string",
+                "description": "Optional: filter to specific video"
+              },
+              "n_context": {
+                "type": "integer",
+                "default": 8
+              }
+            },
+            "required": [
+              "question"
+            ]
+          }
+        },
+        {
+          "name": "search_video",
+          "description": "Semantic search across video transcripts and frame descriptions.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "video_id": {
+                "type": "string"
+              },
+              "n_results": {
+                "type": "integer",
+                "default": 10
+              },
+              "search_type": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "transcript",
+                  "frames"
+                ],
+                "default": "all"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "get_transcript",
+          "description": "Get the full transcript for a processed video.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        },
+        {
+          "name": "summarize_video",
+          "description": "Generate a summary of a video at short/medium/detailed level.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "short",
+                  "medium",
+                  "detailed"
+                ],
+                "default": "medium"
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        },
+        {
+          "name": "get_chapters",
+          "description": "Auto-detect topic chapters from a video transcript.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        },
+        {
+          "name": "extract_entities",
+          "description": "Extract people, tools, concepts, and key terms from a video.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        },
+        {
+          "name": "find_moment",
+          "description": "Find when something specific happens in a video.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              },
+              "query": {
+                "type": "string",
+                "description": "What to find, e.g. 'when does he show the architecture diagram'"
+              }
+            },
+            "required": [
+              "video_id",
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "ask_collection",
+          "description": "Ask a question across ALL processed videos simultaneously.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "n_context": {
+                "type": "integer",
+                "default": 10
+              }
+            },
+            "required": [
+              "question"
+            ]
+          }
+        },
+        {
+          "name": "compare_videos",
+          "description": "Compare content and approaches across two videos.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id_1": {
+                "type": "string"
+              },
+              "video_id_2": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "video_id_1",
+              "video_id_2"
+            ]
+          }
+        },
+        {
+          "name": "export_notes",
+          "description": "Generate structured markdown notes for a video with summary, chapters, and entities.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        },
+        {
+          "name": "delete_video",
+          "description": "Remove a video from the store.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "video_id": {
+                "type": "string"
+              },
+              "delete_files": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "video_id"
+            ]
+          }
+        }
+      ],
+      "tool_count": 14,
+      "startup_ms": 1044.5046424865723,
+      "error": null,
+      "env_keys": [
+        "OPENAI_API_KEY"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\nINFO:     Started server process [2647]\nINFO:     Waiting for application startup.\nERROR:native.base:Discovery error: All connection attempts failed\nERROR:native.base:Discovery error: All connection attempts failed\nWARNING:native.base:Could not announce to registry: All connection attempts failed\nINFO:native.base:Distributed Video Q&A MCP started on port 4005\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:4005 (Press CTRL+C to quit)\nINFO:     127.0.0.1:54027 - \"GET /health HTTP/1.1\" 200 OK\n"
+    },
+    {
+      "id": "document",
+      "name": "distributed-document-qa",
+      "kind": "native",
+      "port": 4006,
+      "module": "native.distributed_document_qa",
+      "healthy": true,
+      "health_status": {
+        "status": "healthy",
+        "service": "distributed-document-qa-mcp",
+        "dependencies_met": true
+      },
+      "tools": [
+        {
+          "name": "process_document",
+          "description": "Process a PDF (local path or URL) into searchable structured content. Extracts text, tables, figures, equations, and metadata. Stores embeddings for semantic Q&A.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Local file path or URL to a PDF"
+              },
+              "enable_ocr": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run OCR on scanned pages"
+              },
+              "extract_figures": {
+                "type": "boolean",
+                "default": true
+              },
+              "extract_tables": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        {
+          "name": "list_documents",
+          "description": "List all processed documents with metadata.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "ask_document",
+          "description": "Ask a question about a processed document using RAG over its content.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "doc_id": {
+                "type": "string",
+                "description": "Specific document ID (optional, searches all if omitted)"
+              },
+              "n_context": {
+                "type": "integer",
+                "default": 8
+              }
+            },
+            "required": [
+              "question"
+            ]
+          }
+        },
+        {
+          "name": "search_documents",
+          "description": "Semantic search across all processed document content.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "doc_id": {
+                "type": "string"
+              },
+              "n_results": {
+                "type": "integer",
+                "default": 10
+              },
+              "search_type": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "text",
+                  "tables",
+                  "figures"
+                ],
+                "default": "all"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        {
+          "name": "get_document_text",
+          "description": "Get the full extracted text from a document.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              },
+              "page": {
+                "type": "integer",
+                "description": "Specific page number (optional, all pages if omitted)"
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        },
+        {
+          "name": "extract_tables",
+          "description": "Get all detected tables from a document as structured JSON.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              },
+              "page": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        },
+        {
+          "name": "extract_figures",
+          "description": "Get all detected figures/plots from a document with descriptions.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              },
+              "page": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        },
+        {
+          "name": "summarize_document",
+          "description": "Generate a summary of a document at short/medium/detailed level.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "short",
+                  "medium",
+                  "detailed"
+                ],
+                "default": "medium"
+              },
+              "focus": {
+                "type": "string",
+                "description": "Optional focus area, e.g. 'methodology', 'results'"
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        },
+        {
+          "name": "get_document_metadata",
+          "description": "Get metadata for a processed document (title, authors, abstract, page count, etc.).",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        },
+        {
+          "name": "compare_documents",
+          "description": "Compare two documents on methodology, findings, and key concepts.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id_1": {
+                "type": "string"
+              },
+              "doc_id_2": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "doc_id_1",
+              "doc_id_2"
+            ]
+          }
+        },
+        {
+          "name": "delete_document",
+          "description": "Remove a document from the store.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "doc_id": {
+                "type": "string"
+              },
+              "delete_files": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "doc_id"
+            ]
+          }
+        }
+      ],
+      "tool_count": 11,
+      "startup_ms": 1067.5849914550781,
+      "error": null,
+      "env_keys": [
+        "OPENAI_API_KEY"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\nINFO:     Started server process [2649]\nINFO:     Waiting for application startup.\nERROR:native.base:Discovery error: All connection attempts failed\nERROR:native.base:Discovery error: All connection attempts failed\nWARNING:native.base:Could not announce to registry: All connection attempts failed\nINFO:native.base:Distributed Document Q&A MCP started on port 4006\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:4006 (Press CTRL+C to quit)\nINFO:     127.0.0.1:54040 - \"GET /health HTTP/1.1\" 200 OK\n"
+    },
+    {
+      "id": "codex-apps",
+      "name": "codex-apps-mcp",
+      "kind": "native",
+      "port": 4011,
+      "module": "native.codex_apps_mcp.server",
+      "healthy": false,
+      "health_status": {},
+      "tools": [],
+      "tool_count": 0,
+      "startup_ms": 45364.45593833923,
+      "error": null,
+      "env_keys": [
+        "TOOLMANAGEMENT_API_URL"
+      ],
+      "stdout_tail": "/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/.venv/lib/python3.12/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.7.0) or chardet (7.4.3)/charset_normalizer (3.4.7) doesn't match a supported version!\n  warnings.warn(\nINFO:tool_management.embeddings.semantic_belief_store:SemanticBeliefStore using database at data/belief_embeddings.db\nINFO:native.distributed_memory_mcp.server:SemanticBeliefStore initialized with persistence and embeddings\n<frozen runpy>:128: RuntimeWarning: 'native.codex_apps_mcp.server' found in sys.modules after import of package 'native.codex_apps_mcp', but prior to execution of 'native.codex_apps_mcp.server'; this may result in unpredictable behaviour\n"
+    }
+  ]
+}

@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ITANO CIRCUS — A.COLLE MK-8</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --phos:#4dff7c;
+    --amber:#ffb347;
+    --hot:#ff4d6d;
+    --bg:#050308;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:#000;overflow:hidden;cursor:crosshair}
+  body{
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Press Start 2P',monospace;
+    background:radial-gradient(ellipse at 50% 120%, #0d0a1a 0%, #000 70%);
+  }
+  #shell{
+    position:relative;
+    aspect-ratio:16/10;
+    width:min(96vw, calc(96vh * 1.6));
+    background:var(--bg);
+    border-radius:18px;
+    box-shadow:
+      0 0 0 6px #1a1522,
+      0 0 0 8px #05030a,
+      0 0 80px rgba(77,255,124,.10),
+      inset 0 0 120px rgba(0,0,0,.85);
+    overflow:hidden;
+  }
+  canvas#screen{
+    position:absolute;inset:0;width:100%;height:100%;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+  }
+  /* CRT layers */
+  .scanlines{
+    position:absolute;inset:0;pointer-events:none;z-index:4;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.28) 3px, rgba(0,0,0,.28) 4px);
+    mix-blend-mode:multiply;
+  }
+  .rgbmask{
+    position:absolute;inset:0;pointer-events:none;z-index:4;opacity:.35;
+    background:repeating-linear-gradient(
+      to right,
+      rgba(255,0,80,.06) 0px, rgba(0,255,120,.05) 2px, rgba(0,120,255,.06) 4px, rgba(255,0,80,.06) 6px);
+    mix-blend-mode:screen;
+  }
+  .vignette{
+    position:absolute;inset:0;pointer-events:none;z-index:5;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%);
+  }
+  .flicker{
+    position:absolute;inset:0;pointer-events:none;z-index:5;
+    background:rgba(180,255,210,.03);
+    animation:flick 87ms steps(2) infinite;
+  }
+  @keyframes flick{50%{opacity:.4}}
+  .glass{
+    position:absolute;inset:0;pointer-events:none;z-index:6;
+    background:linear-gradient(115deg, rgba(255,255,255,.07) 0%, rgba(255,255,255,0) 22%);
+    border-radius:18px;
+  }
+  /* HUD */
+  .hud{position:absolute;z-index:3;pointer-events:none;color:var(--phos);
+    text-shadow:0 0 6px rgba(77,255,124,.8), 1px 0 0 rgba(255,0,80,.5), -1px 0 0 rgba(0,140,255,.5);}
+  #title{
+    top:4.5%;left:50%;transform:translateX(-50%);
+    font-size:clamp(14px,2.6vw,26px);letter-spacing:.12em;white-space:nowrap;
+    color:var(--amber);
+    text-shadow:0 0 10px rgba(255,179,71,.9), 2px 0 0 rgba(255,0,80,.6), -2px 0 0 rgba(0,140,255,.6);
+    animation:titlepulse 2.4s ease-in-out infinite;
+  }
+  @keyframes titlepulse{50%{opacity:.82;transform:translateX(-50%) scale(1.01)}}
+  #sub{
+    top:calc(4.5% + clamp(20px,3.4vw,34px));left:50%;transform:translateX(-50%);
+    font-size:clamp(6px,1vw,10px);letter-spacing:.3em;opacity:.85;white-space:nowrap;
+  }
+  #stats{bottom:4%;left:4%;font-size:clamp(6px,1.1vw,11px);line-height:2.1}
+  #stats .v{color:#fff}
+  #hint{
+    bottom:4%;right:4%;font-size:clamp(6px,1vw,10px);text-align:right;line-height:2.1;
+    color:var(--hot);
+    text-shadow:0 0 8px rgba(255,77,109,.8);
+    animation:blink 1.2s steps(2) infinite;
+  }
+  @keyframes blink{50%{opacity:.25}}
+  #lock{
+    top:16%;right:4%;font-size:clamp(6px,1vw,10px);color:var(--amber);letter-spacing:.2em;
+    opacity:0;transition:opacity .1s;
+  }
+  #lock.on{opacity:1;animation:blink .35s steps(2) infinite}
+</style>
+</head>
+<body>
+<div id="shell">
+  <canvas id="screen"></canvas>
+  <div class="hud" id="title">ITANO CIRCUS</div>
+  <div class="hud" id="sub">A.COLLE MK-8 // MACROSS PROTOCOL</div>
+  <div class="hud" id="stats">
+    MSL <span class="v" id="s-msl">000</span><br>
+    KILL <span class="v" id="s-kill">000</span><br>
+    SWARM <span class="v" id="s-swarm">00</span>
+  </div>
+  <div class="hud" id="hint">CLICK = MACROSS MASSACRE<br>SPACE = AUTO SALVO</div>
+  <div class="hud" id="lock">▶ LOCK ON ◀</div>
+  <div class="scanlines"></div>
+  <div class="rgbmask"></div>
+  <div class="vignette"></div>
+  <div class="flicker"></div>
+  <div class="glass"></div>
+</div>
+<script>
+(() => {
+"use strict";
+// ---------- low-res framebuffer ----------
+const W = 384, H = 240;
+const cv = document.getElementById('screen');
+cv.width = W; cv.height = H;
+const cx = cv.getContext('2d');
+cx.imageSmoothingEnabled = false;
+
+const TAU = Math.PI * 2;
+const rnd = (a,b) => a + Math.random()*(b-a);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const wrapA = a => { while(a> Math.PI) a-=TAU; while(a<-Math.PI) a+=TAU; return a; };
+
+// ---------- palette ----------
+const PAL = {
+  H:'#2a1c12',  // hair
+  S:'#e8b48a',  // skin
+  G:'#111111',  // glasses frame
+  L:'#9be8ff',  // lens
+  B:'#2e6f6a',  // hoodie teal
+  b:'#1d4b47',  // hoodie shade
+  P:'#3a3550',  // pants
+  J:'#8b8fa3',  // jetpack
+  j:'#565a6e',  // jetpack shade
+  K:'#c9c9c9',  // boots
+  W:'#ffffff',
+};
+
+// 8-bit Arthur — 14x16, faces right
+const ARTHUR = [
+"....HHHHH.....",
+"...HHHHHHH....",
+"...HHHHHHH....",
+"...HSSSSSH....",
+"..GGLGGLGG....",
+"...SSSSSS.....",
+"...SS.SSS.....",
+"....SSSS......",
+"..JBBBBBB.....",
+".JjBBBBBBS....",
+".JjBBBBBB.....",
+".JjbBBBBb.....",
+"...PPPPPP.....",
+"...PP..PP.....",
+"...PP..PP.....",
+"..KKK..KKK....",
+];
+const SPR_W = 14, SPR_H = 16;
+
+// enemy drone — 11x8 pixel bug
+const DRONE = [
+"..q.....q..",
+"...q...q...",
+".qqQQQQQq..",
+"qQQEQQQEQq.",
+"qQQQQQQQQq.",
+".qqQQQQQq..",
+"...q...q...",
+"..q.....q..",
+];
+const DPAL = { q:'#7a2440', Q:'#ff4d6d', E:'#ffe66d' };
+
+function drawSprite(grid, pal, px, py, flip){
+  for(let y=0;y<grid.length;y++){
+    const row = grid[y];
+    for(let x=0;x<row.length;x++){
+      const c = row[x];
+      if(c==='.'||c===' ') continue;
+      const col = pal[c]; if(!col) continue;
+      const dx = flip ? (row.length-1-x) : x;
+      cx.fillStyle = col;
+      cx.fillRect((px+dx)|0,(py+y)|0,1,1);
+    }
+  }
+}
+
+// ---------- state ----------
+const missiles = [];
+const smoke = [];   // {x,y,vx,vy,life,max,hot}
+const sparks = [];  // {x,y,vx,vy,life,max,col}
+const rings = [];   // {x,y,r,max,life}
+const stars = [];
+for(let i=0;i<90;i++) stars.push({x:Math.random()*W, y:Math.random()*H, z:rnd(.2,1)});
+
+let mslFired=0, kills=0, swarmN=0;
+let shake=0, flash=0, t=0;
+let mouse = {x:W*0.7, y:H*0.4, active:false, down:false};
+let lastSalvo = 0;
+
+const arthur = { x:W*0.25, y:H*0.55, vx:0, vy:0, flame:0 };
+const drone = { x:W*0.75, y:H*0.35, hp:8, t:rnd(0,9), dead:0 };
+
+const sMsl = document.getElementById('s-msl');
+const sKill = document.getElementById('s-kill');
+const sSwarm = document.getElementById('s-swarm');
+const lockEl = document.getElementById('lock');
+
+// ---------- input ----------
+const shell = document.getElementById('shell');
+function toGame(e){
+  const r = shell.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left)/r.width * W;
+  mouse.y = (e.clientY - r.top)/r.height * H;
+  mouse.active = true;
+}
+shell.addEventListener('pointermove', toGame);
+shell.addEventListener('pointerdown', e => { toGame(e); salvo(28 + (Math.random()*12|0)); });
+window.addEventListener('keydown', e => {
+  if(e.code==='Space'){ e.preventDefault(); salvo(40); }
+});
+
+// ---------- itano launch ----------
+function salvo(n){
+  swarmN = n; lastSalvo = t;
+  const baseA = Math.atan2(drone.y-arthur.y, drone.x-arthur.x);
+  for(let i=0;i<n;i++){
+    // launch fanned out wildly — some even backwards, they whip around
+    const spread = rnd(-1,1);
+    const a = baseA + spread * rnd(1.2, 2.6);
+    missiles.push({
+      x: arthur.x + rnd(-3,3), y: arthur.y + rnd(-5,5),
+      a, s: rnd(30,60), smax: rnd(150,210),
+      age: 0, life: rnd(3.2,4.6),
+      turn: rnd(3.2,5.4),           // max turn rate rad/s (grows in)
+      wf: rnd(6,13),                // wobble freq
+      wa: rnd(2.5,6.5),             // wobble amplitude rad/s
+      ph: rnd(0,TAU),
+      delay: i * rnd(0.008,0.02),   // ripple launch
+    });
+    mslFired++;
+  }
+  shake = Math.max(shake, 2.2);
+  arthur.flame = 1;
+}
+
+function boom(x,y,big){
+  const n = big? 46 : 14;
+  for(let i=0;i<n;i++){
+    const a = rnd(0,TAU), s = rnd(14, big?120:60);
+    sparks.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,
+      life:rnd(.25, big?.9:.5), max:1, col: Math.random()<.5?'#ffe66d':'#ff4d6d'});
+  }
+  rings.push({x,y,r:1,max: big?26:10, life:big?.5:.3, age:0});
+  shake = Math.max(shake, big?5:1.6);
+  if(big) flash = .55;
+}
+
+// ---------- simulation ----------
+function step(dt){
+  t += dt;
+
+  // Arthur: chase a point offset from the mouse, or patrol
+  let hx, hy;
+  if(mouse.active){ hx = mouse.x; hy = mouse.y; }
+  else { hx = W*0.28 + Math.sin(t*0.6)*40; hy = H*0.55 + Math.sin(t*0.9)*30; }
+  arthur.vx += (hx - arthur.x) * 3.4 * dt;
+  arthur.vy += (hy - arthur.y) * 3.4 * dt;
+  arthur.vx *= Math.pow(0.12, dt); arthur.vy *= Math.pow(0.12, dt);
+  arthur.x += arthur.vx*dt; arthur.y += arthur.vy*dt;
+  arthur.x = clamp(arthur.x, 8, W-8); arthur.y = clamp(arthur.y, 26, H-14);
+  arthur.flame = Math.max(0, arthur.flame - dt*2);
+
+  // jetpack exhaust
+  if(Math.random() < .8){
+    smoke.push({x:arthur.x-4+rnd(-1,1), y:arthur.y+2+rnd(-2,2),
+      vx:-rnd(10,30)-arthur.vx*.3, vy:rnd(-6,6), life:rnd(.3,.6), max:.6, hot:.4});
+  }
+
+  // drone: evasive lissajous, panics when missiles near
+  drone.t += dt;
+  if(drone.dead > 0){
+    drone.dead -= dt;
+    if(drone.dead <= 0){ drone.hp = 8; drone.x = rnd(W*.55,W*.9); drone.y = rnd(H*.2,H*.75); }
+  } else {
+    const panic = missiles.length ? 1.8 : 1;
+    drone.x = clamp(drone.x + Math.cos(drone.t*1.3)*46*panic*dt + Math.sin(drone.t*3.1)*30*dt, W*.35, W-12);
+    drone.y = clamp(drone.y + Math.sin(drone.t*1.7)*40*panic*dt + Math.cos(drone.t*2.3)*26*dt, 30, H-16);
+  }
+
+  // auto salvo cadence when idle
+  if(t - lastSalvo > 3.5) salvo(18 + (Math.random()*14|0));
+
+  // missiles
+  for(let i=missiles.length-1;i>=0;i--){
+    const m = missiles[i];
+    if(m.delay > 0){ m.delay -= dt; continue; }
+    m.age += dt;
+    const tx = drone.x+5, ty = drone.y+4;
+    // homing gain ramps in — early flight is wild, terminal is deadly
+    const gain = 1 - Math.exp(-m.age*1.6);
+    const da = wrapA(Math.atan2(ty-m.y, tx-m.x) - m.a);
+    m.a += clamp(da, -m.turn*gain*dt, m.turn*gain*dt);
+    // decaying corkscrew wobble = the signature Itano squiggle
+    m.a += Math.sin(m.age*m.wf + m.ph) * m.wa * Math.exp(-m.age*1.05) * dt;
+    m.s = Math.min(m.smax, m.s + 170*dt);
+    m.x += Math.cos(m.a)*m.s*dt;
+    m.y += Math.sin(m.a)*m.s*dt;
+
+    // trail
+    smoke.push({x:m.x+rnd(-.5,.5), y:m.y+rnd(-.5,.5), vx:rnd(-4,4), vy:rnd(-4,2),
+      life:rnd(.55,.95), max:.95, hot:1});
+    if(Math.random()<.6)
+      smoke.push({x:m.x, y:m.y, vx:rnd(-2,2), vy:rnd(-3,1), life:rnd(.9,1.5), max:1.5, hot:0});
+
+    const dx = tx-m.x, dy = ty-m.y;
+    if(drone.dead<=0 && dx*dx+dy*dy < 16){
+      missiles.splice(i,1);
+      drone.hp--;
+      if(drone.hp<=0){
+        kills++; boom(tx,ty,true); drone.dead = 1.2;
+      } else boom(m.x,m.y,false);
+      continue;
+    }
+    if(m.age > m.life || m.x<-20||m.x>W+20||m.y<-20||m.y>H+20){
+      boom(m.x,m.y,false);
+      missiles.splice(i,1);
+    }
+  }
+
+  // particles
+  for(let i=smoke.length-1;i>=0;i--){
+    const p = smoke[i];
+    p.life -= dt; if(p.life<=0){ smoke.splice(i,1); continue; }
+    p.x += p.vx*dt; p.y += p.vy*dt; p.vy -= 6*dt; // smoke rises a touch
+  }
+  if(smoke.length > 5000) smoke.splice(0, smoke.length-5000);
+  for(let i=sparks.length-1;i>=0;i--){
+    const p = sparks[i];
+    p.life -= dt; if(p.life<=0){ sparks.splice(i,1); continue; }
+    p.x += p.vx*dt; p.y += p.vy*dt; p.vx*=Math.pow(.2,dt); p.vy*=Math.pow(.2,dt);
+  }
+  for(let i=rings.length-1;i>=0;i--){
+    const r = rings[i];
+    r.age += dt;
+    if(r.age > r.life){ rings.splice(i,1); continue; }
+    r.r = 1 + (r.age/r.life)*r.max;
+  }
+
+  shake = Math.max(0, shake - dt*8);
+  flash = Math.max(0, flash - dt*1.8);
+
+  // HUD
+  sMsl.textContent = String(missiles.length).padStart(3,'0');
+  sKill.textContent = String(kills).padStart(3,'0');
+  sSwarm.textContent = String(swarmN).padStart(2,'0');
+  lockEl.classList.toggle('on', missiles.length>0 && drone.dead<=0);
+}
+
+// ---------- render ----------
+function smokeColor(p){
+  const f = p.life / p.max; // 1 → 0
+  if(p.hot >= 1){
+    if(f > .8) return '#ffffff';
+    if(f > .6) return '#ffe66d';
+    if(f > .4) return '#ffb347';
+    if(f > .22) return '#8a5a4a';
+    return '#3a2f3a';
+  }
+  if(f > .6) return '#b9b4c9';
+  if(f > .3) return '#6e6884';
+  return '#332e44';
+}
+
+function render(){
+  const sx = shake>0 ? rnd(-shake,shake) : 0;
+  const sy = shake>0 ? rnd(-shake,shake) : 0;
+
+  // bg
+  cx.fillStyle = '#050308';
+  cx.fillRect(0,0,W,H);
+  // depth stars
+  for(const s of stars){
+    s.x -= s.z * 14 / 60;
+    if(s.x < 0) s.x += W;
+    cx.fillStyle = s.z > .7 ? '#4a4460' : '#231f33';
+    cx.fillRect((s.x+sx*s.z)|0, (s.y+sy*s.z)|0, 1, 1);
+  }
+  // horizon grid, faint
+  cx.fillStyle = '#120e1e';
+  for(let y=H-40;y<H;y+=6) cx.fillRect(0,y,W,1);
+
+  cx.save();
+  cx.translate(sx|0, sy|0);
+
+  // smoke first (under everything)
+  for(const p of smoke){
+    cx.fillStyle = smokeColor(p);
+    const sz = p.hot>=1 ? 1 : (p.life/p.max > .5 ? 2 : 1);
+    cx.fillRect(p.x|0, p.y|0, sz, sz);
+  }
+
+  // missiles: bright head + 3px tail
+  for(const m of missiles){
+    if(m.delay>0) continue;
+    const bx = m.x - Math.cos(m.a)*2, by = m.y - Math.sin(m.a)*2;
+    cx.fillStyle = '#ffb347';
+    cx.fillRect(bx|0, by|0, 1, 1);
+    cx.fillStyle = '#ffffff';
+    cx.fillRect(m.x|0, m.y|0, 1, 1);
+    cx.fillRect((m.x-Math.cos(m.a))|0, (m.y-Math.sin(m.a))|0, 1, 1);
+  }
+
+  // sparks
+  for(const p of sparks){
+    cx.fillStyle = p.col;
+    cx.fillRect(p.x|0, p.y|0, 1, 1);
+  }
+  // explosion rings (pixel circles)
+  for(const r of rings){
+    const f = 1 - r.age/r.life;
+    cx.fillStyle = f > .5 ? '#ffe66d' : '#ff4d6d';
+    const steps = (r.r*6)|0;
+    for(let i=0;i<steps;i++){
+      const a = i/steps*TAU;
+      cx.fillRect((r.x+Math.cos(a)*r.r)|0, (r.y+Math.sin(a)*r.r)|0, 1, 1);
+    }
+  }
+
+  // drone
+  if(drone.dead<=0){
+    const bob = Math.sin(t*7)*1.5;
+    drawSprite(DRONE, DPAL, (drone.x)|0, (drone.y+bob)|0, false);
+    // hp pips
+    cx.fillStyle = '#ff4d6d';
+    for(let i=0;i<drone.hp;i++) cx.fillRect((drone.x+i*1.5)|0, (drone.y-3+bob)|0, 1, 1);
+  }
+
+  // Arthur + jetpack flame
+  const flip = arthur.vx < -6;
+  const bob = Math.sin(t*5)*1.2;
+  const ax = (arthur.x - SPR_W/2)|0, ay = (arthur.y - SPR_H/2 + bob)|0;
+  if(Math.sin(t*30) > -0.3){
+    cx.fillStyle = Math.random()<.5 ? '#ffe66d' : '#ff8c42';
+    const fx = flip ? ax+SPR_W-2 : ax;
+    cx.fillRect(fx+(flip?1:0), ay+10, 2, 2);
+    cx.fillRect(fx+(flip?2:-1), ay+11, 2, 1);
+  }
+  drawSprite(ARTHUR, PAL, ax, ay, flip);
+
+  // crosshair on drone during lock
+  if(missiles.length && drone.dead<=0){
+    cx.fillStyle = '#ffb347';
+    const cxp=(drone.x+5)|0, cyp=(drone.y+4)|0, o = 8 + Math.sin(t*12)*2;
+    cx.fillRect(cxp-o|0, cyp, 3, 1); cx.fillRect(cxp+o-2|0, cyp, 3, 1);
+    cx.fillRect(cxp, cyp-o|0, 1, 3); cx.fillRect(cxp, cyp+o-2|0, 1, 3);
+  }
+
+  cx.restore();
+
+  // boom flash
+  if(flash > 0){
+    cx.fillStyle = `rgba(255,240,220,${flash*.5})`;
+    cx.fillRect(0,0,W,H);
+  }
+}
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now){
+  const dt = Math.min(0.033, (now-last)/1000);
+  last = now;
+  step(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// opening salvo so the screen is alive immediately
+setTimeout(() => salvo(32), 600);
+})();
+</script>
+</body>
+</html>
+

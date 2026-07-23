@@ -1,0 +1,15 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    padding: 20px;
+}
+
+h1 {
+    color: #333;
+}
+
+canvas {
+    margin: 20px 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}

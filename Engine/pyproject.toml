@@ -1,0 +1,60 @@
+[project]
+name = "engine"
+version = "0.1.0"
+description = "Real-time Agent Substrate - The single connection point for all agents"
+readme = "ENGINE_API_SPEC.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Distributed Systems Corporation"}
+]
+keywords = ["agents", "temporal", "websocket", "realtime", "distributed"]
+
+dependencies = [
+    "fastapi[standard]>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "websockets>=13.0",
+    "httpx>=0.27.0",
+    "temporalio>=1.7.0",
+    "redis>=5.0.0",
+    "aiofiles>=24.0.0",
+    "orjson>=3.9.0",
+    "msgpack>=1.0.0",
+    "prometheus-client>=0.20.0",
+    "structlog>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "black>=24.0.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+engine-server = "engine.server:main"
+engine-worker = "engine.worker:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

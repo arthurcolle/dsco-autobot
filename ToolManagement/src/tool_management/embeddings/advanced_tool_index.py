@@ -92,13 +92,17 @@ class AdvancedToolIndex:
     }
 
     def __init__(self, db_path: Optional[str] = None):
+        self.embedding_service = get_embedding_service()
         if db_path is None:
-            db_path = str(DATA_DIR / "advanced_tool_index.db")
+            # Namespace the index per embedder: local-hash vectors and Jina
+            # vectors live in different spaces and must never be compared.
+            embedder_name = getattr(self.embedding_service, "name", "")
+            suffix = "_local" if "local" in str(embedder_name) else ""
+            db_path = str(DATA_DIR / f"advanced_tool_index{suffix}.db")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"AdvancedToolIndex using database at {self.db_path}")
 
-        self.embedding_service = get_embedding_service()
         self._init_db()
 
         # In-memory caches for fast retrieval

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "2010:2010"
+    volumes:
+      - .:/app
+    environment:
+      - PORTKEY_API_KEY=${PORTKEY_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_ORGANIZATION=${OPENAI_ORGANIZATION}
+

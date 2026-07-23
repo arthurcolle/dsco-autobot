@@ -26,7 +26,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from .billing_hooks import AgentContext, BillingManager
 from .durable_store import DurableStore, ToolRequest, ToolResponse, RequestStatus
@@ -105,7 +105,12 @@ class EconomicPolicy:
 class ExecuteRequest(BaseModel):
     """Client request to execute a tool."""
     tool: str = Field(..., description="Tool name to execute")
-    inputs: Dict[str, Any] = Field(default_factory=dict, description="Tool inputs")
+    # Registry meta-tools say "arguments", service clients say "inputs" — accept both
+    inputs: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Tool inputs",
+        validation_alias=AliasChoices("inputs", "arguments"),
+    )
     idempotency_key: Optional[str] = Field(None, description="Idempotency key for deduplication")
     estimated_tokens_input: Optional[int] = Field(default=None, ge=0)
     estimated_tokens_output: Optional[int] = Field(default=None, ge=0)

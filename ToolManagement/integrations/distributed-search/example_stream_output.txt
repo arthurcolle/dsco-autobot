@@ -1,0 +1,261 @@
+================================================================================
+SSE Stream Output for Query:
+"Get 10 cities on the west coast and 7 cities on east coast (USA) and get their temperatures"
+================================================================================
+
+event: session.start
+data: {"event":"session.start","data":{"message_id":"msg_a1b2c3d4e5f6","model":"anthropic/claude-3.5-sonnet","user_message":"Get 10 cities on the west coast and 7 cities on east coast (USA) and get their temperatures","tools_available":42},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.000Z","sequence":0}
+
+event: session.update
+data: {"event":"session.update","data":{"action":"message_added","role":"user","message_count":1},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.050Z","sequence":1}
+
+event: message.start
+data: {"event":"message.start","data":{"iteration":1,"message_id":"msg_a1b2c3d4e5f6"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.100Z","sequence":2}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"I'll","full_text":"I'll"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.150Z","sequence":3}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" help","full_text":"I'll help"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.200Z","sequence":4}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" you","full_text":"I'll help you"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.250Z","sequence":5}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" gather","full_text":"I'll help you gather"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.300Z","sequence":6}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" temperature","full_text":"I'll help you gather temperature"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.350Z","sequence":7}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" data","full_text":"I'll help you gather temperature data"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.400Z","sequence":8}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" for","full_text":"I'll help you gather temperature data for"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.450Z","sequence":9}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" major","full_text":"I'll help you gather temperature data for major"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.500Z","sequence":10}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" cities","full_text":"I'll help you gather temperature data for major cities"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.550Z","sequence":11}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" on","full_text":"I'll help you gather temperature data for major cities on"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.600Z","sequence":12}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" both","full_text":"I'll help you gather temperature data for major cities on both"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.650Z","sequence":13}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" coasts.","full_text":"I'll help you gather temperature data for major cities on both coasts."},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.700Z","sequence":14}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Let","full_text":"I'll help you gather temperature data for major cities on both coasts. Let"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.750Z","sequence":15}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" me","full_text":"I'll help you gather temperature data for major cities on both coasts. Let me"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.800Z","sequence":16}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" search","full_text":"I'll help you gather temperature data for major cities on both coasts. Let me search"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.850Z","sequence":17}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" for","full_text":"I'll help you gather temperature data for major cities on both coasts. Let me search for"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.900Z","sequence":18}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" this","full_text":"I'll help you gather temperature data for major cities on both coasts. Let me search for this"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:00.950Z","sequence":19}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" information.","full_text":"I'll help you gather temperature data for major cities on both coasts. Let me search for this information."},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:01.000Z","sequence":20}
+
+event: message.end
+data: {"event":"message.end","data":{"full_text":"I'll help you gather temperature data for major cities on both coasts. Let me search for this information.","has_tool_calls":true},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:01.050Z","sequence":21}
+
+# ==================== TOOL CALL 1: Search for West Coast Cities ====================
+
+event: tool.call.start
+data: {"event":"tool.call.start","data":{"tool_id":"call_001","tool_name":"search","arguments_raw":"{\"query\":\"major cities west coast USA temperatures\"}"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:01.100Z","sequence":22}
+
+event: tool.call.args
+data: {"event":"tool.call.args","data":{"tool_id":"call_001","arguments":{"query":"major cities west coast USA temperatures"}},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:01.150Z","sequence":23}
+
+event: tool.call.execute
+data: {"event":"tool.call.execute","data":{"tool_id":"call_001","mcp_tool_name":"jina_search","status":"executing"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:01.200Z","sequence":24}
+
+event: tool.result
+data: {"event":"tool.result","data":{"tool_id":"call_001","result":"West Coast Major Cities:\n1. Los Angeles, CA - 72°F\n2. San Diego, CA - 68°F\n3. San Jose, CA - 65°F\n4. San Francisco, CA - 58°F\n5. Seattle, WA - 52°F\n6. Portland, OR - 55°F\n7. Sacramento, CA - 70°F\n8. Long Beach, CA - 71°F\n9. Oakland, CA - 62°F\n10. Fresno, CA - 75°F","result_length":312},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:02.500Z","sequence":25}
+
+event: tool.call.end
+data: {"event":"tool.call.end","data":{"tool_id":"call_001","status":"completed"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:02.550Z","sequence":26}
+
+# ==================== TOOL CALL 2: Search for East Coast Cities ====================
+
+event: tool.call.start
+data: {"event":"tool.call.start","data":{"tool_id":"call_002","tool_name":"search","arguments_raw":"{\"query\":\"major cities east coast USA temperatures\"}"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:02.600Z","sequence":27}
+
+event: tool.call.args
+data: {"event":"tool.call.args","data":{"tool_id":"call_002","arguments":{"query":"major cities east coast USA temperatures"}},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:02.650Z","sequence":28}
+
+event: tool.call.execute
+data: {"event":"tool.call.execute","data":{"tool_id":"call_002","mcp_tool_name":"jina_search","status":"executing"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:02.700Z","sequence":29}
+
+event: tool.result
+data: {"event":"tool.result","data":{"tool_id":"call_002","result":"East Coast Major Cities:\n1. New York, NY - 45°F\n2. Philadelphia, PA - 42°F\n3. Boston, MA - 38°F\n4. Miami, FL - 78°F\n5. Washington, DC - 48°F\n6. Baltimore, MD - 46°F\n7. Jacksonville, FL - 72°F","result_length":234},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.000Z","sequence":30}
+
+event: tool.call.end
+data: {"event":"tool.call.end","data":{"tool_id":"call_002","status":"completed"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.050Z","sequence":31}
+
+# ==================== ITERATION 2: LLM Processes Tool Results ====================
+
+event: message.start
+data: {"event":"message.start","data":{"iteration":2,"message_id":"msg_a1b2c3d4e5f6"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.100Z","sequence":32}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"Perfect!","full_text":"Perfect!"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.150Z","sequence":33}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" I've","full_text":"Perfect! I've"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.200Z","sequence":34}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" gathered","full_text":"Perfect! I've gathered"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.250Z","sequence":35}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" the","full_text":"Perfect! I've gathered the"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.300Z","sequence":36}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" temperature","full_text":"Perfect! I've gathered the temperature"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.350Z","sequence":37}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" data","full_text":"Perfect! I've gathered the temperature data"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.400Z","sequence":38}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" for","full_text":"Perfect! I've gathered the temperature data for"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.450Z","sequence":39}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" cities","full_text":"Perfect! I've gathered the temperature data for cities"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.500Z","sequence":40}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" on","full_text":"Perfect! I've gathered the temperature data for cities on"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.550Z","sequence":41}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" both","full_text":"Perfect! I've gathered the temperature data for cities on both"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.600Z","sequence":42}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" coasts.","full_text":"Perfect! I've gathered the temperature data for cities on both coasts."},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.650Z","sequence":43}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"\n\n##","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n##"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.700Z","sequence":44}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" West","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.750Z","sequence":45}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Coast","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.800Z","sequence":46}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Cities","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.850Z","sequence":47}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" (","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities ("},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.900Z","sequence":48}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"10","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:04.950Z","sequence":49}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":")","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.000Z","sequence":50}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"\n1","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.050Z","sequence":51}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":".","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1."},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.100Z","sequence":52}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Los","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.150Z","sequence":53}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Angeles,","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles,"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.200Z","sequence":54}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" CA","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.250Z","sequence":55}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" -","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA -"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.300Z","sequence":56}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" **","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.350Z","sequence":57}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"72","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.400Z","sequence":58}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"°F","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.450Z","sequence":59}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"**","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.500Z","sequence":60}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"\n2","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.550Z","sequence":61}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":". San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.600Z","sequence":62}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.650Z","sequence":63}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":"\n\n###","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n###"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.700Z","sequence":64}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Key","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.750Z","sequence":65}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" Observations","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key Observations"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.800Z","sequence":66}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":":\n-","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key Observations:\n-"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.850Z","sequence":67}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" The","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key Observations:\n- The"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.900Z","sequence":68}
+
+event: message.delta
+data: {"event":"message.delta","data":{"delta":" warmest city is Miami, FL at 78°F\n- The coldest city is Boston, MA at 38°F\n- West Coast cities generally have milder, more consistent temperatures (52-75°F)\n- East Coast shows more temperature variation (38-78°F) due to latitude differences","full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key Observations:\n- The warmest city is Miami, FL at 78°F\n- The coldest city is Boston, MA at 38°F\n- West Coast cities generally have milder, more consistent temperatures (52-75°F)\n- East Coast shows more temperature variation (38-78°F) due to latitude differences"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:05.950Z","sequence":69}
+
+event: message.end
+data: {"event":"message.end","data":{"full_text":"Perfect! I've gathered the temperature data for cities on both coasts.\n\n## West Coast Cities (10)\n1. Los Angeles, CA - **72°F**\n2. San Diego, CA - **68°F**\n3. San Jose, CA - **65°F**\n4. San Francisco, CA - **58°F**\n5. Seattle, WA - **52°F**\n6. Portland, OR - **55°F**\n7. Sacramento, CA - **70°F**\n8. Long Beach, CA - **71°F**\n9. Oakland, CA - **62°F**\n10. Fresno, CA - **75°F**\n\n## East Coast Cities (7)\n1. New York, NY - **45°F**\n2. Philadelphia, PA - **42°F**\n3. Boston, MA - **38°F**\n4. Miami, FL - **78°F**\n5. Washington, DC - **48°F**\n6. Baltimore, MD - **46°F**\n7. Jacksonville, FL - **72°F**\n\n### Key Observations:\n- The warmest city is Miami, FL at 78°F\n- The coldest city is Boston, MA at 38°F\n- West Coast cities generally have milder, more consistent temperatures (52-75°F)\n- East Coast shows more temperature variation (38-78°F) due to latitude differences","has_tool_calls":false},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:06.000Z","sequence":70}
+
+event: session.update
+data: {"event":"session.update","data":{"action":"message_added","role":"assistant","message_count":2},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:06.050Z","sequence":71}
+
+event: metadata
+data: {"event":"metadata","data":{"total_messages":2,"total_tokens":456,"duration_ms":6000,"model_info":{"name":"anthropic/claude-3.5-sonnet","temperature":0.7,"max_tokens":4000}},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:06.100Z","sequence":72}
+
+event: session.end
+data: {"event":"session.end","data":{"message_id":"msg_a1b2c3d4e5f6","status":"completed","total_events":73,"conversation_id":"conv_xyz789abc123"},"conversation_id":"conv_xyz789abc123","timestamp":"2025-01-15T10:30:06.150Z","sequence":73}
+
+================================================================================
+SUMMARY
+================================================================================
+
+Total Events: 73
+Total Time: ~6 seconds
+Tool Calls: 2 (search for west coast cities, search for east coast cities)
+Iterations: 2 (initial response with tool calls, final response with data)
+
+Event Breakdown:
+- session.*: 4 events
+- message.delta: 58 events (streaming text chunks)
+- message.start/end: 4 events
+- tool.call.*: 8 events (4 per tool call)
+- metadata: 1 event
+
+What the User Sees in UI:
+1. "I'll help you gather temperature data..." appears word by word
+2. 🔧 Tool badge appears: "search"
+3. Tool executes for ~1.3 seconds
+4. 🔧 Second tool badge appears: "search"
+5. Second tool executes for ~1.4 seconds
+6. "Perfect! I've gathered..." appears word by word
+7. Formatted list of cities with temperatures streams in
+8. Key observations appear at the end
+9. Session complete indicator
+
+Total User Experience: Smooth, real-time streaming with visual tool indicators

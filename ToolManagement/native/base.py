@@ -662,6 +662,64 @@ def euclidean_distance(a: List[float], b: List[float]) -> float:
 
 
 # =============================================================================
+# SHARED TOOL: integration_feedback
+# =============================================================================
+# Lets any AI agent that has just called a tool on this server report back —
+# correctness, schema clarity, missing capabilities, errors — so operators can
+# see feedback from the models/agents actually using the infrastructure.
+
+INTEGRATION_FEEDBACK_TOOL: Dict[str, Any] = {
+    "name": "integration_feedback",
+    "description": (
+        "Submit feedback about your experience using a tool on this integration "
+        "server (correctness, schema clarity, missing capabilities, errors, etc). "
+        "Call this after using a tool if something was confusing, broken, or "
+        "worked great — it helps us improve the API for AI agents."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "tool_name": {
+                "type": "string",
+                "description": "Which tool this feedback concerns (use 'general' for service-wide feedback)",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["success", "partial", "failure"],
+                "description": "How the tool call(s) being reported on went",
+            },
+            "category": {
+                "type": "string",
+                "enum": [
+                    "correctness", "schema_clarity", "performance", "error_handling",
+                    "documentation", "missing_capability", "rate_limit", "auth", "other",
+                ],
+                "default": "other",
+            },
+            "rating": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "1 (poor) to 5 (excellent)",
+            },
+            "message": {
+                "type": "string",
+                "description": "Free-text feedback: what happened, what was confusing, what would help",
+            },
+            "suggested_fix": {"type": "string"},
+            "context": {
+                "type": "object",
+                "description": "Optional supporting context, e.g. the arguments used or error text received",
+            },
+            "session_id": {"type": "string"},
+            "trace_id": {"type": "string"},
+        },
+        "required": ["message"],
+    },
+}
+
+
+# =============================================================================
 # BASE MCP SERVER
 # =============================================================================
 
@@ -713,6 +771,11 @@ class NativeMCPBase(ABC):
         # Capability availability
         self._available_capabilities: Set[str] = set()
 
+        # Every server gets integration_feedback for free (instance copy —
+        # subclasses assign their own TOOLS list, so this must not mutate the
+        # shared class attribute).
+        self.TOOLS = list(self.TOOLS) + [INTEGRATION_FEEDBACK_TOOL]
+
         # FastAPI app
         self.app = self._create_app()
 
@@ -734,6 +797,36 @@ class NativeMCPBase(ABC):
     def on_start(self, hook: Callable):
         """Register a startup hook."""
         self._on_start_hooks.append(hook)
+
+    async def _announce_to_registry(self):
+        """Push-announce this server and its tools to the registry on startup."""
+        service_url = os.getenv("SERVICE_URL", f"http://localhost:{self.port}")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{self._registry_url}/api/v1/tools/announce",
+                    json={
+                        "backend_id": self.SERVICE_ID,
+                        "name": self.SERVICE_NAME,
+                        "url": service_url,
+                        "health_endpoint": "/health",
+                        "mcp_endpoint": "/mcp",
+                        "capabilities": list(self.CAPABILITIES),
+                        "tools": self.TOOLS,
+                    },
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(
+                        f"Announced {result.get('registered', len(self.TOOLS))} tools "
+                        f"to {self._registry_url}"
+                    )
+                else:
+                    logger.warning(
+                        f"Announce returned {response.status_code}: {response.text[:200]}"
+                    )
+        except Exception as e:
+            logger.warning(f"Could not announce to registry: {e}")
 
     def on_stop(self, hook: Callable):
         """Register a shutdown hook."""
@@ -802,6 +895,9 @@ class NativeMCPBase(ABC):
                         hook()
                 except Exception as e:
                     logger.error(f"Startup hook error: {e}")
+
+            # Announce this server and its tools to the registry
+            await self._announce_to_registry()
 
             logger.info(f"{self.SERVICE_NAME} started on port {self.port}")
 
@@ -955,6 +1051,63 @@ class NativeMCPBase(ABC):
                 }, indent=2)
             }]
         }
+
+    async def _tool_integration_feedback(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Forward AI-agent feedback to the registry's durable feedback store.
+
+        Falls back to a local JSONL file (self.data_dir/feedback_fallback.jsonl)
+        if the registry is unreachable, so feedback is never silently dropped.
+        """
+        message = args.get("message")
+        if not message:
+            return {
+                "content": [{"type": "text", "text": json.dumps({"error": "message is required"})}],
+                "isError": True,
+            }
+
+        payload = {
+            "backend_id": self.SERVICE_ID,
+            "message": message,
+            "tool_name": args.get("tool_name"),
+            "outcome": args.get("outcome"),
+            "category": args.get("category") or "other",
+            "rating": args.get("rating"),
+            "suggested_fix": args.get("suggested_fix"),
+            "context": args.get("context"),
+            "session_id": args.get("session_id"),
+            "trace_id": args.get("trace_id"),
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._registry_url}/api/v1/integration-feedback", json=payload
+                )
+            if response.status_code == 200:
+                result = response.json()
+                return {"content": [{"type": "text", "text": json.dumps(result)}]}
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            fallback_path = self.data_dir / "feedback_fallback.jsonl"
+            try:
+                with open(fallback_path, "a") as f:
+                    f.write(json.dumps({
+                        **payload,
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "registry_error": str(e),
+                    }) + "\n")
+                return {"content": [{"type": "text", "text": json.dumps({
+                    "status": "recorded_locally",
+                    "warning": f"registry unreachable ({e}); saved to {fallback_path}",
+                })}]}
+            except Exception as write_err:
+                return {
+                    "content": [{"type": "text", "text": json.dumps({
+                        "error": f"could not reach registry ({e}) or write local fallback ({write_err})",
+                    })}],
+                    "isError": True,
+                }
 
     async def _tool__mesh_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Make a cross-MCP call through the mesh."""

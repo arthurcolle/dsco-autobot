@@ -51,7 +51,10 @@ def web():
     os.environ["SERVICE_URL"] = "https://arthurcolle--distributed-search-mcp-web.modal.run"
 
     # Jina AI API key for search, embeddings, and reranking
-    os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"
+    os.environ["JINA_API_KEY"] = "jina_c6997e7c38a240cabdd77d13dbfd4e40bP6-IWJ__OX8bSG51488ro0g6sQQ"
+
+    # Bearer for federated registry-catalog source in search_all
+    os.environ["TOOLMANAGEMENT_BEARER_TOKEN"] = "sk-arthur-234"
 
     from native.distributed_search_mcp.server import app
     return app

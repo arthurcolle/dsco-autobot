@@ -1,0 +1,387 @@
+version: '3.8'
+
+# Generalist Autonomous Agent Orchestration Platform
+# Full development environment with all services
+
+x-service-common: &service-common
+  restart: unless-stopped
+  networks:
+    - dsco-network
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE LAYER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # PostgreSQL: Database for Temporal and persistent state
+  postgres:
+    <<: *service-common
+    image: postgres:15-alpine
+    container_name: dsco-postgres
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Temporal Server: Durable workflow execution engine
+  temporal:
+    <<: *service-common
+    image: temporalio/auto-setup:latest
+    container_name: dsco-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig.yaml
+      LOG_LEVEL: info
+    ports:
+      - "7233:7233"  # gRPC
+      - "6933:6933"  # Frontend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6933/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Temporal UI: Web interface for monitoring workflows
+  temporal-ui:
+    <<: *service-common
+    image: temporalio/ui:latest
+    container_name: dsco-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis: High-performance in-memory store for mailbox and cache
+  # CRITICAL: appendfsync always ensures writes are durable before acknowledge
+  redis:
+    <<: *service-common
+    image: redis:7-alpine
+    container_name: dsco-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync always
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Commander: Web UI for Redis inspection (development only)
+  redis-commander:
+    <<: *service-common
+    image: rediscommander/redis-commander:latest
+    container_name: dsco-redis-commander
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # APPLICATION SERVICES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Engine: Core agent orchestration service
+  engine:
+    <<: *service-common
+    build:
+      context: ../../Engine
+      dockerfile: Dockerfile
+    container_name: dsco-engine
+    depends_on:
+      temporal:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DSCO_DEPLOY_MODE=docker
+      - PYTHONPATH=/app/libs/dsco_shared/src
+      - DSCO_TEMPORAL_HOST=temporal:7233
+      - DSCO_REDIS_URL=redis://redis:6379
+      - DSCO_GRAPHSUB_URL=http://graphsub:7879
+      - DSCO_LOG_LEVEL=info
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../Engine:/app
+      - ../../libs:/app/libs:ro
+
+  # Completions: LLM completion service
+  completions:
+    <<: *service-common
+    build:
+      context: ../../Completions
+      dockerfile: Dockerfile
+    container_name: dsco-completions
+    depends_on:
+      - redis
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../Completions:/app
+
+  # Conversations: Conversation management service
+  conversations:
+    <<: *service-common
+    build:
+      context: ../../Conversations
+      dockerfile: Dockerfile
+    container_name: dsco-conversations
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GRAPHSUB_URL=http://graphsub:7879
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../Conversations:/app
+
+  # ToolManagement: Tool registry and execution service
+  tool-management:
+    <<: *service-common
+    build:
+      context: ../../ToolManagement
+      dockerfile: Dockerfile
+    container_name: dsco-tool-management
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GRAPHSUB_URL=http://graphsub:7879
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../ToolManagement:/app
+
+  # TaskScheduler: Task scheduling and priority management
+  task-scheduler:
+    <<: *service-common
+    build:
+      context: ../../TaskScheduler
+      dockerfile: Dockerfile
+    container_name: dsco-task-scheduler
+    depends_on:
+      - redis
+      - temporal
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - TEMPORAL_HOST=temporal:7233
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../TaskScheduler:/app
+
+  # GraphManagement: Graph operations service (Neo4j integration)
+  graph-management:
+    <<: *service-common
+    build:
+      context: ../../GraphManagement
+      dockerfile: Dockerfile
+    container_name: dsco-graph-management
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GRAPHSUB_URL=http://graphsub:7879
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../GraphManagement:/app
+
+  # DynamicSchema: Dynamic schema management
+  dynamic-schema:
+    <<: *service-common
+    build:
+      context: ../../DynamicSchema
+      dockerfile: Dockerfile
+    container_name: dsco-dynamic-schema
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GRAPHSUB_URL=http://graphsub:7879
+    ports:
+      - "8006:8006"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../../DynamicSchema:/app
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TEMPORAL WORKERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Engine Worker: Processes agent execution workflows
+  engine-worker:
+    <<: *service-common
+    build:
+      context: ../../Engine
+      dockerfile: Dockerfile.worker
+    container_name: dsco-engine-worker
+    depends_on:
+      temporal:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DSCO_TEMPORAL_HOST=temporal:7233
+      - DSCO_REDIS_URL=redis://redis:6379
+      - DSCO_GRAPHSUB_URL=http://graphsub:7879
+      - DSCO_TASK_QUEUE=agent-tasks
+    command: python -m worker
+    volumes:
+      - ../../Engine:/app
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MONITORING & OBSERVABILITY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Prometheus: Metrics collection
+  prometheus:
+    <<: *service-common
+    image: prom/prometheus:latest
+    container_name: dsco-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana: Metrics visualization
+  grafana:
+    <<: *service-common
+    image: grafana/grafana:latest
+    container_name: dsco-grafana
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  dsco-network:
+    driver: bridge
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SERVICE ENDPOINTS REFERENCE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# INFRASTRUCTURE:
+#   PostgreSQL:          localhost:5432 (user: temporal, password: temporal)
+#   Temporal gRPC:       localhost:7233
+#   Temporal UI:         http://localhost:8080
+#   Redis:               localhost:6379
+#   Redis Commander:     http://localhost:8081
+#
+# APPLICATION SERVICES:
+#   Engine API:          http://localhost:8000
+#   Completions API:     http://localhost:8001
+#   Conversations API:   http://localhost:8002
+#   ToolManagement API:  http://localhost:8003
+#   TaskScheduler API:   http://localhost:8004
+#   GraphManagement API: http://localhost:8005
+#   DynamicSchema API:   http://localhost:8006
+#
+# MONITORING:
+#   Prometheus:          http://localhost:9090
+#   Grafana:             http://localhost:3000 (admin/admin)
+#
+# GraphSub (run separately):
+#   HTTP API:            http://localhost:7879
+#   Cypher:              http://localhost:7879/cypher
+#   GraphQL:             http://localhost:7879/graphql

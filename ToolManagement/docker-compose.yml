@@ -1,0 +1,161 @@
+# ToolManagement stack — one image, every container serves on port 80.
+# Registry is published on host 2016; workers are internal-only (uncomment the
+# per-service ports mapping to publish a worker on its legacy 40xx port).
+# No secrets live in this file: API keys pass through from the host environment.
+
+x-worker-base: &worker-base
+  image: toolmanagement:latest
+  restart: unless-stopped
+  expose:
+    - "80"
+  depends_on:
+    registry:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+
+x-worker-env: &worker-env
+  PORT: "80"
+  REGISTRY_URL: http://registry
+
+services:
+  registry:
+    build: .
+    image: toolmanagement:latest
+    ports:
+      - "2016:80"
+    environment:
+      PORT: "80"
+      DATA_DIR: /app/data
+      AUTO_START_NATIVE_MCPS: "0"   # workers run as separate containers
+      ENABLE_BG_TASKS: "1"
+      CODEX_APP_DIRECTORY_CACHE: /app/data/codex_apps_snapshot/directory/*.json
+      CODEX_APP_PLUGIN_MANIFESTS: /app/data/codex_apps_snapshot/manifests/*/.app.json
+    volumes:
+      - registry-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s   # startup syncs remote backends + indexes before serving
+
+  search:
+    <<: *worker-base
+    command: python -m native.distributed_search_mcp.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://search
+      JINA_API_KEY: ${JINA_API_KEY:-}
+    # ports:
+    #   - "4001:80"
+
+  research:
+    <<: *worker-base
+    command: python -m native.distributed_research_mcp.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://research
+      JINA_API_KEY: ${JINA_API_KEY:-}
+      PARALLEL_API_KEY: ${PARALLEL_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # ports:
+    #   - "4002:80"
+
+  publish:
+    <<: *worker-base
+    command: python -m native.distributed_publish_mcp.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://publish
+      SUBSTACK_SID: ${SUBSTACK_SID:-}
+      SUBSTACK_PUBLICATION: ${SUBSTACK_PUBLICATION:-}
+    # ports:
+    #   - "4003:80"
+
+  memory:
+    <<: *worker-base
+    command: python -m native.distributed_memory_mcp.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://memory
+    volumes:
+      - memory-data:/app/data
+    # ports:
+    #   - "4004:80"
+
+  video-qa:
+    <<: *worker-base
+    command: python -m native.distributed_video_qa.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://video-qa
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    # ports:
+    #   - "4005:80"
+
+  document-qa:
+    <<: *worker-base
+    command: python -m native.distributed_document_qa.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://document-qa
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    # ports:
+    #   - "4006:80"
+
+  unit-fabric:
+    <<: *worker-base
+    command: python -m native.unit_fabric.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://unit-fabric
+    # ports:
+    #   - "4008:80"
+
+  finance-fabric:
+    <<: *worker-base
+    command: python -m native.finance_fabric.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://finance-fabric
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
+      PLAID_SECRET: ${PLAID_SECRET:-}
+    # ports:
+    #   - "4009:80"
+
+  integration-fabric:
+    <<: *worker-base
+    command: python -m native.integration_fabric.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://integration-fabric
+      JINA_API_KEY: ${JINA_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+    # ports:
+    #   - "4010:80"
+
+  codex-apps:
+    <<: *worker-base
+    command: python -m native.codex_apps_mcp.server
+    environment:
+      <<: *worker-env
+      SERVICE_URL: http://codex-apps
+      TOOLMANAGEMENT_API_URL: http://registry
+      TOOLMANAGEMENT_BEARER_TOKEN: ${TOOLMANAGEMENT_BEARER_TOKEN:-}
+    # ports:
+    #   - "4011:80"
+
+volumes:
+  registry-data:
+  memory-data:

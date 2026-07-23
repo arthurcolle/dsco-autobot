@@ -227,6 +227,7 @@ class ToolContextManager:
 
     def _init_db(self):
         """Initialize SQLite database."""
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         try:
             conn.executescript("""
@@ -633,8 +634,13 @@ def get_tool_context_manager(
 
     with _lock:
         if _context_manager is None:
+            import os
+
+            default_path = os.path.join(
+                os.environ.get("DATA_DIR", "data"), "tool_context.db"
+            )
             _context_manager = ToolContextManager(
-                db_path=db_path or "data/tool_context.db",
+                db_path=db_path or default_path,
                 budget=budget,
             )
         return _context_manager

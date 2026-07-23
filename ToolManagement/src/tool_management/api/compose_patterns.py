@@ -169,7 +169,7 @@ async def _execute_tool_direct(tool_name: str, inputs: Dict[str, Any]) -> Any:
                                     text = content[0].get("text", "{}")
                                     try:
                                         return json.loads(text)
-                                    except:
+                                    except (json.JSONDecodeError, ValueError):
                                         return {"output": text}
                 except Exception as backend_error:
                     logger.debug(f"Backend {backend.id} doesn't have tool {tool_name}: {backend_error}")

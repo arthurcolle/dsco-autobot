@@ -1,0 +1,68 @@
+{
+  "word_counter": {
+    "name": "word_counter",
+    "description": "Count words and characters in text",
+    "code": "def execute(params):\n    text = params.get('text', '')\n    words = text.split()\n    return {\n        'word_count': len(words),\n        'char_count': len(text),\n        'avg_word_length': sum(len(w) for w in words) / len(words) if words else 0\n    }",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to analyze"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "created": 1767986358.354466,
+    "modified": 1767986358.354466,
+    "version": 1,
+    "enabled": true,
+    "author": "agent"
+  },
+  "fibonacci": {
+    "name": "fibonacci",
+    "description": "Calculate fibonacci sequence",
+    "code": "def execute(params):\n    n = params.get('n', 10)\n    fib = [0, 1]\n    for i in range(2, n):\n        fib.append(fib[-1] + fib[-2])\n    return {'sequence': fib[:n], 'nth_value': fib[n-1] if n > 0 else 0}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "n": {
+          "type": "integer",
+          "description": "How many fibonacci numbers"
+        }
+      },
+      "required": [
+        "n"
+      ]
+    },
+    "created": 1767986416.478862,
+    "modified": 1767986416.478862,
+    "version": 1,
+    "enabled": true,
+    "author": "agent"
+  },
+  "url_validator": {
+    "name": "url_validator",
+    "description": "Validate URLs and extract components",
+    "code": "def execute(params):\n    from urllib.parse import urlparse\n    url = params.get(\"url\", \"\")\n    try:\n        parsed = urlparse(url)\n        valid = all([parsed.scheme, parsed.netloc])\n        return {\n            \"valid\": valid,\n            \"scheme\": parsed.scheme or None,\n            \"domain\": parsed.netloc or None,\n            \"path\": parsed.path or None,\n            \"query\": parsed.query or None\n        }\n    except:\n        return {\"valid\": False, \"error\": \"Could not parse URL\"}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "URL to validate"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "created": 1767986686.753165,
+    "modified": 1767986686.753165,
+    "version": 1,
+    "enabled": true,
+    "author": "agent"
+  }
+}

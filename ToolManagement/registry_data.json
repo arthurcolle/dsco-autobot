@@ -1,0 +1,26 @@
+{
+  "servers": [
+    {
+      "name": "codex_app_jina_ai",
+      "url": "http://disabled.test/connector_jina",
+      "transport": "mcp",
+      "description": "Search and read via Jina MCP",
+      "openapi_url": null,
+      "tags": [
+        "AI",
+        "catalog",
+        "not_live",
+        "read",
+        "untrusted_content"
+      ],
+      "env_vars": {},
+      "defer_loading": true,
+      "registered_at": "2026-07-02T18:58:42.893162",
+      "last_health_check": null,
+      "healthy": true,
+      "tools": []
+    }
+  ],
+  "secrets": [],
+  "profiles": []
+}

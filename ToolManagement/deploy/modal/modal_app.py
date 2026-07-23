@@ -6,7 +6,7 @@ Deploy with:
 
 Custom domain: tools.distributed.systems
 
-Version: 2.5.0 - DuckDB Persistence for Swarm Economy
+Version: 2.6.0 - Hardening + Batch Endpoint
 """
 
 import modal
@@ -17,6 +17,10 @@ app = modal.App("tool-registry")
 
 # Get the source directory path
 SRC_DIR = Path(__file__).parent.parent.parent / "src"
+
+# Codex Apps inventory snapshot (directory cache + curated plugin manifests).
+# Refresh with: cp ~/.codex/cache/codex_app_directory/*.json data/codex_apps_snapshot/directory/
+CODEX_SNAPSHOT_DIR = Path(__file__).parent.parent.parent / "data" / "codex_apps_snapshot"
 
 # Build image with all dependencies and local source code
 image = (
@@ -56,15 +60,31 @@ image = (
         "cryptography>=41.0.0",
         # Base58 encoding (Solana addresses)
         "base58>=2.1.0",
+        # Secp256k1 (wallet auth)
+        "coincurve>=20.0.0",
         # Temporal
         "temporalio==1.7.1",
         # Async
         "aiofiles==24.1.0",
+        "aiosqlite>=0.20.0",
+        # SSE streaming
+        "sse-starlette>=2.1.0",
+        # HTML extraction (bs4 used by discovery/scraping paths)
+        "beautifulsoup4>=4.12.0",
+        # Graph utilities
+        "networkx>=3.2",
+        # CLI helpers imported by some service modules
+        "click>=8.1.0",
         # DuckDB for persistence
         "duckdb>=0.10.0",
     )
     .add_local_dir(SRC_DIR, remote_path="/root/src")
 )
+
+# Bundle the codex_apps inventory so the deployed registry can serve the
+# connector fabric (the cache otherwise only exists on the dev machine).
+if CODEX_SNAPSHOT_DIR.exists():
+    image = image.add_local_dir(CODEX_SNAPSHOT_DIR, remote_path="/root/codex_apps_snapshot")
 
 # Volume for persistent data
 data_volume = modal.Volume.from_name("tool-registry-data", create_if_missing=True)
@@ -75,10 +95,10 @@ data_volume = modal.Volume.from_name("tool-registry-data", create_if_missing=Tru
     volumes={"/data": data_volume},
     timeout=600,
     min_containers=1,
-    max_containers=10,
+    max_containers=1,
     scaledown_window=120,
 )
-@modal.concurrent(max_inputs=50, target_inputs=10)
+@modal.concurrent(max_inputs=20, target_inputs=5)
 # Custom domain: tools.distributed.systems
 # Register at: https://modal.com/settings/custom-domains
 # DNS CNAME: tools.distributed.systems -> arthurcolle--tool-registry-web.modal.run
@@ -102,10 +122,22 @@ def web():
     os.environ["REGISTER_PERSISTENT_BACKENDS"] = "0"  # Avoid DuckDB write-lock contention during cold starts
     os.environ["ENABLE_ANNOUNCE_EMBED_SYNC"] = "0"  # Keep announce lightweight; skip embedding/Neo4j background work
     os.environ["ANNOUNCE_MIN_INTERVAL_SECONDS"] = "900"  # Ignore frequent heartbeat re-announces (15 min)
+    os.environ["REQUIRE_BEARER_AUTH"] = "1"  # Enforce bearer auth on non-public routes
+    os.environ["ALLOW_ANON_ANNOUNCE"] = "1"  # Let native MCPs keep push-announcing without auth header changes
     os.environ["DEFAULT_BEARER_TOKEN"] = "sk-arthur-234"  # Static token for probe/smoke testing
+    os.environ["INTERNAL_API_BEARER_TOKEN"] = "sk-arthur-234"  # For MCP meta-tool self-calls to /api/v1/*
+    os.environ["MCP_PASSWORD"] = "sk-arthur-234"  # OAuth login page password
 
     # API Base URL for meta-tools (points to self)
     os.environ["API_BASE_URL"] = "https://tools.distributed.systems"
+
+    # Codex Apps integration settings
+    os.environ["CODEX_BRIDGE_MODE"] = "inprocess"  # Mount bridge inside the main ASGI app
+    os.environ["CODEX_OAUTH_CALLBACK_URL"] = "https://tools.distributed.systems"
+    # CODEX_VAULT_MASTER_KEY must be set as a Modal secret for encrypted credential storage
+    # Bundled connector inventory (see CODEX_SNAPSHOT_DIR at image build)
+    os.environ["CODEX_APP_DIRECTORY_CACHE"] = "/root/codex_apps_snapshot/directory/*.json"
+    os.environ["CODEX_APP_PLUGIN_MANIFESTS"] = "/root/codex_apps_snapshot/manifests/*/.app.json"
 
     # Native MCP URLs (deployed as separate Modal apps)
     os.environ["SEARCH_MCP_URL"] = "https://arthurcolle--distributed-search-mcp-web.modal.run"
@@ -117,8 +149,13 @@ def web():
     os.environ["NEO4J_URL"] = "https://arthurcolle--graph-management-neo4j-serve.modal.run"
 
     # API keys for external services
-    os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"
-    os.environ["PARALLEL_API_KEY"] = "ge_Apqx6h_SK_S182NeG1l_vzBV_e2cpjfsPTjgB"
+    os.environ["JINA_API_KEY"] = "jina_c6997e7c38a240cabdd77d13dbfd4e40bP6-IWJ__OX8bSG51488ro0g6sQQ"
+    os.environ["PARALLEL_API_KEY"] = "TevoujRFhKoBwb5uqGit5SuajxiePU8pQHLF-uCJ"
+
+    # Stable master keys so encrypted credential vaults on /data survive
+    # container cycles (unset would derive an unstable machine-specific key).
+    os.environ.setdefault("TENANT_VAULT_MASTER_KEY", "kvSntPK3p6NxZ6O0-1DCiaYvOKjOmvBvCY4KpRhtHv8")
+    os.environ.setdefault("CODEX_VAULT_MASTER_KEY", "KZn_zkzjLYuWY3sPo-Dfda8ndE4TSNpPaimk2TcT9s4")
 
     # Import and return the FastAPI app
     from tool_management.app import create_app

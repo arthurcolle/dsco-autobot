@@ -14,12 +14,26 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Request
 from pydantic import BaseModel, Field
 import httpx
 
 from ..persistence import get_tool_store, RegisteredTool, get_execution_store
 from ..core.circuit_breaker import get_backend_circuit_breaker
+
+# ML-based smart recommender (opt-in via env var)
+_USE_ML_SCORING = os.getenv("USE_ML_SCORING", "").lower() in ("1", "true", "yes")
+_smart_recommender = None
+
+def _get_smart_recommender():
+    global _smart_recommender
+    if _smart_recommender is None:
+        try:
+            from ..ml.integration import get_smart_recommender
+            _smart_recommender = get_smart_recommender()
+        except Exception:
+            pass
+    return _smart_recommender
 
 # Output guard for enforcing size limits and URL capture
 try:
@@ -34,7 +48,8 @@ router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
 # Shared HTTP client
 _client: Optional[httpx.AsyncClient] = None
-_announce_last_seen: Dict[str, float] = {}
+# backend_id -> (last accepted announce time, sha256 of announced tool surface)
+_announce_last_seen: Dict[str, tuple] = {}
 _WRITE_TOOL_NAMES = {
     name.strip()
     for name in os.getenv(
@@ -69,6 +84,11 @@ class ToolCall(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
+    tenant_id: Optional[str] = Field(
+        default=None,
+        description="Authenticated user id; set server-side from the bearer token. "
+                    "Injects the user's own integration credentials into execution.",
+    )
 
 
 class BatchRequest(BaseModel):
@@ -249,6 +269,38 @@ async def execute_tool(call: ToolCall) -> ToolResult:
         if call.parent_execution_id:
             outbound_arguments.setdefault("_parent_execution_id", call.parent_execution_id)
 
+        # Per-user credential injection: resolve the caller's own credential
+        # for this tool's provider and pass it to the backend. Users with a
+        # paid managed add-on instead get pooled platform credentials.
+        auth_provider: Optional[str] = None
+        auth_connected = False
+        addon_active = False
+        try:
+            from ..integrations.provider_catalog import provider_for_tool
+
+            auth_provider = provider_for_tool(tool_name)
+            if call.tenant_id:
+                outbound_arguments.setdefault("tenant_id", call.tenant_id)
+                if auth_provider:
+                    from ..services.tenant_credentials import (
+                        _default_store as _tenant_store,
+                    )
+
+                    credential = _tenant_store().get_secret(call.tenant_id, auth_provider)
+                    if credential:
+                        outbound_arguments.setdefault("_tenant_credential", credential)
+                        auth_connected = True
+                    else:
+                        from ..persistence.billing_store import get_billing_store
+
+                        addon_active = auth_provider in get_billing_store().active_addon_providers(
+                            call.tenant_id
+                        )
+                        if addon_active:
+                            outbound_arguments.setdefault("_pooled_ok", True)
+        except Exception as e:
+            logger.debug(f"Credential injection skipped for {tool_name}: {e}")
+
         client = get_client()
         response = await client.post(
             f"{backend_url}/mcp",
@@ -302,7 +354,68 @@ async def execute_tool(call: ToolCall) -> ToolResult:
             )
             breaker.record_success(backend_id)
 
+            # Metered billing: attribute the execution to the authenticated user.
+            if call.tenant_id:
+                try:
+                    from ..persistence.billing_store import get_billing_store
+
+                    get_billing_store().record_usage(
+                        call.tenant_id, "tool_execution", ref=tool_name
+                    )
+                except Exception as e:
+                    logger.debug(f"Usage metering skipped: {e}")
+
             result_data = data.get("result")
+
+            # Interactive-auth hint: if the backend served sandbox data for a
+            # provider the caller hasn't connected, attach a connect popup URL.
+            if auth_provider and not auth_connected and isinstance(result_data, dict):
+                try:
+                    payload = result_data
+                    content = result_data.get("content")
+                    if isinstance(content, list) and content and isinstance(content[0], dict):
+                        text = content[0].get("text")
+                        if isinstance(text, str):
+                            try:
+                                payload = json.loads(text)
+                            except (json.JSONDecodeError, ValueError):
+                                payload = {}
+                    if isinstance(payload, dict) and payload.get("mode") == "sandbox":
+                        from ..integrations.provider_catalog import PROVIDERS
+                        from .user_routes import connect_url_for
+
+                        meta = PROVIDERS.get(auth_provider, {})
+                        display = meta.get("display_name", auth_provider)
+                        addon_cents = meta.get("addon_monthly_cents")
+                        auth_obj = {
+                            "status": "auth_required",
+                            "provider": auth_provider,
+                            "display_name": display,
+                            "logo_url": meta.get("logo_url"),
+                            "connect_url": connect_url_for(auth_provider),
+                            "detail": (
+                                f"Sandbox result. Connect your own {display} credentials "
+                                f"at the connect_url for live results."
+                            ),
+                        }
+                        if addon_active:
+                            auth_obj["status"] = "addon_active"
+                            auth_obj["detail"] = (
+                                f"Included in your {display} add-on; this provider has no "
+                                f"live adapter yet, so results are simulated."
+                            )
+                        elif addon_cents is not None:
+                            auth_obj["addon"] = {
+                                "monthly_cents": addon_cents,
+                                "enable": f"POST /api/v1/me/addons/{auth_provider}",
+                                "detail": (
+                                    f"Or enable the managed {display} add-on for "
+                                    f"${addon_cents / 100:.2f}/mo — no API key needed."
+                                ),
+                            }
+                        result_data["auth"] = auth_obj
+                except Exception as e:
+                    logger.debug(f"Auth-hint annotation skipped for {tool_name}: {e}")
 
             # Apply output guard: enforce size limits, capture URLs
             if OUTPUT_GUARD_AVAILABLE and result_data is not None:
@@ -348,14 +461,39 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 latency_ms=latency_ms
             )
 
-    except ValueError as e:
-        # Tool/backend not found
-        return ToolResult(
-            tool=call.tool,
-            success=False,
-            error=str(e),
-            latency_ms=(time.time() - start) * 1000
-        )
+    except ValueError:
+        # Tool/backend not found in MCP store — try the DuckDB registry
+        try:
+            from ..registry import get_registry
+            registry = get_registry()
+            reg_tool = registry.get_by_name(call.tool)
+            if reg_tool is None:
+                return ToolResult(
+                    tool=call.tool,
+                    success=False,
+                    error=f"Tool not found: {call.tool}",
+                    latency_ms=(time.time() - start) * 1000,
+                )
+            action = getattr(reg_tool.metadata, "action", None) if reg_tool.metadata else None
+            if action:
+                from .routes import _execute_with_action
+                result_data = await _execute_with_action(action, call.arguments)
+            else:
+                result_data = await reg_tool.execute(**call.arguments)
+            latency_ms = (time.time() - start) * 1000
+            return ToolResult(
+                tool=call.tool,
+                success=True,
+                result=result_data,
+                latency_ms=latency_ms,
+            )
+        except Exception as fallback_err:
+            return ToolResult(
+                tool=call.tool,
+                success=False,
+                error=str(fallback_err),
+                latency_ms=(time.time() - start) * 1000,
+            )
     except httpx.TimeoutException:
         if backend_id:
             breaker.record_failure(backend_id, error=f"timeout after {call.timeout}s")
@@ -450,14 +588,26 @@ def _execution_mode_hint(avg_latency_ms: float, require_streaming: bool) -> str:
 # ==================== API Endpoints ====================
 
 @router.post("/execute", response_model=ToolResult)
-async def execute_single_tool(call: ToolCall):
+async def execute_single_tool(call: ToolCall, request: Request):
     """
     Execute a single tool.
 
     Tool can be specified as:
     - "tool_name" - will look up backend automatically
     - "backend_id:tool_name" - explicit backend
+
+    Authenticated users (sk-user-* bearer) get their own integration
+    credentials injected automatically.
     """
+    if not call.tenant_id:
+        try:
+            from .user_routes import resolve_user_from_request
+
+            user = resolve_user_from_request(request)
+            if user:
+                call.tenant_id = user["user_id"]
+        except Exception:
+            pass
     return await execute_tool(call)
 
 
@@ -560,10 +710,20 @@ async def announce_backend(request: AnnounceRequest, background_tasks: Backgroun
     """
     min_interval = int(os.getenv("ANNOUNCE_MIN_INTERVAL_SECONDS", "300"))
     now = time.time()
-    last_seen = _announce_last_seen.get(request.backend_id, 0.0)
+    last_seen, last_hash = _announce_last_seen.get(request.backend_id, (0.0, ""))
 
-    # Drop high-frequency heartbeat announces to avoid blocking the event loop on DuckDB writes.
-    if min_interval > 0 and (now - last_seen) < min_interval:
+    # Fingerprint the announced surface so a CHANGED tool list always lands
+    # immediately - the throttle only drops unchanged heartbeat announces.
+    tools_hash = hashlib.sha256(json.dumps(
+        sorted((t.get("name", ""), t.get("description", "")) for t in request.tools),
+        default=str,
+    ).encode()).hexdigest()
+
+    if (
+        min_interval > 0
+        and (now - last_seen) < min_interval
+        and tools_hash == last_hash
+    ):
         return {
             "backend_id": request.backend_id,
             "registered": 0,
@@ -571,7 +731,7 @@ async def announce_backend(request: AnnounceRequest, background_tasks: Backgroun
             "min_interval_seconds": min_interval,
         }
 
-    _announce_last_seen[request.backend_id] = now
+    _announce_last_seen[request.backend_id] = (now, tools_hash)
 
     # Run blocking DuckDB writes in a worker thread so auth/MCP routes stay responsive.
     def _persist_announce() -> int:
@@ -605,6 +765,14 @@ async def announce_backend(request: AnnounceRequest, background_tasks: Backgroun
             )
             store.register_tool(tool)
             registered_count += 1
+
+        # Remove tools this backend no longer announces (renames/deletions)
+        try:
+            announced_ids = [f"{request.backend_id}:{t['name']}" for t in request.tools]
+            if announced_ids:
+                store.prune_backend_tools(request.backend_id, announced_ids)
+        except Exception as prune_err:  # noqa: BLE001
+            logger.warning(f"Announce prune failed for {request.backend_id}: {prune_err}")
 
         store.update_backend_health(request.backend_id, True)
         return registered_count
@@ -930,6 +1098,41 @@ async def recommend_tools(request: ToolRecommendationRequest):
             }
         )
 
+    # ML scoring overlay: when enabled, use SmartRecommender to rescore
+    scoring_source = "heuristic"
+    if _USE_ML_SCORING and query_text:
+        recommender = _get_smart_recommender()
+        if recommender is not None:
+            try:
+                execution_store = get_execution_store()
+                ml_candidates = [
+                    {"name": r["name"], "description": r.get("description", "")}
+                    for r in scored_rows
+                ]
+                ml_results = await recommender.recommend(
+                    task=query_text,
+                    candidates=ml_candidates,
+                    intent=intent,
+                    top_k=len(scored_rows),
+                    execution_store=execution_store,
+                )
+                # Build score lookup from ML results
+                ml_score_map = {r.name: r for r in ml_results}
+                for row in scored_rows:
+                    ml_tool = ml_score_map.get(row["name"])
+                    if ml_tool:
+                        row["score"] = ml_tool.score
+                        row["confidence"] = ml_tool.confidence
+                        row["score_components"]["ml_score"] = ml_tool.score
+                        row["score_components"]["ml_source"] = ml_tool.source
+                        if ml_tool.historical_success_rate is not None:
+                            row["score_components"]["historical_success_rate"] = ml_tool.historical_success_rate
+                        if ml_tool.observation_count > 0:
+                            row["score_components"]["observation_count"] = ml_tool.observation_count
+                scoring_source = ml_results[0].source if ml_results else "heuristic"
+            except Exception as ml_err:
+                logger.warning(f"ML scoring failed, using heuristic: {ml_err}")
+
     scored_rows.sort(key=lambda item: (item["score"], item["call_count"]), reverse=True)
     selected = scored_rows[: request.limit]
 
@@ -959,6 +1162,7 @@ async def recommend_tools(request: ToolRecommendationRequest):
         "generated_at": datetime.utcnow().isoformat(),
         "query": request.query,
         "intent": intent,
+        "scoring_source": scoring_source,
         "filters": {
             "backend_id": request.backend_id,
             "category": request.category,
@@ -1034,17 +1238,21 @@ async def query_tools(
         "category",
     ] if compact else None
 
-    tools, total = store.query_tools(
-        search=search,
-        backend_id=backend_id,
-        category=category,
-        tags=tag_list,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        limit=limit,
-        offset=offset,
-        columns=columns,
-    )
+    # Offload DuckDB query to a worker thread to avoid blocking the event loop.
+    def _run_query():
+        return store.query_tools(
+            search=search,
+            backend_id=backend_id,
+            category=category,
+            tags=tag_list,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+            columns=columns,
+        )
+
+    tools, total = await asyncio.to_thread(_run_query)
 
     return {
         "tools": tools,
@@ -1430,6 +1638,34 @@ async def export_openapi_tool_catalog(
     }
 
 
+@router.get("/names")
+async def list_all_tool_names():
+    """All tool names (in-process + durable backends), deduped."""
+    from ..catalog_view import merged_names
+    return {"names": merged_names()}
+
+
+@router.get("/tags")
+async def list_all_tags():
+    """All unique tags (in-process + durable backends)."""
+    from ..catalog_view import merged_tags
+    return {"tags": merged_tags()}
+
+
+@router.get("/categories")
+async def list_all_categories():
+    """All categories (in-process + durable backends)."""
+    from ..catalog_view import merged_categories
+    return {"categories": merged_categories()}
+
+
+@router.get("/mcp")
+async def list_all_mcp_tools():
+    """All tools in MCP tool-list format (in-process + durable backends)."""
+    from ..catalog_view import merged_mcp_tools
+    return {"tools": merged_mcp_tools()}
+
+
 @router.get("/schema/{tool_name}")
 async def get_tool_schema_summary(tool_name: str):
     """
@@ -1448,13 +1684,55 @@ async def get_tool_schema_summary(tool_name: str):
 
 @router.get("/{tool_name}")
 async def get_tool(tool_name: str):
-    """Get tool details by name."""
+    """Get tool details by name from the durable store or the in-process registry."""
     store = get_tool_store()
-    tool = store.get_tool_by_name(tool_name)
+    try:
+        tool = store.get_tool_by_name(tool_name)
+    except Exception as e:
+        logger.warning(f"Tool store lookup failed for {tool_name}: {e}")
+        tool = None
     if not tool:
+        # Built-in/registry tools are not announced into the durable store
+        from ..registry import get_registry as get_local_registry
+
+        local_tool = get_local_registry().get_by_name(tool_name)
+        if local_tool:
+            return {
+                "tool_id": local_tool.id,
+                "name": local_tool.name,
+                "backend": "local-registry",
+                "backend_url": None,
+                "description": local_tool.description,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        inp.name: {
+                            "type": inp.type,
+                            "description": inp.description,
+                        }
+                        for inp in (local_tool.inputs or [])
+                    },
+                    "required": [
+                        inp.name for inp in (local_tool.inputs or []) if inp.required
+                    ],
+                },
+                "tags": local_tool.tags,
+                "category": local_tool.category,
+                "call_count": None,
+                "avg_latency_ms": None,
+                "error_count": None,
+                "error_rate": None,
+                "latency_metrics_24h": {},
+                "dependencies": [],
+            }
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
-    window_metrics = store.get_tool_latency_metrics(tool.tool_id, hours=24) or {}
-    dependencies = store.list_tool_dependencies(tool_ref=tool.tool_id, limit=20)
+    try:
+        window_metrics = store.get_tool_latency_metrics(tool.tool_id, hours=24) or {}
+        dependencies = store.list_tool_dependencies(tool_ref=tool.tool_id, limit=20)
+    except Exception as e:
+        logger.warning(f"Tool metrics lookup failed for {tool_name}: {e}")
+        window_metrics = {}
+        dependencies = []
     return {
         "tool_id": tool.tool_id,
         "name": tool.name,

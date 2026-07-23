@@ -2,10 +2,12 @@
 FastAPI routes for Tool Management.
 """
 
+import asyncio
+import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from ..registry import get_registry
 from ..models import Tool, ToolVisibility, ToolStatus
@@ -57,8 +59,19 @@ class ToolUpdate(BaseModel):
 
 
 class ToolExecuteRequest(BaseModel):
-    """Request model for executing a tool."""
+    """Request model for executing a tool.
+
+    Canonical body field is `inputs`; `arguments` is accepted as an alias so
+    MCP-style callers ({"arguments": {...}}) don't silently execute with an
+    empty payload (which also used to trip the backend circuit breaker).
+    """
     inputs: Dict[str, Any] = {}
+    arguments: Dict[str, Any] = {}
+    timeout: Optional[float] = None  # seconds; long tools (deepsearch, task runs) need >60
+
+    def model_post_init(self, __context) -> None:
+        if not self.inputs and self.arguments:
+            self.inputs = self.arguments
 
 
 class ToolExecuteResponse(BaseModel):
@@ -68,6 +81,35 @@ class ToolExecuteResponse(BaseModel):
     status: str
     output: Any = None
     error: Optional[str] = None
+
+
+class BatchCallItem(BaseModel):
+    """A single call within a batch request."""
+    tool: str = Field(..., description="Tool name")
+    inputs: Dict[str, Any] = Field(default_factory=dict)
+    timeout: float = Field(default=30.0, description="Per-call timeout in seconds")
+
+
+class BatchResultItem(BaseModel):
+    tool: str
+    status: str
+    output: Any = None
+    error: Optional[str] = None
+    latency_ms: float = 0.0
+
+
+class BatchExecuteRequest(BaseModel):
+    """Batch execution request. Runs multiple tools in one call."""
+    calls: List[BatchCallItem]
+    parallel: bool = Field(default=True, description="Run calls in parallel vs sequential")
+
+
+class BatchExecuteResponse(BaseModel):
+    results: List[BatchResultItem]
+    total: int
+    successful: int
+    failed: int
+    total_latency_ms: float
 
 
 # =============================================================================
@@ -83,13 +125,13 @@ async def list_tools(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    """List all registered tools with optional filtering."""
-    registry = get_registry()
+    """List all registered tools (in-process + durable backends) with filtering."""
+    from ..catalog_view import merged_tool_dicts
 
     tag_list = tags.split(",") if tags else None
     vis = ToolVisibility(visibility) if visibility else None
 
-    tools = registry.search(
+    tools = merged_tool_dicts(
         query=query,
         tags=tag_list,
         category=category,
@@ -97,37 +139,35 @@ async def list_tools(
     )
 
     # Paginate
-    tools = tools[offset:offset + limit]
-
-    return [t.model_dump(exclude={"_callable"}) for t in tools]
+    return tools[offset:offset + limit]
 
 
 @router.get("/names")
 async def list_tool_names():
-    """List all tool names."""
-    registry = get_registry()
-    return {"names": registry.list_names()}
+    """List all tool names (in-process + durable backends)."""
+    from ..catalog_view import merged_names
+    return {"names": merged_names()}
 
 
 @router.get("/tags")
 async def list_tags():
-    """List all unique tags."""
-    registry = get_registry()
-    return {"tags": registry.list_tags()}
+    """List all unique tags (in-process + durable backends)."""
+    from ..catalog_view import merged_tags
+    return {"tags": merged_tags()}
 
 
 @router.get("/categories")
 async def list_categories():
-    """List all categories."""
-    registry = get_registry()
-    return {"categories": registry.list_categories()}
+    """List all categories (in-process + durable backends)."""
+    from ..catalog_view import merged_categories
+    return {"categories": merged_categories()}
 
 
 @router.get("/mcp")
 async def get_mcp_tools():
-    """Get all tools in MCP format."""
-    registry = get_registry()
-    return {"tools": registry.to_mcp_tools()}
+    """Get all tools in MCP format (in-process + durable backends)."""
+    from ..catalog_view import merged_mcp_tools
+    return {"tools": merged_mcp_tools()}
 
 
 @router.get("/{tool_name}")
@@ -269,8 +309,77 @@ async def delete_tool(tool_name: str):
     return None
 
 
+@router.post("/batch", response_model=BatchExecuteResponse)
+async def batch_execute(request: BatchExecuteRequest):
+    """Execute multiple tools in a single request.
+
+    Each call specifies a tool name and inputs. By default all calls
+    run in parallel; set parallel=false for sequential execution.
+    """
+    registry = get_registry()
+    batch_start = time.time()
+
+    async def _run_one(item: BatchCallItem) -> BatchResultItem:
+        t0 = time.time()
+        tool = registry.get_by_name(item.tool)
+        if not tool:
+            return BatchResultItem(
+                tool=item.tool, status="error",
+                error=f"Tool not found: {item.tool}",
+                latency_ms=(time.time() - t0) * 1000,
+            )
+        if tool.status != ToolStatus.ACTIVE:
+            return BatchResultItem(
+                tool=item.tool, status="error",
+                error=f"Tool is not active: {tool.status}",
+                latency_ms=(time.time() - t0) * 1000,
+            )
+        try:
+            action = getattr(tool.metadata, "action", None) if tool.metadata else None
+            if action:
+                result = await asyncio.wait_for(
+                    _execute_with_action(action, item.inputs),
+                    timeout=item.timeout,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    tool.execute(**item.inputs),
+                    timeout=item.timeout,
+                )
+            return BatchResultItem(
+                tool=item.tool, status="success", output=result,
+                latency_ms=(time.time() - t0) * 1000,
+            )
+        except asyncio.TimeoutError:
+            return BatchResultItem(
+                tool=item.tool, status="error",
+                error=f"Timeout after {item.timeout}s",
+                latency_ms=(time.time() - t0) * 1000,
+            )
+        except Exception as exc:
+            return BatchResultItem(
+                tool=item.tool, status="error", error=str(exc),
+                latency_ms=(time.time() - t0) * 1000,
+            )
+
+    if request.parallel:
+        results = await asyncio.gather(*[_run_one(c) for c in request.calls])
+    else:
+        results = [await _run_one(c) for c in request.calls]
+
+    results_list = list(results)
+    successful = sum(1 for r in results_list if r.status == "success")
+    return BatchExecuteResponse(
+        results=results_list,
+        total=len(results_list),
+        successful=successful,
+        failed=len(results_list) - successful,
+        total_latency_ms=(time.time() - batch_start) * 1000,
+    )
+
+
 @router.post("/{tool_name}/execute", response_model=ToolExecuteResponse)
-async def execute_tool(tool_name: str, request: ToolExecuteRequest):
+async def execute_tool(tool_name: str, request: ToolExecuteRequest, http_request: Request):
     """Execute a tool with the given inputs.
 
     Execution priority:
@@ -281,6 +390,21 @@ async def execute_tool(tool_name: str, request: ToolExecuteRequest):
     registry = get_registry()
     tool = registry.get_by_name(tool_name)
     if not tool:
+        # Not a local builtin — resolve against the tool_store / MCP backends over HTTP.
+        tenant_id = None
+        try:
+            from .user_routes import resolve_user_from_request
+
+            user = resolve_user_from_request(http_request)
+            if user:
+                tenant_id = user["user_id"]
+        except Exception:
+            pass
+        backend_result = await _execute_via_backend(
+            tool_name, request.inputs, tenant_id, timeout=request.timeout
+        )
+        if backend_result is not None:
+            return backend_result
         raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
 
     if tool.status != ToolStatus.ACTIVE:
@@ -310,6 +434,39 @@ async def execute_tool(tool_name: str, request: ToolExecuteRequest):
             status="error",
             error=str(e),
         )
+
+
+async def _execute_via_backend(
+    tool_name: str,
+    inputs: Dict[str, Any],
+    tenant_id: Optional[str] = None,
+    timeout: Optional[float] = None,
+):
+    """Resolve a tool against the tool_store and execute it over HTTP (MCP JSON-RPC).
+
+    Returns a ToolExecuteResponse if the tool resolved to a backend, else None so
+    the caller can raise a 404.
+    """
+    try:
+        from .tools_api import execute_tool as _exec_backend, ToolCall
+        from ..persistence import get_tool_store
+    except Exception:
+        return None
+    try:
+        get_tool_store().resolve_tool(tool_name)
+    except Exception:
+        return None
+    call_kwargs: Dict[str, Any] = {"tool": tool_name, "arguments": inputs, "tenant_id": tenant_id}
+    if timeout:
+        call_kwargs["timeout"] = max(1.0, min(float(timeout), 600.0))
+    res = await _exec_backend(ToolCall(**call_kwargs))
+    return ToolExecuteResponse(
+        tool_id=tool_name,
+        tool_name=tool_name,
+        status="success" if getattr(res, "success", False) else "error",
+        output=getattr(res, "result", None),
+        error=getattr(res, "error", None),
+    )
 
 
 async def _execute_with_action(action: Dict[str, Any], inputs: Dict[str, Any]) -> Any:

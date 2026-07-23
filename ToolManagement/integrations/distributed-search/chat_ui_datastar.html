@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Chat - MCP Interface</title>
+
+    <!-- Preconnect for faster API calls -->
+    <link rel="preconnect" href="http://localhost:2046">
+    <link rel="dns-prefetch" href="http://localhost:2046">
+
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.5/bundles/datastar.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, #f5f7fa 0%, #e8eef5 100%);
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message-card {
+            animation: slideUp 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        /* Instant mode for streaming - no animation delay */
+        .message-card.instant {
+            animation: none;
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        .card:hover {
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.12);
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            padding: 1rem;
+            color: white;
+        }
+        .activity-card {
+            background: white;
+            border-radius: 12px;
+            border-left: 4px solid #667eea;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #667eea;
+            margin: 0 2px;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+        .tool-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.75rem;
+            background: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 100%);
+            color: #5b21b6;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin: 0.25rem 0.25rem 0.25rem 0;
+        }
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .metric-label {
+            font-size: 0.75rem;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .chat-container {
+            max-height: calc(100vh - 320px);
+            overflow-y: auto;
+            scroll-behavior: auto; /* Instant scroll for speed */
+        }
+        .chat-container.smooth-scroll {
+            scroll-behavior: smooth;
+        }
+        .chat-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .chat-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 10px;
+        }
+        .chat-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        .chat-container::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .gradient-text {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Parallel Execution Styles */
+        .parallel-container {
+            background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+            border-left: 4px solid #f59e0b;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 0.5rem 0;
+        }
+
+        .parallel-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.75rem;
+            background: linear-gradient(135deg, #fde68a 0%, #fbbf24 100%);
+            color: #92400e;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            animation: pulse-parallel 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-parallel {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.9; }
+        }
+
+        .sequential-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.75rem;
+            background: linear-gradient(135deg, #dbeafe 0%, #93c5fd 100%);
+            color: #1e3a8a;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .tool-executing {
+            animation: tool-pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes tool-pulse {
+            0%, 100% { background-color: #e0e7ff; }
+            50% { background-color: #c7d2fe; }
+        }
+
+        .parallel-tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.75rem;
+        }
+
+        .parallel-tool-item {
+            background: white;
+            padding: 0.75rem;
+            border-radius: 6px;
+            border: 2px solid #fde68a;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .parallel-tool-item.completed {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .parallel-tool-item.error {
+            border-color: #fca5a5;
+            background: #fef2f2;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #f3f4f6;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body data-signals='{
+    "messages": [],
+    "currentMessage": "",
+    "sessionId": null,
+    "isProcessing": false,
+    "enableTools": true,
+    "status": "Ready",
+    "statusColor": "green",
+    "messageCount": 0,
+    "toolCallCount": 0,
+    "avgResponseTime": "0s",
+    "ttft": "0ms",
+    "streaming": false
+}'>
+    <div class="container mx-auto max-w-7xl p-6">
+        <!-- Header -->
+        <div class="mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h1 class="text-3xl font-bold gradient-text">🤖 Agent Chat Interface</h1>
+                    <p class="text-gray-600 text-sm mt-1">Autonomous agent infrastructure · MCP Protocol</p>
+                </div>
+                <div class="flex gap-3">
+                    <button class="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-indigo-700 transition-all shadow-md hover:shadow-lg text-sm font-medium">
+                        Get API Access
+                    </button>
+                </div>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="stat-card">
+                    <div class="metric-label">Uptime</div>
+                    <div class="metric-value">99.97%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="metric-label">Messages</div>
+                    <div class="metric-value" data-text="$messageCount"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="metric-label">Tool Calls</div>
+                    <div class="metric-value" data-text="$toolCallCount"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="metric-label">TTFT</div>
+                    <div class="metric-value" data-text="$ttft"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left Sidebar - Session Info -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="card p-4">
+                    <h3 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                        <span class="text-xl">📊</span>
+                        Session Status
+                    </h3>
+                    <div class="space-y-3 text-sm">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Status</span>
+                            <span class="flex items-center">
+                                <span class="status-indicator"
+                                      data-class-from-status-color.bg-{key}-500></span>
+                                <span class="font-medium" data-text="$status"></span>
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Session ID</span>
+                            <span class="font-mono text-xs text-gray-800"
+                                  data-text="$sessionId ? $sessionId.substring(0, 12) + '...' : 'Not started'"></span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Server</span>
+                            <span class="font-medium text-gray-800">localhost:2046</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Tools Enabled</span>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" data-model="enableTools" class="sr-only peer">
+                                <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-600 peer-checked:to-indigo-600"></div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Feed -->
+                <div class="card p-4">
+                    <h3 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                        <span class="text-xl">📡</span>
+                        Activity Feed
+                    </h3>
+                    <div class="space-y-2 text-xs" style="max-height: 400px; overflow-y: auto;">
+                        <template data-for="msg in $messages.slice(-5).reverse()">
+                            <div class="activity-card">
+                                <div class="flex items-start gap-2">
+                                    <span data-text="msg.role === 'user' ? '👤' : '🤖'"></span>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="font-medium text-gray-800"
+                                             data-text="msg.role === 'user' ? 'User Query' : 'Agent Response'"></div>
+                                        <div class="text-gray-600 mt-1 truncate"
+                                             data-text="msg.content.substring(0, 60) + (msg.content.length > 60 ? '...' : '')"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                        <div class="text-center text-gray-400 py-8" data-show="$messages.length === 0">
+                            <div class="text-3xl mb-2">📭</div>
+                            <p>No activity yet</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center - Chat Area -->
+            <div class="lg:col-span-2">
+                <div class="card p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                        <span>💬</span>
+                        Conversation
+                    </h2>
+
+                    <!-- Chat Messages -->
+                    <div id="chat-container" class="chat-container space-y-4 mb-6">
+                        <!-- Welcome State -->
+                        <div class="text-center py-16" data-show="$messages.length === 0">
+                            <div class="text-6xl mb-4">🚀</div>
+                            <h3 class="text-2xl font-semibold gradient-text mb-2">
+                                Build fully autonomous organizations
+                            </h3>
+                            <p class="text-gray-600 mb-6 max-w-md mx-auto">
+                                Train reliable autonomous agents to do real work. We provide the infrastructure,
+                                datasets, and support—or just use our APIs to build what you want.
+                            </p>
+                            <div class="flex flex-wrap gap-2 justify-center text-xs">
+                                <span class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full font-medium">Graph-native infrastructure</span>
+                                <span class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full font-medium">Pre-trained agent models</span>
+                                <span class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full font-medium">Real-time orchestration</span>
+                            </div>
+                        </div>
+
+                        <!-- Messages -->
+                        <template data-for="msg in $messages">
+                            <div class="message-card">
+                                <div data-class-from-msg.role.{user: 'flex justify-end', assistant: 'flex justify-start'}">
+                                    <div data-class-from-msg.role.{user: 'max-w-[85%]', assistant: 'max-w-[85%]'}">
+                                        <div class="card p-4"
+                                             data-class-from-msg.role.{user: 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white', assistant: 'bg-white border border-gray-100'}">
+                                            <div class="flex items-start gap-3">
+                                                <div class="text-2xl flex-shrink-0"
+                                                     data-text="msg.role === 'user' ? '👤' : '🤖'"></div>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="font-medium mb-2 text-sm"
+                                                         data-class-from-msg.role.{user: 'text-purple-100', assistant: 'text-gray-600'}"
+                                                         data-text="msg.role === 'user' ? 'You' : 'Agent'"></div>
+                                                    <div class="whitespace-pre-wrap break-words"
+                                                         data-class-from-msg.role.{user: 'text-white', assistant: 'text-gray-800'}"
+                                                         data-text="msg.content"></div>
+                                                    <template data-for="tool in msg.tools || []">
+                                                        <span class="tool-badge mt-2" data-text="`⚡ ${tool}`"></span>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- Typing Indicator -->
+                        <div class="message-card flex justify-start" data-show="$isProcessing">
+                            <div class="card p-4 bg-white border border-gray-100">
+                                <div class="flex items-center gap-3">
+                                    <div class="text-2xl">🤖</div>
+                                    <div class="typing-indicator">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Input Area -->
+                    <form id="chat-form" class="relative">
+                        <div class="flex gap-3">
+                            <input
+                                type="text"
+                                data-model="currentMessage"
+                                placeholder="Type your message..."
+                                class="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                                autocomplete="off"
+                                data-bind-disabled="$isProcessing"
+                            />
+                            <button
+                                type="submit"
+                                class="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg font-medium"
+                                data-bind-disabled="$isProcessing || !$currentMessage.trim()"
+                            >
+                                Send
+                            </button>
+                        </div>
+                        <div class="mt-3 flex items-center justify-between text-xs text-gray-500">
+                            <div class="flex gap-4">
+                                <button type="button"
+                                        class="text-purple-600 hover:text-purple-700 font-medium"
+                                        data-on-click="$$messages=[];$$sessionId=null;$$messageCount=0;$$toolCallCount=0">
+                                    🔄 Clear Chat
+                                </button>
+                            </div>
+                            <div class="text-gray-400">
+                                Press Enter to send
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let startTime = Date.now();
+        let ttftStart = null;
+        let scrollPending = false;
+        let lastScrollTime = 0;
+
+        // Optimized scroll function with debouncing
+        function smartScroll() {
+            const now = Date.now();
+            if (now - lastScrollTime < 50) { // Throttle to 20fps max
+                if (!scrollPending) {
+                    scrollPending = true;
+                    requestAnimationFrame(() => {
+                        const container = document.getElementById('chat-container');
+                        if (container) {
+                            container.scrollTop = container.scrollHeight;
+                        }
+                        scrollPending = false;
+                        lastScrollTime = Date.now();
+                    });
+                }
+            } else {
+                const container = document.getElementById('chat-container');
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+                lastScrollTime = now;
+            }
+        }
+
+        // Wait for Datastar to initialize, then set up event handler
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatForm = document.getElementById('chat-form');
+            if (!chatForm) {
+                console.error('Chat form not found');
+                return;
+            }
+
+            chatForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                await handleSendMessage();
+            });
+
+            console.log('Chat form initialized - optimized for <1s TTFT');
+        });
+
+        // Get signals from Datastar - try multiple approaches
+        function getSignals() {
+            const body = document.body;
+
+            // In Datastar, signals are attached to the element with data-signals
+            // Try various access patterns
+            if (body.signals) return body.signals;
+            if (body.$signals) return body.$signals;
+            if (body._signals) return body._signals;
+            if (window.signals) return window.signals;
+
+            // Last resort: try to find it in Datastar global
+            if (typeof Datastar !== 'undefined' && Datastar.signals) {
+                return Datastar.signals;
+            }
+
+            return null;
+        }
+
+        // Get/set signal value - works with Datastar's reactive system
+        function getSignal(name) {
+            const signals = getSignals();
+            if (signals && signals[name] !== undefined) {
+                return signals[name];
+            }
+
+            // Fallback: try to get from body dataset or attributes
+            const body = document.body;
+            if (body.dataset && body.dataset[name] !== undefined) {
+                try {
+                    return JSON.parse(body.dataset[name]);
+                } catch {
+                    return body.dataset[name];
+                }
+            }
+
+            return null;
+        }
+
+        function setSignal(name, value) {
+            const signals = getSignals();
+            if (signals) {
+                signals[name] = value;
+                return true;
+            }
+
+            // Fallback: try to update via custom event
+            document.dispatchEvent(new CustomEvent('datastar-set', {
+                detail: { name, value }
+            }));
+
+            return false;
+        }
+
+        async function handleSendMessage() {
+            console.log('handleSendMessage called');
+
+            // Try to get signals
+            const signals = getSignals();
+            if (!signals) {
+                console.error('Could not access Datastar signals');
+                // Fallback to manual DOM manipulation
+                return await handleSendMessageFallback();
+            }
+
+            const message = signals.currentMessage ? signals.currentMessage.trim() : '';
+            if (!message || signals.isProcessing) {
+                console.log('Message empty or already processing');
+                return;
+            }
+
+            const reqStartTime = Date.now();
+            ttftStart = Date.now(); // Track TTFT
+
+            // Add user message
+            signals.messages = [
+                ...(signals.messages || []),
+                { role: 'user', content: message }
+            ];
+            signals.messageCount = signals.messages.filter(m => m.role === 'user').length;
+
+            // Clear input and set processing
+            signals.currentMessage = '';
+            signals.isProcessing = true;
+            signals.streaming = true;
+            signals.status = 'Processing';
+            signals.statusColor = 'blue';
+
+            // Immediate scroll (no setTimeout delay)
+            smartScroll();
+
+            try {
+                const response = await fetch('http://localhost:2046/v1/interactions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: signals.sessionId,
+                        enable_tools: signals.enableTools,
+                        temperature: 0.7,
+                        max_tokens: 4000
+                    })
+                });
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const sessionId = response.headers.get('X-Session-ID');
+                if (sessionId && !signals.sessionId) {
+                    signals.sessionId = sessionId;
+                }
+
+                // Create assistant message immediately
+                const assistantMsg = { role: 'assistant', content: '', tools: [], instant: true };
+                signals.messages = [...signals.messages, assistantMsg];
+
+                // Read SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let firstTokenReceived = false;
+                let pendingUpdate = null;
+                let updateScheduled = false;
+
+                signals.status = 'Streaming';
+                signals.statusColor = 'blue';
+
+                // Batch update function using RAF
+                const batchUpdate = () => {
+                    if (pendingUpdate && !updateScheduled) {
+                        updateScheduled = true;
+                        requestAnimationFrame(() => {
+                            if (pendingUpdate) {
+                                const messages = [...signals.messages];
+                                const lastMsg = messages[messages.length - 1];
+                                Object.assign(lastMsg, pendingUpdate);
+                                signals.messages = messages;
+                                pendingUpdate = null;
+                                smartScroll();
+                            }
+                            updateScheduled = false;
+                        });
+                    }
+                };
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data:')) {
+                            try {
+                                const data = JSON.parse(line.substring(5).trim());
+
+                                // Track TTFT on first token
+                                if (!firstTokenReceived && data.event === 'message.chunk') {
+                                    const ttft = Date.now() - ttftStart;
+                                    signals.ttft = ttft + 'ms';
+                                    firstTokenReceived = true;
+                                    console.log(`TTFT: ${ttft}ms`);
+                                }
+
+                                const messages = [...signals.messages];
+                                const lastMsg = messages[messages.length - 1];
+
+                                if (data.event === 'message.chunk' && data.data?.chunk) {
+                                    // Direct update for chunks - fastest path
+                                    lastMsg.content += data.data.chunk;
+                                    signals.messages = messages;
+                                    smartScroll();
+                                } else if (data.event === 'message.complete' && data.data?.content) {
+                                    lastMsg.content = data.data.content;
+                                    signals.messages = messages;
+                                } else if (data.event === 'tool.plan' && data.data) {
+                                    // Tool execution planned
+                                    if (!lastMsg.toolPlan) lastMsg.toolPlan = data.data;
+                                    signals.messages = messages;
+                                    const mode = data.data.execution_mode || 'sequential';
+                                    const icon = mode === 'parallel' ? '⚡' : '🔄';
+                                    signals.status = `${icon} ${mode.toUpperCase()}: ${data.data.count} tools`;
+                                } else if (data.event === 'tool.parallel.start' && data.data) {
+                                    // Parallel execution started
+                                    if (!lastMsg.parallelTools) lastMsg.parallelTools = {};
+                                    data.data.tool_names.forEach((name, idx) => {
+                                        lastMsg.parallelTools[idx] = { name, status: 'running' };
+                                    });
+                                    signals.messages = messages;
+                                    signals.status = `⚡ PARALLEL: Running ${data.data.tool_count} tools`;
+                                } else if (data.event === 'tool.execute.start' && data.data?.tool_name) {
+                                    if (!lastMsg.tools) lastMsg.tools = [];
+                                    const toolInfo = {
+                                        name: data.data.tool_name,
+                                        mode: data.data.mode || 'sequential',
+                                        index: data.data.index || 0,
+                                        status: 'running'
+                                    };
+                                    lastMsg.tools.push(toolInfo);
+                                    signals.messages = messages;
+                                    signals.toolCallCount = signals.toolCallCount + 1;
+
+                                    const icon = data.data.mode === 'parallel' ? '⚡' : '🔄';
+                                    signals.status = `${icon} Tool: ${data.data.tool_name}`;
+                                } else if (data.event === 'tool.execute.complete' && data.data) {
+                                    // Mark tool as completed
+                                    if (lastMsg.parallelTools && data.data.index !== undefined) {
+                                        lastMsg.parallelTools[data.data.index].status = 'completed';
+                                    }
+                                    if (lastMsg.tools) {
+                                        const tool = lastMsg.tools.find(t => t.index === data.data.index);
+                                        if (tool) tool.status = 'completed';
+                                    }
+                                    signals.messages = messages;
+                                } else if (data.event === 'tool.execute.error' && data.data) {
+                                    // Mark tool as error
+                                    if (lastMsg.parallelTools && data.data.index !== undefined) {
+                                        lastMsg.parallelTools[data.data.index].status = 'error';
+                                        lastMsg.parallelTools[data.data.index].error = data.data.error;
+                                    }
+                                    if (lastMsg.tools) {
+                                        const tool = lastMsg.tools.find(t => t.index === data.data.index);
+                                        if (tool) {
+                                            tool.status = 'error';
+                                            tool.error = data.data.error;
+                                        }
+                                    }
+                                    signals.messages = messages;
+                                } else if (data.event === 'tool.parallel.complete' && data.data) {
+                                    signals.status = `✅ Parallel complete: ${data.data.successful}/${data.data.tool_count}`;
+                                    signals.messages = messages;
+                                } else if (data.event === 'interaction.complete') {
+                                    signals.status = 'Ready';
+                                    signals.statusColor = 'green';
+                                    signals.streaming = false;
+                                    const elapsed = ((Date.now() - reqStartTime) / 1000).toFixed(1);
+                                    signals.avgResponseTime = elapsed + 's';
+                                }
+
+                                // Only scroll on significant events (not every chunk)
+                                if (data.event !== 'message.chunk') {
+                                    smartScroll();
+                                }
+                            } catch (err) {
+                                console.error('Parse error:', err);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                signals.messages = [
+                    ...signals.messages,
+                    { role: 'assistant', content: `❌ Error: ${error.message}\n\nMake sure the agent server is running on port 2046.` }
+                ];
+                signals.status = 'Error';
+                signals.statusColor = 'red';
+            } finally {
+                signals.isProcessing = false;
+                signals.streaming = false;
+                smartScroll();
+            }
+        }
+
+        // Fallback function that works without Datastar
+        async function handleSendMessageFallback() {
+            console.log('Using fallback message handler');
+            const input = document.querySelector('input[data-model="currentMessage"]');
+            if (!input) {
+                console.error('Input not found');
+                return;
+            }
+
+            const message = input.value.trim();
+            if (!message) return;
+
+            // Manually create UI elements
+            const container = document.getElementById('chat-container');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message-card';
+            messageDiv.innerHTML = `
+                <div class="flex justify-end">
+                    <div class="max-w-[85%]">
+                        <div class="card p-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
+                            <div class="flex items-start gap-3">
+                                <div class="text-2xl flex-shrink-0">👤</div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="font-medium mb-2 text-sm text-purple-100">You</div>
+                                    <div class="whitespace-pre-wrap break-words text-white">${message}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(messageDiv);
+
+            input.value = '';
+
+            // Make API call
+            try {
+                const response = await fetch('http://localhost:2046/v1/interactions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        enable_tools: true,
+                        temperature: 0.7,
+                        max_tokens: 4000
+                    })
+                });
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                // Create assistant message div
+                const assistantDiv = document.createElement('div');
+                assistantDiv.className = 'message-card';
+                assistantDiv.innerHTML = `
+                    <div class="flex justify-start">
+                        <div class="max-w-[85%]">
+                            <div class="card p-4 bg-white border border-gray-100">
+                                <div class="flex items-start gap-3">
+                                    <div class="text-2xl flex-shrink-0">🤖</div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="font-medium mb-2 text-sm text-gray-600">Agent</div>
+                                        <div class="whitespace-pre-wrap break-words text-gray-800" id="assistant-content"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(assistantDiv);
+                const contentDiv = assistantDiv.querySelector('#assistant-content');
+
+                // Read stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let fullContent = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data:')) {
+                            try {
+                                const data = JSON.parse(line.substring(5).trim());
+                                if (data.event === 'message.chunk' && data.data?.chunk) {
+                                    fullContent += data.data.chunk;
+                                    contentDiv.textContent = fullContent;
+                                } else if (data.event === 'message.complete' && data.data?.content) {
+                                    contentDiv.textContent = data.data.content;
+                                }
+                                container.scrollTop = container.scrollHeight;
+                            } catch (err) {
+                                console.error('Parse error:', err);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'message-card';
+                errorDiv.innerHTML = `
+                    <div class="flex justify-start">
+                        <div class="max-w-[85%]">
+                            <div class="card p-4 bg-white border border-red-300">
+                                <div class="text-red-600">❌ Error: ${error.message}</div>
+                                <div class="text-sm text-gray-600 mt-2">Make sure the agent server is running on port 2046.</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(errorDiv);
+            }
+
+            container.scrollTop = container.scrollHeight;
+        }
+    </script>
+</body>
+</html>

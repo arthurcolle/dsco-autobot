@@ -241,3 +241,30 @@ def get_http_pool() -> HTTPClientPool:
     if _http_pool is None:
         _http_pool = HTTPClientPool()
     return _http_pool
+
+
+def resolve_secret(name: str, scope: str = "env") -> Optional[str]:
+    """Resolve a named secret via the SecretStore (keychain -> env -> .env).
+
+    Tools building outbound requests should use this instead of reading
+    ``os.environ`` directly, so credentials can be provisioned once in the
+    keychain or ``.env`` and never pasted into chat.
+    """
+    from .secret_store import get_secret_store
+    return get_secret_store().resolve(name, scope=scope)
+
+
+def auth_header_from_secret(
+    name: str, header: str = "Authorization", scheme: str = "Bearer", scope: str = "env"
+) -> Dict[str, str]:
+    """Build an auth header dict from a named secret, or ``{}`` if unresolved.
+
+    Example: ``auth_header_from_secret("OPENROUTER_API_KEY")`` ->
+    ``{"Authorization": "Bearer sk-or-v1-..."}``.
+    """
+    value = resolve_secret(name, scope=scope)
+    if not value:
+        return {}
+    if scheme:
+        return {header: f"{scheme} {value}"}
+    return {header: value}

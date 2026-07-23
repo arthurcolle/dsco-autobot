@@ -1,0 +1,11 @@
+# Local development with self-signed HTTPS
+# Run with: caddy run
+
+localhost:2443 {
+    reverse_proxy localhost:2040
+}
+
+# For production with a real domain, uncomment and modify:
+# your-domain.com {
+#     reverse_proxy localhost:2040
+# }

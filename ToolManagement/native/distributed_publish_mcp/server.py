@@ -33,6 +33,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union, AsyncGenerator
 
 import httpx
@@ -445,6 +446,58 @@ class DistributedPublishMCP:
                 }
             },
             handler=self._execute_connectivity_test
+        )
+
+        # Integration feedback tool
+        self._tools["integration_feedback"] = MCPTool(
+            name="integration_feedback",
+            description=(
+                "Submit feedback about your experience using a tool on this integration "
+                "server (correctness, schema clarity, missing capabilities, errors, etc). "
+                "Call this after using a tool if something was confusing, broken, or "
+                "worked great — it helps us improve the API for AI agents."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Which tool this feedback concerns (use 'general' for service-wide feedback)",
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["success", "partial", "failure"],
+                        "description": "How the tool call(s) being reported on went",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "correctness", "schema_clarity", "performance", "error_handling",
+                            "documentation", "missing_capability", "rate_limit", "auth", "other",
+                        ],
+                        "default": "other",
+                    },
+                    "rating": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "1 (poor) to 5 (excellent)",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Free-text feedback: what happened, what was confusing, what would help",
+                    },
+                    "suggested_fix": {"type": "string"},
+                    "context": {
+                        "type": "object",
+                        "description": "Optional supporting context, e.g. the arguments used or error text received",
+                    },
+                    "session_id": {"type": "string"},
+                    "trace_id": {"type": "string"},
+                },
+                "required": ["message"],
+            },
+            handler=self._execute_integration_feedback
         )
 
         # =====================================================================
@@ -1157,6 +1210,60 @@ class DistributedPublishMCP:
             "events_count": len(self._events),
             "queue_channels": len(self._message_queue),
         }
+
+    async def _execute_integration_feedback(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward agent feedback about this server's tools to the central registry."""
+        message = args.get("message")
+        if not message:
+            return {
+                "content": [{"type": "text", "text": "message is required"}],
+                "isError": True,
+            }
+
+        payload = {
+            "backend_id": self.SERVICE_ID,
+            "message": message,
+            "tool_name": args.get("tool_name"),
+            "outcome": args.get("outcome"),
+            "category": args.get("category") or "other",
+            "rating": args.get("rating"),
+            "suggested_fix": args.get("suggested_fix"),
+            "context": args.get("context"),
+            "session_id": args.get("session_id"),
+            "trace_id": args.get("trace_id"),
+        }
+
+        registry_url = self.registry_url or os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{registry_url}/api/v1/integration-feedback",
+                    json=payload,
+                    timeout=10.0,
+                )
+            if response.status_code == 200:
+                return {"content": [{"type": "text", "text": json.dumps(response.json())}]}
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            fallback_path = Path("data") / "feedback_fallback.jsonl"
+            try:
+                fallback_path.parent.mkdir(parents=True, exist_ok=True)
+                record = dict(payload)
+                record["recorded_at"] = datetime.now(timezone.utc).isoformat()
+                record["registry_error"] = str(e)
+                with open(fallback_path, "a") as f:
+                    f.write(json.dumps(record, default=str) + "\n")
+            except Exception as write_err:
+                logger.warning(f"Failed to write feedback fallback: {write_err}")
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "status": "recorded_locally",
+                        "warning": f"registry unreachable ({e}); saved to {fallback_path}",
+                    }),
+                }]
+            }
 
     # =========================================================================
     # SUBSTACK TOOL IMPLEMENTATIONS

@@ -1,0 +1,2767 @@
+[
+  {
+    "task": "Remember that the Fed held rates steady at the March meeting",
+    "intent": "remember",
+    "intent_confidence": 0.663692228392409,
+    "all_intents": {
+      "remember": 0.664,
+      "manage": 0.604,
+      "transform": 0.57,
+      "research": 0.56,
+      "query": 0.545,
+      "notify": 0.529,
+      "analyze": 0.525,
+      "publish": 0.515
+    },
+    "num_candidates": 20,
+    "top_tool": "TIME_SERIES_WEEKLY_ADJUSTED",
+    "top_relevance": 0.15817434,
+    "top3": [
+      {
+        "name": "TIME_SERIES_WEEKLY_ADJUSTED",
+        "score": 0.15817434
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.15304215
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+        "score": 0.14903529
+      }
+    ],
+    "search_ms": 1252.1159648895264,
+    "rerank_ms": 1075.6988525390625,
+    "classify_ms": 1651.7212390899658
+  },
+  {
+    "task": "Research DPO training methods, store key findings, and notify me",
+    "intent": "research",
+    "intent_confidence": 0.6996612453961475,
+    "all_intents": {
+      "research": 0.7,
+      "notify": 0.697,
+      "manage": 0.656,
+      "remember": 0.651,
+      "publish": 0.63,
+      "analyze": 0.619,
+      "query": 0.613,
+      "transform": 0.594
+    },
+    "num_candidates": 20,
+    "top_tool": "learn_skill",
+    "top_relevance": 0.08389039,
+    "top3": [
+      {
+        "name": "learn_skill",
+        "score": 0.08389039
+      },
+      {
+        "name": "send_notification",
+        "score": 0.063715
+      },
+      {
+        "name": "deep_search",
+        "score": 0.06097518
+      }
+    ],
+    "search_ms": 550.0519275665283,
+    "rerank_ms": 622.2357749938965,
+    "classify_ms": 1629.4090747833252
+  },
+  {
+    "task": "Research central bank digital currency implementations worldwide",
+    "intent": "research",
+    "intent_confidence": 0.6338689551246554,
+    "all_intents": {
+      "research": 0.634,
+      "transform": 0.627,
+      "analyze": 0.57,
+      "publish": 0.557,
+      "manage": 0.545,
+      "query": 0.535,
+      "remember": 0.519,
+      "notify": 0.44
+    },
+    "num_candidates": 20,
+    "top_tool": "DIGITAL_CURRENCY_WEEKLY",
+    "top_relevance": 0.1422319,
+    "top3": [
+      {
+        "name": "DIGITAL_CURRENCY_WEEKLY",
+        "score": 0.1422319
+      },
+      {
+        "name": "DIGITAL_CURRENCY_DAILY",
+        "score": 0.13939638
+      },
+      {
+        "name": "DIGITAL_CURRENCY_MONTHLY",
+        "score": 0.13568956
+      }
+    ],
+    "search_ms": 549.2150783538818,
+    "rerank_ms": 542.3359870910645,
+    "classify_ms": 1205.5959701538086
+  },
+  {
+    "task": "Store the fact that NVDA beat earnings estimates by 15%",
+    "intent": "transform",
+    "intent_confidence": 0.6076197521661489,
+    "all_intents": {
+      "transform": 0.608,
+      "manage": 0.604,
+      "publish": 0.589,
+      "query": 0.588,
+      "analyze": 0.588,
+      "research": 0.586,
+      "remember": 0.584,
+      "notify": 0.526
+    },
+    "num_candidates": 20,
+    "top_tool": "NEWS_SENTIMENT",
+    "top_relevance": 0.13028541,
+    "top3": [
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.13028541
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.10374863
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+        "score": 0.07696084
+      }
+    ],
+    "search_ms": 632.7018737792969,
+    "rerank_ms": 403.6130905151367,
+    "classify_ms": 1373.2249736785889
+  },
+  {
+    "task": "Research hyperscaler capital expenditure trends for 2026",
+    "intent": "analyze",
+    "intent_confidence": 0.4683682143882503,
+    "all_intents": {
+      "analyze": 0.468,
+      "publish": 0.456,
+      "manage": 0.447,
+      "transform": 0.427,
+      "query": 0.423,
+      "notify": 0.41,
+      "research": 0.409,
+      "remember": 0.405
+    },
+    "num_candidates": 20,
+    "top_tool": "ULTOSC",
+    "top_relevance": 0.06465349,
+    "top3": [
+      {
+        "name": "ULTOSC",
+        "score": 0.06465349
+      },
+      {
+        "name": "REAL_GDP_PER_CAPITA",
+        "score": 0.05921026
+      },
+      {
+        "name": "HT_DCPHASE",
+        "score": 0.05261895
+      }
+    ],
+    "search_ms": 580.3351402282715,
+    "rerank_ms": 496.43397331237793,
+    "classify_ms": 1365.8699989318848
+  },
+  {
+    "task": "What have I stored about mortgage prepayment speeds?",
+    "intent": "manage",
+    "intent_confidence": 0.630196914776265,
+    "all_intents": {
+      "manage": 0.63,
+      "remember": 0.63,
+      "query": 0.605,
+      "transform": 0.6,
+      "analyze": 0.595,
+      "publish": 0.585,
+      "research": 0.558,
+      "notify": 0.552
+    },
+    "num_candidates": 20,
+    "top_tool": "store_belief",
+    "top_relevance": 0.05921026,
+    "top3": [
+      {
+        "name": "store_belief",
+        "score": 0.05921026
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+        "score": 0.04885778
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.04742587
+      }
+    ],
+    "search_ms": 641.8619155883789,
+    "rerank_ms": 680.44114112854,
+    "classify_ms": 1679.610013961792
+  },
+  {
+    "task": "Pull the Fed funds effective rate and SOFR spread",
+    "intent": "transform",
+    "intent_confidence": 0.6333123242931904,
+    "all_intents": {
+      "transform": 0.633,
+      "manage": 0.628,
+      "query": 0.594,
+      "research": 0.59,
+      "analyze": 0.554,
+      "publish": 0.551,
+      "remember": 0.541,
+      "notify": 0.499
+    },
+    "num_candidates": 20,
+    "top_tool": "FEDERAL_FUNDS_RATE",
+    "top_relevance": 0.44287744,
+    "top3": [
+      {
+        "name": "FEDERAL_FUNDS_RATE",
+        "score": 0.44287744
+      },
+      {
+        "name": "TRANGE",
+        "score": 0.11279541
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.09138211
+      }
+    ],
+    "search_ms": 592.857837677002,
+    "rerank_ms": 642.0328617095947,
+    "classify_ms": 1262.3412609100342
+  },
+  {
+    "task": "Find historical prepayment data for GNMA II pools",
+    "intent": "query",
+    "intent_confidence": 0.5846661110521961,
+    "all_intents": {
+      "query": 0.585,
+      "remember": 0.574,
+      "analyze": 0.572,
+      "manage": 0.57,
+      "research": 0.562,
+      "publish": 0.54,
+      "transform": 0.518,
+      "notify": 0.452
+    },
+    "num_candidates": 20,
+    "top_tool": "REALTIME_OPTIONS",
+    "top_relevance": 0.05108274,
+    "top3": [
+      {
+        "name": "REALTIME_OPTIONS",
+        "score": 0.05108274
+      },
+      {
+        "name": "DIGITAL_CURRENCY_MONTHLY",
+        "score": 0.0460339
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+        "score": 0.04023794
+      }
+    ],
+    "search_ms": 902.336835861206,
+    "rerank_ms": 536.768913269043,
+    "classify_ms": 1204.7359943389893
+  },
+  {
+    "task": "Publish a note about today's treasury yield curve inversion",
+    "intent": "publish",
+    "intent_confidence": 0.7134796044611917,
+    "all_intents": {
+      "publish": 0.713,
+      "query": 0.63,
+      "transform": 0.622,
+      "notify": 0.617,
+      "research": 0.604,
+      "remember": 0.595,
+      "manage": 0.586,
+      "analyze": 0.561
+    },
+    "num_candidates": 20,
+    "top_tool": "FIXED_INCOME_TREASURY",
+    "top_relevance": 0.20307463,
+    "top3": [
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.20307463
+      },
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.1510278
+      },
+      {
+        "name": "PLUS_DM",
+        "score": 0.09009299
+      }
+    ],
+    "search_ms": 637.9730701446533,
+    "rerank_ms": 565.2730464935303,
+    "classify_ms": 1529.1709899902344
+  },
+  {
+    "task": "Get the top gainers and losers in the S&P 500 today",
+    "intent": "query",
+    "intent_confidence": 0.5679434235046549,
+    "all_intents": {
+      "query": 0.568,
+      "manage": 0.537,
+      "transform": 0.517,
+      "analyze": 0.51,
+      "research": 0.479,
+      "remember": 0.475,
+      "publish": 0.468,
+      "notify": 0.422
+    },
+    "num_candidates": 20,
+    "top_tool": "TOP_GAINERS_LOSERS",
+    "top_relevance": 0.66714764,
+    "top3": [
+      {
+        "name": "TOP_GAINERS_LOSERS",
+        "score": 0.66714764
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.4016878
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.27590945
+      }
+    ],
+    "search_ms": 634.5968246459961,
+    "rerank_ms": 561.089038848877,
+    "classify_ms": 1244.6131706237793
+  },
+  {
+    "task": "Find information about PEFT parameter-efficient fine-tuning",
+    "intent": "transform",
+    "intent_confidence": 0.6336677607197311,
+    "all_intents": {
+      "transform": 0.634,
+      "analyze": 0.611,
+      "research": 0.583,
+      "manage": 0.568,
+      "query": 0.52,
+      "publish": 0.516,
+      "remember": 0.511,
+      "notify": 0.484
+    },
+    "num_candidates": 20,
+    "top_tool": "PLUS_DM",
+    "top_relevance": 0.04084571,
+    "top3": [
+      {
+        "name": "PLUS_DM",
+        "score": 0.04084571
+      },
+      {
+        "name": "TEMA",
+        "score": 0.03963884
+      },
+      {
+        "name": "T3",
+        "score": 0.03846619
+      }
+    ],
+    "search_ms": 531.998872756958,
+    "rerank_ms": 795.7220077514648,
+    "classify_ms": 1286.5369319915771
+  },
+  {
+    "task": "Find best practices for Elixir/Phoenix WebSocket scaling",
+    "intent": "manage",
+    "intent_confidence": 0.5904207865909525,
+    "all_intents": {
+      "manage": 0.59,
+      "transform": 0.575,
+      "query": 0.555,
+      "research": 0.548,
+      "publish": 0.535,
+      "analyze": 0.535,
+      "remember": 0.503,
+      "notify": 0.503
+    },
+    "num_candidates": 20,
+    "top_tool": "publish_event",
+    "top_relevance": 0.06008665,
+    "top3": [
+      {
+        "name": "publish_event",
+        "score": 0.06008665
+      },
+      {
+        "name": "trigger_webhook",
+        "score": 0.05665243
+      },
+      {
+        "name": "syndicate_content",
+        "score": 0.05500529
+      }
+    ],
+    "search_ms": 527.0671844482422,
+    "rerank_ms": 657.0351123809814,
+    "classify_ms": 1611.8879318237305
+  },
+  {
+    "task": "Send a notification that AAPL crossed above its 200-day SMA",
+    "intent": "notify",
+    "intent_confidence": 0.6608382660463888,
+    "all_intents": {
+      "notify": 0.661,
+      "publish": 0.644,
+      "query": 0.603,
+      "manage": 0.585,
+      "research": 0.57,
+      "analyze": 0.567,
+      "remember": 0.562,
+      "transform": 0.546
+    },
+    "num_candidates": 20,
+    "top_tool": "NEWS_SENTIMENT",
+    "top_relevance": 0.50830001,
+    "top3": [
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.50830001
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.45205212
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.36026394
+      }
+    ],
+    "search_ms": 604.144811630249,
+    "rerank_ms": 637.9790306091309,
+    "classify_ms": 1644.758939743042
+  },
+  {
+    "task": "Find insider transactions for TSLA in the last 90 days",
+    "intent": "query",
+    "intent_confidence": 0.6224620070946749,
+    "all_intents": {
+      "query": 0.622,
+      "transform": 0.588,
+      "manage": 0.578,
+      "research": 0.573,
+      "analyze": 0.56,
+      "remember": 0.512,
+      "publish": 0.497,
+      "notify": 0.446
+    },
+    "num_candidates": 20,
+    "top_tool": "INSIDER_TRANSACTIONS",
+    "top_relevance": 0.24364243,
+    "top3": [
+      {
+        "name": "INSIDER_TRANSACTIONS",
+        "score": 0.24364243
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.09009299
+      },
+      {
+        "name": "TIME_SERIES_INTRADAY",
+        "score": 0.07921032
+      }
+    ],
+    "search_ms": 605.698823928833,
+    "rerank_ms": 550.23193359375,
+    "classify_ms": 1292.799949645996
+  },
+  {
+    "task": "Get the latest gold and silver spot prices",
+    "intent": "query",
+    "intent_confidence": 0.5862222539702969,
+    "all_intents": {
+      "query": 0.586,
+      "transform": 0.581,
+      "research": 0.56,
+      "manage": 0.551,
+      "publish": 0.527,
+      "analyze": 0.506,
+      "remember": 0.504,
+      "notify": 0.456
+    },
+    "num_candidates": 20,
+    "top_tool": "GLOBAL_QUOTE",
+    "top_relevance": 0.09807932,
+    "top3": [
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.09807932
+      },
+      {
+        "name": "REALTIME_OPTIONS",
+        "score": 0.08035747
+      },
+      {
+        "name": "ALL_COMMODITIES",
+        "score": 0.07585818
+      }
+    ],
+    "search_ms": 534.4491004943848,
+    "rerank_ms": 542.6390171051025,
+    "classify_ms": 1508.7611675262451
+  },
+  {
+    "task": "Get NVDA earnings data, analyze the trend, and write a draft report",
+    "intent": "query",
+    "intent_confidence": 0.5941086778686027,
+    "all_intents": {
+      "query": 0.594,
+      "research": 0.587,
+      "analyze": 0.584,
+      "publish": 0.582,
+      "manage": 0.546,
+      "transform": 0.542,
+      "notify": 0.503,
+      "remember": 0.502
+    },
+    "num_candidates": 20,
+    "top_tool": "EARNINGS",
+    "top_relevance": 0.20561504,
+    "top3": [
+      {
+        "name": "EARNINGS",
+        "score": 0.20561504
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+        "score": 0.17217185
+      },
+      {
+        "name": "TIME_SERIES_WEEKLY_ADJUSTED",
+        "score": 0.15002881
+      }
+    ],
+    "search_ms": 574.5196342468262,
+    "rerank_ms": 541.4199829101562,
+    "classify_ms": 1359.7729206085205
+  },
+  {
+    "task": "Compare AVAX and DOT performance over the last 90 days",
+    "intent": "analyze",
+    "intent_confidence": 0.5852077017375119,
+    "all_intents": {
+      "analyze": 0.585,
+      "transform": 0.574,
+      "manage": 0.573,
+      "research": 0.558,
+      "query": 0.558,
+      "remember": 0.519,
+      "publish": 0.486,
+      "notify": 0.453
+    },
+    "num_candidates": 20,
+    "top_tool": "PLUS_DM",
+    "top_relevance": 0.07477004,
+    "top3": [
+      {
+        "name": "PLUS_DM",
+        "score": 0.07477004
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.06278921
+      },
+      {
+        "name": "VWAP",
+        "score": 0.06008665
+      }
+    ],
+    "search_ms": 616.4159774780273,
+    "rerank_ms": 532.9549312591553,
+    "classify_ms": 1312.9830360412598
+  },
+  {
+    "task": "Create a draft post analyzing hyperscaler capex trends",
+    "intent": "publish",
+    "intent_confidence": 0.6890234500503598,
+    "all_intents": {
+      "publish": 0.689,
+      "analyze": 0.626,
+      "research": 0.615,
+      "manage": 0.613,
+      "transform": 0.599,
+      "query": 0.594,
+      "notify": 0.548,
+      "remember": 0.54
+    },
+    "num_candidates": 20,
+    "top_tool": "substack_create_draft",
+    "top_relevance": 0.24077459,
+    "top3": [
+      {
+        "name": "substack_create_draft",
+        "score": 0.24077459
+      },
+      {
+        "name": "substack_publish",
+        "score": 0.12506537
+      },
+      {
+        "name": "HT_DCPHASE",
+        "score": 0.06954174
+      }
+    ],
+    "search_ms": 532.6111316680908,
+    "rerank_ms": 535.8219146728516,
+    "classify_ms": 1290.722131729126
+  },
+  {
+    "task": "Research AI startup funding rounds in Q1 2026",
+    "intent": "research",
+    "intent_confidence": 0.6500405701910067,
+    "all_intents": {
+      "research": 0.65,
+      "query": 0.584,
+      "analyze": 0.542,
+      "manage": 0.538,
+      "remember": 0.518,
+      "transform": 0.51,
+      "publish": 0.478,
+      "notify": 0.452
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.13846178,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.13846178
+      },
+      {
+        "name": "find_all",
+        "score": 0.10521054
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.07369627
+      }
+    ],
+    "search_ms": 628.8459300994873,
+    "rerank_ms": 404.67214584350586,
+    "classify_ms": 1286.5769863128662
+  },
+  {
+    "task": "Pull the latest CPI and inflation data from the Fed",
+    "intent": "query",
+    "intent_confidence": 0.5656540765577943,
+    "all_intents": {
+      "query": 0.566,
+      "analyze": 0.551,
+      "research": 0.537,
+      "transform": 0.533,
+      "publish": 0.518,
+      "manage": 0.505,
+      "remember": 0.5,
+      "notify": 0.487
+    },
+    "num_candidates": 20,
+    "top_tool": "INFLATION",
+    "top_relevance": 0.24220563,
+    "top3": [
+      {
+        "name": "INFLATION",
+        "score": 0.24220563
+      },
+      {
+        "name": "CPI",
+        "score": 0.20817892
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.17441027
+      }
+    ],
+    "search_ms": 529.8221111297607,
+    "rerank_ms": 606.1129570007324,
+    "classify_ms": 1303.706169128418
+  },
+  {
+    "task": "Compare message queue systems: RabbitMQ vs NATS vs Redpanda",
+    "intent": "query",
+    "intent_confidence": 0.5997723204155885,
+    "all_intents": {
+      "query": 0.6,
+      "manage": 0.57,
+      "research": 0.551,
+      "notify": 0.511,
+      "remember": 0.51,
+      "publish": 0.501,
+      "transform": 0.496,
+      "analyze": 0.465
+    },
+    "num_candidates": 20,
+    "top_tool": "queue_message",
+    "top_relevance": 0.18832397,
+    "top3": [
+      {
+        "name": "queue_message",
+        "score": 0.18832397
+      },
+      {
+        "name": "get_queue_messages",
+        "score": 0.14511536
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.06560484
+      }
+    ],
+    "search_ms": 538.6838912963867,
+    "rerank_ms": 1705.2321434020996,
+    "classify_ms": 1304.8298358917236
+  },
+  {
+    "task": "Find all beliefs related to central bank policy",
+    "intent": "research",
+    "intent_confidence": 0.6245752353305777,
+    "all_intents": {
+      "research": 0.625,
+      "analyze": 0.608,
+      "query": 0.601,
+      "remember": 0.574,
+      "transform": 0.572,
+      "manage": 0.564,
+      "publish": 0.532,
+      "notify": 0.483
+    },
+    "num_candidates": 20,
+    "top_tool": "find_related_beliefs",
+    "top_relevance": 0.33198547,
+    "top3": [
+      {
+        "name": "find_related_beliefs",
+        "score": 0.33198547
+      },
+      {
+        "name": "query_beliefs",
+        "score": 0.12506537
+      },
+      {
+        "name": "semantic_search_beliefs",
+        "score": 0.11596072
+      }
+    ],
+    "search_ms": 663.4049415588379,
+    "rerank_ms": 418.40410232543945,
+    "classify_ms": 1388.6799812316895
+  },
+  {
+    "task": "Research photonic neural network implementations for inference",
+    "intent": "research",
+    "intent_confidence": 0.6561584324537372,
+    "all_intents": {
+      "research": 0.656,
+      "analyze": 0.603,
+      "transform": 0.558,
+      "remember": 0.552,
+      "notify": 0.533,
+      "manage": 0.527,
+      "publish": 0.525,
+      "query": 0.491
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.07477004,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.07477004
+      },
+      {
+        "name": "deep_search",
+        "score": 0.0705596
+      },
+      {
+        "name": "HT_SINE",
+        "score": 0.05921026
+      }
+    ],
+    "search_ms": 539.0689373016357,
+    "rerank_ms": 598.4482765197754,
+    "classify_ms": 1334.8898887634277
+  },
+  {
+    "task": "Get BTC price data, analyze RSI, and send alert if overbought",
+    "intent": "analyze",
+    "intent_confidence": 0.6053985995778502,
+    "all_intents": {
+      "analyze": 0.605,
+      "research": 0.575,
+      "transform": 0.575,
+      "manage": 0.572,
+      "query": 0.566,
+      "notify": 0.566,
+      "remember": 0.553,
+      "publish": 0.537
+    },
+    "num_candidates": 20,
+    "top_tool": "RSI",
+    "top_relevance": 0.29098088,
+    "top3": [
+      {
+        "name": "RSI",
+        "score": 0.29098088
+      },
+      {
+        "name": "TIME_SERIES_MONTHLY",
+        "score": 0.17217185
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.15304215
+      }
+    ],
+    "search_ms": 632.1151256561279,
+    "rerank_ms": 545.2148914337158,
+    "classify_ms": 1392.5981521606445
+  },
+  {
+    "task": "Find papers on curiosity-driven reinforcement learning",
+    "intent": "research",
+    "intent_confidence": 0.7282337343626221,
+    "all_intents": {
+      "research": 0.728,
+      "publish": 0.569,
+      "query": 0.556,
+      "manage": 0.534,
+      "analyze": 0.532,
+      "transform": 0.532,
+      "remember": 0.524,
+      "notify": 0.492
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.07921032,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.07921032
+      },
+      {
+        "name": "deep_search",
+        "score": 0.05665243
+      },
+      {
+        "name": "focus",
+        "score": 0.04813677
+      }
+    ],
+    "search_ms": 527.6889801025391,
+    "rerank_ms": 625.1962184906006,
+    "classify_ms": 1317.2688484191895
+  },
+  {
+    "task": "Get BTC/USD current price and 24h volume",
+    "intent": "transform",
+    "intent_confidence": 0.5949736165189354,
+    "all_intents": {
+      "transform": 0.595,
+      "query": 0.546,
+      "manage": 0.526,
+      "research": 0.51,
+      "analyze": 0.506,
+      "remember": 0.492,
+      "publish": 0.49,
+      "notify": 0.432
+    },
+    "num_candidates": 20,
+    "top_tool": "TIME_SERIES_MONTHLY",
+    "top_relevance": 0.20946968,
+    "top3": [
+      {
+        "name": "TIME_SERIES_MONTHLY",
+        "score": 0.20946968
+      },
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.19806418
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.17217185
+      }
+    ],
+    "search_ms": 546.2911128997803,
+    "rerank_ms": 660.7449054718018,
+    "classify_ms": 1312.272071838379
+  },
+  {
+    "task": "Find the IPO calendar for next quarter",
+    "intent": "query",
+    "intent_confidence": 0.6102599764352956,
+    "all_intents": {
+      "query": 0.61,
+      "publish": 0.591,
+      "research": 0.583,
+      "notify": 0.564,
+      "manage": 0.545,
+      "remember": 0.54,
+      "transform": 0.526,
+      "analyze": 0.523
+    },
+    "num_candidates": 20,
+    "top_tool": "IPO_CALENDAR",
+    "top_relevance": 0.53412652,
+    "top3": [
+      {
+        "name": "IPO_CALENDAR",
+        "score": 0.53412652
+      },
+      {
+        "name": "LISTING_STATUS",
+        "score": 0.18952109
+      },
+      {
+        "name": "EARNINGS_CALENDAR",
+        "score": 0.11920292
+      }
+    ],
+    "search_ms": 500.75292587280273,
+    "rerank_ms": 547.8479862213135,
+    "classify_ms": 1373.0690479278564
+  },
+  {
+    "task": "What are current conforming mortgage rates for 30yr fixed?",
+    "intent": "query",
+    "intent_confidence": 0.5271614439049245,
+    "all_intents": {
+      "query": 0.527,
+      "manage": 0.523,
+      "transform": 0.515,
+      "remember": 0.496,
+      "research": 0.476,
+      "publish": 0.452,
+      "analyze": 0.415,
+      "notify": 0.402
+    },
+    "num_candidates": 20,
+    "top_tool": "FIXED_INCOME_TREASURY",
+    "top_relevance": 0.07477004,
+    "top3": [
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.07477004
+      },
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.06656919
+      },
+      {
+        "name": "FIXED_INCOME_CORPORATE",
+        "score": 0.05834584
+      }
+    ],
+    "search_ms": 645.5049514770508,
+    "rerank_ms": 776.4019966125488,
+    "classify_ms": 1769.5419788360596
+  },
+  {
+    "task": "Search for distributed consensus algorithms beyond Raft and Paxos",
+    "intent": "manage",
+    "intent_confidence": 0.6117415149649742,
+    "all_intents": {
+      "manage": 0.612,
+      "research": 0.608,
+      "query": 0.579,
+      "publish": 0.573,
+      "transform": 0.56,
+      "analyze": 0.559,
+      "notify": 0.533,
+      "remember": 0.519
+    },
+    "num_candidates": 20,
+    "top_tool": "search_all",
+    "top_relevance": 0.09268778,
+    "top3": [
+      {
+        "name": "search_all",
+        "score": 0.09268778
+      },
+      {
+        "name": "find_all",
+        "score": 0.07921032
+      },
+      {
+        "name": "semantic_search",
+        "score": 0.07369627
+      }
+    ],
+    "search_ms": 605.4079532623291,
+    "rerank_ms": 705.5749893188477,
+    "classify_ms": 1360.9180450439453
+  },
+  {
+    "task": "Draft a research report on AI infrastructure economics",
+    "intent": "research",
+    "intent_confidence": 0.7242460468970413,
+    "all_intents": {
+      "research": 0.724,
+      "analyze": 0.62,
+      "publish": 0.567,
+      "query": 0.556,
+      "manage": 0.537,
+      "transform": 0.533,
+      "remember": 0.503,
+      "notify": 0.44
+    },
+    "num_candidates": 20,
+    "top_tool": "deep_search",
+    "top_relevance": 0.05834584,
+    "top3": [
+      {
+        "name": "deep_search",
+        "score": 0.05834584
+      },
+      {
+        "name": "CCI",
+        "score": 0.04958903
+      },
+      {
+        "name": "INFLATION",
+        "score": 0.0460339
+      }
+    ],
+    "search_ms": 639.2810344696045,
+    "rerank_ms": 623.1329441070557,
+    "classify_ms": 1356.9512367248535
+  },
+  {
+    "task": "Find information about edge computing latency benchmarks",
+    "intent": "research",
+    "intent_confidence": 0.5791251609980178,
+    "all_intents": {
+      "research": 0.579,
+      "query": 0.575,
+      "manage": 0.562,
+      "analyze": 0.558,
+      "transform": 0.551,
+      "publish": 0.527,
+      "remember": 0.507,
+      "notify": 0.459
+    },
+    "num_candidates": 20,
+    "top_tool": "STOCHF",
+    "top_relevance": 0.04401865,
+    "top3": [
+      {
+        "name": "STOCHF",
+        "score": 0.04401865
+      },
+      {
+        "name": "get_memory_stats",
+        "score": 0.03622006
+      },
+      {
+        "name": "ADX",
+        "score": 0.03567855
+      }
+    ],
+    "search_ms": 703.5729885101318,
+    "rerank_ms": 477.9350757598877,
+    "classify_ms": 1407.3190689086914
+  },
+  {
+    "task": "Get the latest CLO default rates and recovery data",
+    "intent": "query",
+    "intent_confidence": 0.6216790642674885,
+    "all_intents": {
+      "query": 0.622,
+      "transform": 0.586,
+      "analyze": 0.576,
+      "manage": 0.558,
+      "research": 0.553,
+      "remember": 0.53,
+      "publish": 0.524,
+      "notify": 0.46
+    },
+    "num_candidates": 20,
+    "top_tool": "FIXED_INCOME_TREASURY",
+    "top_relevance": 0.06187599,
+    "top3": [
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.06187599
+      },
+      {
+        "name": "REALTIME_OPTIONS",
+        "score": 0.04813677
+      },
+      {
+        "name": "FIXED_INCOME_CORPORATE",
+        "score": 0.04468087
+      }
+    ],
+    "search_ms": 591.4921760559082,
+    "rerank_ms": 553.4811019897461,
+    "classify_ms": 1602.4620532989502
+  },
+  {
+    "task": "Pull treasury yields, compare to MBS spreads, and create a chart post",
+    "intent": "manage",
+    "intent_confidence": 0.6588395899797685,
+    "all_intents": {
+      "manage": 0.659,
+      "query": 0.65,
+      "transform": 0.622,
+      "remember": 0.603,
+      "research": 0.592,
+      "publish": 0.587,
+      "analyze": 0.58,
+      "notify": 0.52
+    },
+    "num_candidates": 20,
+    "top_tool": "TREASURY_YIELD",
+    "top_relevance": 0.32252598,
+    "top3": [
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.32252598
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.31320965
+      },
+      {
+        "name": "FEDERAL_FUNDS_RATE",
+        "score": 0.1112412
+      }
+    ],
+    "search_ms": 547.5833415985107,
+    "rerank_ms": 1001.1520385742188,
+    "classify_ms": 1236.3860607147217
+  },
+  {
+    "task": "Compare credit spreads on IG vs HY corporate bonds this quarter",
+    "intent": "query",
+    "intent_confidence": 0.5705181140913878,
+    "all_intents": {
+      "query": 0.571,
+      "analyze": 0.527,
+      "research": 0.523,
+      "manage": 0.517,
+      "transform": 0.51,
+      "remember": 0.482,
+      "publish": 0.478,
+      "notify": 0.376
+    },
+    "num_candidates": 20,
+    "top_tool": "FIXED_INCOME_CORPORATE",
+    "top_relevance": 0.21469143,
+    "top3": [
+      {
+        "name": "FIXED_INCOME_CORPORATE",
+        "score": 0.21469143
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.08035747
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.07585818
+      }
+    ],
+    "search_ms": 687.8981590270996,
+    "rerank_ms": 542.3460006713867,
+    "classify_ms": 2078.6678791046143
+  },
+  {
+    "task": "What are the best practices for deploying LLMs on Apple Silicon with MLX?",
+    "intent": "manage",
+    "intent_confidence": 0.5830747557807752,
+    "all_intents": {
+      "manage": 0.583,
+      "analyze": 0.532,
+      "publish": 0.523,
+      "transform": 0.522,
+      "research": 0.521,
+      "remember": 0.473,
+      "query": 0.465,
+      "notify": 0.42
+    },
+    "num_candidates": 20,
+    "top_tool": "run_task",
+    "top_relevance": 0.03021458,
+    "top3": [
+      {
+        "name": "run_task",
+        "score": 0.03021458
+      },
+      {
+        "name": "_connectivity_test",
+        "score": 0.02976009
+      },
+      {
+        "name": "consolidate",
+        "score": 0.02931223
+      }
+    ],
+    "search_ms": 589.1437530517578,
+    "rerank_ms": 831.7341804504395,
+    "classify_ms": 1753.9780139923096
+  },
+  {
+    "task": "Analyze the RSI and MACD for NVDA over the last 30 days",
+    "intent": "analyze",
+    "intent_confidence": 0.5834663564722075,
+    "all_intents": {
+      "analyze": 0.583,
+      "transform": 0.563,
+      "research": 0.553,
+      "manage": 0.547,
+      "query": 0.535,
+      "remember": 0.505,
+      "publish": 0.45,
+      "notify": 0.41
+    },
+    "num_candidates": 20,
+    "top_tool": "RSI",
+    "top_relevance": 0.16995624,
+    "top3": [
+      {
+        "name": "RSI",
+        "score": 0.16995624
+      },
+      {
+        "name": "MACD",
+        "score": 0.11757214
+      },
+      {
+        "name": "MINUS_DM",
+        "score": 0.09401018
+      }
+    ],
+    "search_ms": 542.1669483184814,
+    "rerank_ms": 1438.2011890411377,
+    "classify_ms": 1358.6220741271973
+  },
+  {
+    "task": "Find the latest SOL staking yield and validator count",
+    "intent": "query",
+    "intent_confidence": 0.6300984814423881,
+    "all_intents": {
+      "query": 0.63,
+      "analyze": 0.608,
+      "research": 0.598,
+      "manage": 0.597,
+      "transform": 0.572,
+      "publish": 0.554,
+      "remember": 0.537,
+      "notify": 0.515
+    },
+    "num_candidates": 20,
+    "top_tool": "GLOBAL_QUOTE",
+    "top_relevance": 0.04958903,
+    "top3": [
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.04958903
+      },
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.04958903
+      },
+      {
+        "name": "IPO_CALENDAR",
+        "score": 0.0427222
+      }
+    ],
+    "search_ms": 615.4129505157471,
+    "rerank_ms": 665.7872200012207,
+    "classify_ms": 1716.5729999542236
+  },
+  {
+    "task": "What is the current USD/JPY exchange rate and trend?",
+    "intent": "transform",
+    "intent_confidence": 0.5375937419550323,
+    "all_intents": {
+      "transform": 0.538,
+      "query": 0.53,
+      "manage": 0.517,
+      "analyze": 0.486,
+      "research": 0.475,
+      "remember": 0.453,
+      "publish": 0.437,
+      "notify": 0.378
+    },
+    "num_candidates": 20,
+    "top_tool": "CURRENCY_EXCHANGE_RATE",
+    "top_relevance": 0.25238404,
+    "top3": [
+      {
+        "name": "CURRENCY_EXCHANGE_RATE",
+        "score": 0.25238404
+      },
+      {
+        "name": "FX_DAILY",
+        "score": 0.11436854
+      },
+      {
+        "name": "FX_INTRADAY",
+        "score": 0.10970578
+      }
+    ],
+    "search_ms": 542.6359176635742,
+    "rerank_ms": 587.5167846679688,
+    "classify_ms": 1389.7840976715088
+  },
+  {
+    "task": "Get the latest DeFi total value locked across major protocols",
+    "intent": "query",
+    "intent_confidence": 0.5723641433946797,
+    "all_intents": {
+      "query": 0.572,
+      "manage": 0.564,
+      "transform": 0.563,
+      "analyze": 0.552,
+      "research": 0.545,
+      "remember": 0.526,
+      "publish": 0.507,
+      "notify": 0.477
+    },
+    "num_candidates": 20,
+    "top_tool": "GLOBAL_QUOTE",
+    "top_relevance": 0.07696084,
+    "top3": [
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.07696084
+      },
+      {
+        "name": "PLUS_DM",
+        "score": 0.06008665
+      },
+      {
+        "name": "ULTOSC",
+        "score": 0.05033063
+      }
+    ],
+    "search_ms": 623.5730648040771,
+    "rerank_ms": 537.2209548950195,
+    "classify_ms": 1272.3839282989502
+  },
+  {
+    "task": "What is the current OAS on agency MBS versus Treasuries?",
+    "intent": "manage",
+    "intent_confidence": 0.5875735728474827,
+    "all_intents": {
+      "manage": 0.588,
+      "query": 0.573,
+      "research": 0.568,
+      "analyze": 0.556,
+      "publish": 0.55,
+      "transform": 0.544,
+      "remember": 0.533,
+      "notify": 0.464
+    },
+    "num_candidates": 20,
+    "top_tool": "TREASURY_YIELD",
+    "top_relevance": 0.07369627,
+    "top3": [
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.07369627
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.0675467
+      },
+      {
+        "name": "T3",
+        "score": 0.03732689
+      }
+    ],
+    "search_ms": 576.3640403747559,
+    "rerank_ms": 395.8299160003662,
+    "classify_ms": 1617.032766342163
+  },
+  {
+    "task": "Research structured credit risk transfer mechanisms",
+    "intent": "research",
+    "intent_confidence": 0.653081667245303,
+    "all_intents": {
+      "research": 0.653,
+      "transform": 0.568,
+      "manage": 0.544,
+      "analyze": 0.54,
+      "publish": 0.514,
+      "query": 0.509,
+      "remember": 0.474,
+      "notify": 0.438
+    },
+    "num_candidates": 20,
+    "top_tool": "extract_data",
+    "top_relevance": 0.0460339,
+    "top3": [
+      {
+        "name": "extract_data",
+        "score": 0.0460339
+      },
+      {
+        "name": "CCI",
+        "score": 0.0427222
+      },
+      {
+        "name": "ROCR",
+        "score": 0.04208773
+      }
+    ],
+    "search_ms": 530.4107666015625,
+    "rerank_ms": 549.8571395874023,
+    "classify_ms": 1344.4499969482422
+  },
+  {
+    "task": "Create a webhook for price alerts on BTC above 100K",
+    "intent": "notify",
+    "intent_confidence": 0.6199216077532262,
+    "all_intents": {
+      "notify": 0.62,
+      "manage": 0.566,
+      "publish": 0.564,
+      "query": 0.545,
+      "research": 0.544,
+      "remember": 0.541,
+      "transform": 0.537,
+      "analyze": 0.5
+    },
+    "num_candidates": 20,
+    "top_tool": "create_webhook",
+    "top_relevance": 0.29098088,
+    "top3": [
+      {
+        "name": "create_webhook",
+        "score": 0.29098088
+      },
+      {
+        "name": "trigger_webhook",
+        "score": 0.19559409
+      },
+      {
+        "name": "publish_event",
+        "score": 0.17667159
+      }
+    ],
+    "search_ms": 805.4442405700684,
+    "rerank_ms": 667.3760414123535,
+    "classify_ms": 1956.4502239227295
+  },
+  {
+    "task": "Research spike-triggered average methods for neural decoding",
+    "intent": "research",
+    "intent_confidence": 0.6116358868793049,
+    "all_intents": {
+      "research": 0.612,
+      "analyze": 0.608,
+      "remember": 0.595,
+      "manage": 0.576,
+      "transform": 0.574,
+      "notify": 0.524,
+      "query": 0.523,
+      "publish": 0.484
+    },
+    "num_candidates": 20,
+    "top_tool": "MACDEXT",
+    "top_relevance": 0.07696084,
+    "top3": [
+      {
+        "name": "MACDEXT",
+        "score": 0.07696084
+      },
+      {
+        "name": "TRIX",
+        "score": 0.0427222
+      },
+      {
+        "name": "TRIMA",
+        "score": 0.03846619
+      }
+    ],
+    "search_ms": 534.3611240386963,
+    "rerank_ms": 1263.9949321746826,
+    "classify_ms": 2423.0542182922363
+  },
+  {
+    "task": "Analyze the treasury yield curve for 2yr vs 10yr inversion signals",
+    "intent": "transform",
+    "intent_confidence": 0.5902233821312385,
+    "all_intents": {
+      "transform": 0.59,
+      "query": 0.59,
+      "research": 0.557,
+      "remember": 0.555,
+      "manage": 0.554,
+      "analyze": 0.551,
+      "publish": 0.497,
+      "notify": 0.454
+    },
+    "num_candidates": 20,
+    "top_tool": "TREASURY_YIELD",
+    "top_relevance": 0.29421496,
+    "top3": [
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.29421496
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.18126321
+      },
+      {
+        "name": "HT_SINE",
+        "score": 0.0705596
+      }
+    ],
+    "search_ms": 559.920072555542,
+    "rerank_ms": 683.1412315368652,
+    "classify_ms": 1723.7298488616943
+  },
+  {
+    "task": "Recall recent episodes about AI regulation developments",
+    "intent": "research",
+    "intent_confidence": 0.6337846508267935,
+    "all_intents": {
+      "research": 0.634,
+      "remember": 0.632,
+      "manage": 0.599,
+      "analyze": 0.585,
+      "query": 0.576,
+      "transform": 0.565,
+      "notify": 0.546,
+      "publish": 0.536
+    },
+    "num_candidates": 20,
+    "top_tool": "recall_episodes",
+    "top_relevance": 0.31237,
+    "top3": [
+      {
+        "name": "recall_episodes",
+        "score": 0.31237
+      },
+      {
+        "name": "record_episode",
+        "score": 0.05665243
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.04958903
+      }
+    ],
+    "search_ms": 529.1757583618164,
+    "rerank_ms": 739.1600608825684,
+    "classify_ms": 1734.5530986785889
+  },
+  {
+    "task": "What is the ETH/BTC exchange rate right now?",
+    "intent": "transform",
+    "intent_confidence": 0.5721683799046623,
+    "all_intents": {
+      "transform": 0.572,
+      "query": 0.543,
+      "research": 0.497,
+      "manage": 0.497,
+      "analyze": 0.491,
+      "remember": 0.474,
+      "publish": 0.462,
+      "notify": 0.415
+    },
+    "num_candidates": 20,
+    "top_tool": "CRYPTO_EXCHANGE_RATE",
+    "top_relevance": 0.34598863,
+    "top3": [
+      {
+        "name": "CRYPTO_EXCHANGE_RATE",
+        "score": 0.34598863
+      },
+      {
+        "name": "CURRENCY_EXCHANGE_RATE",
+        "score": 0.10230471
+      },
+      {
+        "name": "DIGITAL_CURRENCY_WEEKLY",
+        "score": 0.08269734
+      }
+    ],
+    "search_ms": 534.1188907623291,
+    "rerank_ms": 433.03918838500977,
+    "classify_ms": 1869.2107200622559
+  },
+  {
+    "task": "Search for NIST AI framework, summarize findings, and store as belief",
+    "intent": "research",
+    "intent_confidence": 0.7179989271024478,
+    "all_intents": {
+      "research": 0.718,
+      "analyze": 0.662,
+      "query": 0.625,
+      "remember": 0.614,
+      "manage": 0.603,
+      "transform": 0.6,
+      "notify": 0.531,
+      "publish": 0.531
+    },
+    "num_candidates": 20,
+    "top_tool": "store_belief",
+    "top_relevance": 0.47718871,
+    "top3": [
+      {
+        "name": "store_belief",
+        "score": 0.47718871
+      },
+      {
+        "name": "semantic_search_beliefs",
+        "score": 0.26284182
+      },
+      {
+        "name": "find_related_beliefs",
+        "score": 0.16995624
+      }
+    ],
+    "search_ms": 640.3391361236572,
+    "rerank_ms": 683.9311122894287,
+    "classify_ms": 1446.505069732666
+  },
+  {
+    "task": "Start a live blog covering the FOMC meeting",
+    "intent": "publish",
+    "intent_confidence": 0.6688013917431876,
+    "all_intents": {
+      "publish": 0.669,
+      "research": 0.6,
+      "manage": 0.597,
+      "notify": 0.583,
+      "query": 0.573,
+      "remember": 0.569,
+      "transform": 0.563,
+      "analyze": 0.55
+    },
+    "num_candidates": 20,
+    "top_tool": "NEWS_SENTIMENT",
+    "top_relevance": 0.34775856,
+    "top3": [
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.34775856
+      },
+      {
+        "name": "substack_live_blog_start",
+        "score": 0.28061637
+      },
+      {
+        "name": "substack_live_blog_end",
+        "score": 0.19314736
+      }
+    ],
+    "search_ms": 633.831262588501,
+    "rerank_ms": 626.288890838623,
+    "classify_ms": 1432.3599338531494
+  },
+  {
+    "task": "Search for the latest papers on direct preference optimization",
+    "intent": "research",
+    "intent_confidence": 0.7052876593232239,
+    "all_intents": {
+      "research": 0.705,
+      "query": 0.646,
+      "transform": 0.638,
+      "manage": 0.635,
+      "analyze": 0.6,
+      "publish": 0.587,
+      "remember": 0.538,
+      "notify": 0.517
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.07696084,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.07696084
+      },
+      {
+        "name": "deep_search",
+        "score": 0.05033063
+      },
+      {
+        "name": "find_all",
+        "score": 0.04742587
+      }
+    ],
+    "search_ms": 549.2620468139648,
+    "rerank_ms": 535.4702472686768,
+    "classify_ms": 1482.935905456543
+  },
+  {
+    "task": "Analyze the basis between TBA MBS and specified pools",
+    "intent": "manage",
+    "intent_confidence": 0.6307301455001408,
+    "all_intents": {
+      "manage": 0.631,
+      "analyze": 0.617,
+      "query": 0.601,
+      "research": 0.599,
+      "transform": 0.596,
+      "remember": 0.577,
+      "publish": 0.541,
+      "notify": 0.464
+    },
+    "num_candidates": 20,
+    "top_tool": "BBANDS",
+    "top_relevance": 0.02931223,
+    "top3": [
+      {
+        "name": "BBANDS",
+        "score": 0.02931223
+      },
+      {
+        "name": "BOP",
+        "score": 0.02758528
+      },
+      {
+        "name": "SMA",
+        "score": 0.02758528
+      }
+    ],
+    "search_ms": 532.3977470397949,
+    "rerank_ms": 550.5549907684326,
+    "classify_ms": 1290.8179759979248
+  },
+  {
+    "task": "Get the current yield on 10-year Treasury bonds",
+    "intent": "query",
+    "intent_confidence": 0.5920337866677109,
+    "all_intents": {
+      "query": 0.592,
+      "manage": 0.54,
+      "remember": 0.52,
+      "transform": 0.512,
+      "research": 0.5,
+      "publish": 0.479,
+      "analyze": 0.457,
+      "notify": 0.425
+    },
+    "num_candidates": 20,
+    "top_tool": "TREASURY_YIELD",
+    "top_relevance": 0.64690644,
+    "top3": [
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.64690644
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.2814056
+      },
+      {
+        "name": "FIXED_INCOME_CORPORATE",
+        "score": 0.11920292
+      }
+    ],
+    "search_ms": 550.922155380249,
+    "rerank_ms": 535.1870059967041,
+    "classify_ms": 1406.952142715454
+  },
+  {
+    "task": "What do I know about structured credit risk transfer?",
+    "intent": "transform",
+    "intent_confidence": 0.5943832096729416,
+    "all_intents": {
+      "transform": 0.594,
+      "manage": 0.569,
+      "research": 0.553,
+      "query": 0.527,
+      "analyze": 0.526,
+      "publish": 0.501,
+      "remember": 0.497,
+      "notify": 0.463
+    },
+    "num_candidates": 20,
+    "top_tool": "ROCR",
+    "top_relevance": 0.05921026,
+    "top3": [
+      {
+        "name": "ROCR",
+        "score": 0.05921026
+      },
+      {
+        "name": "ROC",
+        "score": 0.05261895
+      },
+      {
+        "name": "CCI",
+        "score": 0.04813677
+      }
+    ],
+    "search_ms": 548.6667156219482,
+    "rerank_ms": 596.9021320343018,
+    "classify_ms": 1610.1655960083008
+  },
+  {
+    "task": "Find papers on EEG-based brain-computer interface architectures",
+    "intent": "research",
+    "intent_confidence": 0.6643928825412921,
+    "all_intents": {
+      "research": 0.664,
+      "remember": 0.549,
+      "manage": 0.544,
+      "transform": 0.533,
+      "query": 0.524,
+      "analyze": 0.518,
+      "publish": 0.503,
+      "notify": 0.461
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.0705596,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.0705596
+      },
+      {
+        "name": "focus",
+        "score": 0.05500529
+      },
+      {
+        "name": "find_related_beliefs",
+        "score": 0.04742587
+      }
+    ],
+    "search_ms": 608.1719398498535,
+    "rerank_ms": 537.1677875518799,
+    "classify_ms": 1342.268943786621
+  },
+  {
+    "task": "Pull the balance sheet for JPM and compare to BAC",
+    "intent": "manage",
+    "intent_confidence": 0.5984627490826253,
+    "all_intents": {
+      "manage": 0.598,
+      "analyze": 0.583,
+      "query": 0.574,
+      "publish": 0.556,
+      "transform": 0.535,
+      "remember": 0.533,
+      "research": 0.496,
+      "notify": 0.39
+    },
+    "num_candidates": 20,
+    "top_tool": "OVERVIEW",
+    "top_relevance": 0.12765263,
+    "top3": [
+      {
+        "name": "OVERVIEW",
+        "score": 0.12765263
+      },
+      {
+        "name": "BALANCE_SHEET",
+        "score": 0.10818896
+      },
+      {
+        "name": "INCOME_STATEMENT",
+        "score": 0.08509904
+      }
+    ],
+    "search_ms": 630.1901340484619,
+    "rerank_ms": 606.6739559173584,
+    "classify_ms": 1172.8250980377197
+  },
+  {
+    "task": "Search for latest advances in spiking neural networks for edge AI",
+    "intent": "research",
+    "intent_confidence": 0.61657048215253,
+    "all_intents": {
+      "research": 0.617,
+      "manage": 0.556,
+      "query": 0.525,
+      "analyze": 0.52,
+      "transform": 0.52,
+      "remember": 0.503,
+      "notify": 0.487,
+      "publish": 0.48
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.07696084,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.07696084
+      },
+      {
+        "name": "search_all",
+        "score": 0.06097518
+      },
+      {
+        "name": "HT_SINE",
+        "score": 0.05834584
+      }
+    ],
+    "search_ms": 631.2780380249023,
+    "rerank_ms": 661.9031429290771,
+    "classify_ms": 1804.2328357696533
+  },
+  {
+    "task": "Get information about government grants for AI safety research",
+    "intent": "research",
+    "intent_confidence": 0.6940496301516191,
+    "all_intents": {
+      "research": 0.694,
+      "query": 0.542,
+      "manage": 0.542,
+      "publish": 0.523,
+      "remember": 0.521,
+      "analyze": 0.508,
+      "notify": 0.503,
+      "transform": 0.496
+    },
+    "num_candidates": 20,
+    "top_tool": "NEWS_SENTIMENT",
+    "top_relevance": 0.04672496,
+    "top3": [
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.04672496
+      },
+      {
+        "name": "deep_search",
+        "score": 0.04023794
+      },
+      {
+        "name": "get_task",
+        "score": 0.03904829
+      }
+    ],
+    "search_ms": 532.9673290252686,
+    "rerank_ms": 744.5578575134277,
+    "classify_ms": 1349.682092666626
+  },
+  {
+    "task": "Research trajectory-based anomaly detection for network security",
+    "intent": "research",
+    "intent_confidence": 0.6382259805546732,
+    "all_intents": {
+      "research": 0.638,
+      "analyze": 0.544,
+      "manage": 0.532,
+      "transform": 0.52,
+      "notify": 0.506,
+      "query": 0.504,
+      "remember": 0.504,
+      "publish": 0.499
+    },
+    "num_candidates": 20,
+    "top_tool": "MACDEXT",
+    "top_relevance": 0.05033063,
+    "top3": [
+      {
+        "name": "MACDEXT",
+        "score": 0.05033063
+      },
+      {
+        "name": "STOCHRSI",
+        "score": 0.04958903
+      },
+      {
+        "name": "list_events",
+        "score": 0.0460339
+      }
+    ],
+    "search_ms": 528.5701751708984,
+    "rerank_ms": 565.1278495788574,
+    "classify_ms": 1376.0881423950195
+  },
+  {
+    "task": "Get the latest cloud GPU availability and pricing across providers",
+    "intent": "query",
+    "intent_confidence": 0.5513243445302759,
+    "all_intents": {
+      "query": 0.551,
+      "manage": 0.524,
+      "publish": 0.513,
+      "transform": 0.51,
+      "analyze": 0.506,
+      "research": 0.493,
+      "remember": 0.461,
+      "notify": 0.403
+    },
+    "num_candidates": 20,
+    "top_tool": "GLOBAL_QUOTE",
+    "top_relevance": 0.06465349,
+    "top3": [
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.06465349
+      },
+      {
+        "name": "CRYPTO_EXCHANGE_RATE",
+        "score": 0.05108274
+      },
+      {
+        "name": "get_memory_stats",
+        "score": 0.0433658
+      }
+    ],
+    "search_ms": 534.3742370605469,
+    "rerank_ms": 564.9628639221191,
+    "classify_ms": 1409.5571041107178
+  },
+  {
+    "task": "Analyze the BBANDS for AMD with 20-period lookback",
+    "intent": "analyze",
+    "intent_confidence": 0.6054256041806177,
+    "all_intents": {
+      "analyze": 0.605,
+      "manage": 0.577,
+      "transform": 0.569,
+      "remember": 0.568,
+      "query": 0.567,
+      "research": 0.563,
+      "publish": 0.491,
+      "notify": 0.421
+    },
+    "num_candidates": 20,
+    "top_tool": "BBANDS",
+    "top_relevance": 0.18832397,
+    "top3": [
+      {
+        "name": "BBANDS",
+        "score": 0.18832397
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.04672496
+      },
+      {
+        "name": "MINUS_DM",
+        "score": 0.0427222
+      }
+    ],
+    "search_ms": 528.782844543457,
+    "rerank_ms": 554.4450283050537,
+    "classify_ms": 1198.610782623291
+  },
+  {
+    "task": "Compare GOOGL and MSFT earnings growth this quarter",
+    "intent": "research",
+    "intent_confidence": 0.5405783580194582,
+    "all_intents": {
+      "research": 0.541,
+      "analyze": 0.535,
+      "query": 0.535,
+      "transform": 0.53,
+      "manage": 0.524,
+      "publish": 0.48,
+      "remember": 0.477,
+      "notify": 0.403
+    },
+    "num_candidates": 20,
+    "top_tool": "TOP_GAINERS_LOSERS",
+    "top_relevance": 0.09807932,
+    "top3": [
+      {
+        "name": "TOP_GAINERS_LOSERS",
+        "score": 0.09807932
+      },
+      {
+        "name": "EARNINGS_CALENDAR",
+        "score": 0.09009299
+      },
+      {
+        "name": "EARNINGS",
+        "score": 0.08882029
+      }
+    ],
+    "search_ms": 533.149003982544,
+    "rerank_ms": 670.3720092773438,
+    "classify_ms": 1313.5197162628174
+  },
+  {
+    "task": "Research the latest Fannie Mae CAS deal structures",
+    "intent": "analyze",
+    "intent_confidence": 0.6029044669855068,
+    "all_intents": {
+      "analyze": 0.603,
+      "manage": 0.569,
+      "research": 0.56,
+      "query": 0.552,
+      "transform": 0.538,
+      "remember": 0.52,
+      "publish": 0.5,
+      "notify": 0.449
+    },
+    "num_candidates": 20,
+    "top_tool": "INSIDER_TRANSACTIONS",
+    "top_relevance": 0.05582314,
+    "top3": [
+      {
+        "name": "INSIDER_TRANSACTIONS",
+        "score": 0.05582314
+      },
+      {
+        "name": "TIME_SERIES_DAILY_ADJUSTED",
+        "score": 0.04813677
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.04813677
+      }
+    ],
+    "search_ms": 530.2660465240479,
+    "rerank_ms": 1249.5901584625244,
+    "classify_ms": 1317.680835723877
+  },
+  {
+    "task": "Find benchmarks comparing Qwen 2.5 vs Llama 3 on tool-use tasks",
+    "intent": "manage",
+    "intent_confidence": 0.5744360445088661,
+    "all_intents": {
+      "manage": 0.574,
+      "analyze": 0.566,
+      "query": 0.555,
+      "transform": 0.553,
+      "research": 0.552,
+      "remember": 0.498,
+      "publish": 0.464,
+      "notify": 0.411
+    },
+    "num_candidates": 20,
+    "top_tool": "T3",
+    "top_relevance": 0.05340333,
+    "top3": [
+      {
+        "name": "T3",
+        "score": 0.05340333
+      },
+      {
+        "name": "TEMA",
+        "score": 0.04208773
+      },
+      {
+        "name": "list_tasks",
+        "score": 0.04023794
+      }
+    ],
+    "search_ms": 590.0411605834961,
+    "rerank_ms": 548.6469268798828,
+    "classify_ms": 1331.8700790405273
+  },
+  {
+    "task": "Find the latest venture capital trends in fintech infrastructure",
+    "intent": "research",
+    "intent_confidence": 0.6000429076703969,
+    "all_intents": {
+      "research": 0.6,
+      "manage": 0.543,
+      "transform": 0.535,
+      "publish": 0.519,
+      "analyze": 0.512,
+      "query": 0.51,
+      "remember": 0.467,
+      "notify": 0.45
+    },
+    "num_candidates": 20,
+    "top_tool": "IPO_CALENDAR",
+    "top_relevance": 0.05500529,
+    "top3": [
+      {
+        "name": "IPO_CALENDAR",
+        "score": 0.05500529
+      },
+      {
+        "name": "substack_live_blog_start",
+        "score": 0.04535258
+      },
+      {
+        "name": "MFI",
+        "score": 0.04401865
+      }
+    ],
+    "search_ms": 753.201961517334,
+    "rerank_ms": 515.6800746917725,
+    "classify_ms": 1483.6909770965576
+  },
+  {
+    "task": "Research CLO market trends, find related papers, and draft a summary",
+    "intent": "research",
+    "intent_confidence": 0.6463687203309945,
+    "all_intents": {
+      "research": 0.646,
+      "analyze": 0.601,
+      "query": 0.581,
+      "transform": 0.569,
+      "manage": 0.567,
+      "publish": 0.565,
+      "remember": 0.466,
+      "notify": 0.458
+    },
+    "num_candidates": 20,
+    "top_tool": "CCI",
+    "top_relevance": 0.0705596,
+    "top3": [
+      {
+        "name": "CCI",
+        "score": 0.0705596
+      },
+      {
+        "name": "ROC",
+        "score": 0.063715
+      },
+      {
+        "name": "ULTOSC",
+        "score": 0.06008665
+      }
+    ],
+    "search_ms": 620.8252906799316,
+    "rerank_ms": 538.538932800293,
+    "classify_ms": 1358.3707809448242
+  },
+  {
+    "task": "What are the latest developments in homomorphic encryption?",
+    "intent": "transform",
+    "intent_confidence": 0.6172621335593084,
+    "all_intents": {
+      "transform": 0.617,
+      "research": 0.598,
+      "analyze": 0.558,
+      "manage": 0.555,
+      "remember": 0.533,
+      "query": 0.525,
+      "publish": 0.485,
+      "notify": 0.476
+    },
+    "num_candidates": 20,
+    "top_tool": "list_events",
+    "top_relevance": 0.06656919,
+    "top3": [
+      {
+        "name": "list_events",
+        "score": 0.06656919
+      },
+      {
+        "name": "search_all",
+        "score": 0.04084571
+      },
+      {
+        "name": "embed",
+        "score": 0.03789243
+      }
+    ],
+    "search_ms": 567.0430660247803,
+    "rerank_ms": 671.2157726287842,
+    "classify_ms": 1180.5510520935059
+  },
+  {
+    "task": "Find NIST AI governance framework documents and guidelines",
+    "intent": "research",
+    "intent_confidence": 0.6198515570601277,
+    "all_intents": {
+      "research": 0.62,
+      "manage": 0.588,
+      "analyze": 0.552,
+      "query": 0.538,
+      "transform": 0.52,
+      "publish": 0.502,
+      "remember": 0.501,
+      "notify": 0.468
+    },
+    "num_candidates": 20,
+    "top_tool": "find_all",
+    "top_relevance": 0.0726367,
+    "top3": [
+      {
+        "name": "find_all",
+        "score": 0.0726367
+      },
+      {
+        "name": "search",
+        "score": 0.06278921
+      },
+      {
+        "name": "substack_get_drafts",
+        "score": 0.03514485
+      }
+    ],
+    "search_ms": 617.3861026763916,
+    "rerank_ms": 1187.1848106384277,
+    "classify_ms": 1435.1119995117188
+  },
+  {
+    "task": "Search for Ruby on Rails performance optimization techniques",
+    "intent": "research",
+    "intent_confidence": 0.5824175764584927,
+    "all_intents": {
+      "research": 0.582,
+      "manage": 0.557,
+      "query": 0.532,
+      "analyze": 0.52,
+      "publish": 0.515,
+      "transform": 0.503,
+      "remember": 0.456,
+      "notify": 0.424
+    },
+    "num_candidates": 20,
+    "top_tool": "search_all",
+    "top_relevance": 0.22678363,
+    "top3": [
+      {
+        "name": "search_all",
+        "score": 0.22678363
+      },
+      {
+        "name": "create_task_group",
+        "score": 0.17217185
+      },
+      {
+        "name": "run_task",
+        "score": 0.14414886
+      }
+    ],
+    "search_ms": 542.3219203948975,
+    "rerank_ms": 644.2821025848389,
+    "classify_ms": 1476.1738777160645
+  },
+  {
+    "task": "Search for Series A valuations in the AI agent space",
+    "intent": "query",
+    "intent_confidence": 0.6139529516106534,
+    "all_intents": {
+      "query": 0.614,
+      "research": 0.591,
+      "analyze": 0.587,
+      "manage": 0.576,
+      "transform": 0.572,
+      "remember": 0.525,
+      "publish": 0.496,
+      "notify": 0.428
+    },
+    "num_candidates": 20,
+    "top_tool": "PLUS_DM",
+    "top_relevance": 0.04401865,
+    "top3": [
+      {
+        "name": "PLUS_DM",
+        "score": 0.04401865
+      },
+      {
+        "name": "NEWS_SENTIMENT",
+        "score": 0.04146227
+      },
+      {
+        "name": "RSI",
+        "score": 0.03963884
+      }
+    ],
+    "search_ms": 550.4779815673828,
+    "rerank_ms": 713.0470275878906,
+    "classify_ms": 1347.175121307373
+  },
+  {
+    "task": "Analyze MBS prepayment speeds for FNMA 30-year pools",
+    "intent": "manage",
+    "intent_confidence": 0.5824092331305301,
+    "all_intents": {
+      "manage": 0.582,
+      "remember": 0.557,
+      "research": 0.542,
+      "query": 0.542,
+      "transform": 0.542,
+      "analyze": 0.539,
+      "publish": 0.531,
+      "notify": 0.468
+    },
+    "num_candidates": 20,
+    "top_tool": "TREASURY_YIELD",
+    "top_relevance": 0.05033063,
+    "top3": [
+      {
+        "name": "TREASURY_YIELD",
+        "score": 0.05033063
+      },
+      {
+        "name": "TEMA",
+        "score": 0.04672496
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.04535258
+      }
+    ],
+    "search_ms": 702.4550437927246,
+    "rerank_ms": 660.1011753082275,
+    "classify_ms": 1658.5941314697266
+  },
+  {
+    "task": "Remember that CLO default rates are at 2.1% as of Q1 2026",
+    "intent": "query",
+    "intent_confidence": 0.6345190033490018,
+    "all_intents": {
+      "query": 0.635,
+      "remember": 0.599,
+      "transform": 0.597,
+      "manage": 0.587,
+      "analyze": 0.559,
+      "research": 0.556,
+      "publish": 0.504,
+      "notify": 0.502
+    },
+    "num_candidates": 20,
+    "top_tool": "FIXED_INCOME_CORPORATE",
+    "top_relevance": 0.08389039,
+    "top3": [
+      {
+        "name": "FIXED_INCOME_CORPORATE",
+        "score": 0.08389039
+      },
+      {
+        "name": "FIXED_INCOME_TREASURY",
+        "score": 0.07369627
+      },
+      {
+        "name": "INFLATION",
+        "score": 0.0685375
+      }
+    ],
+    "search_ms": 538.8240814208984,
+    "rerank_ms": 539.8688316345215,
+    "classify_ms": 1394.252061843872
+  },
+  {
+    "task": "Research LoRA fine-tuning techniques for small language models",
+    "intent": "analyze",
+    "intent_confidence": 0.54687624231476,
+    "all_intents": {
+      "analyze": 0.547,
+      "research": 0.537,
+      "transform": 0.53,
+      "manage": 0.506,
+      "publish": 0.481,
+      "remember": 0.463,
+      "notify": 0.449,
+      "query": 0.449
+    },
+    "num_candidates": 20,
+    "top_tool": "embed",
+    "top_relevance": 0.0675467,
+    "top3": [
+      {
+        "name": "embed",
+        "score": 0.0675467
+      },
+      {
+        "name": "semantic_search",
+        "score": 0.04885778
+      },
+      {
+        "name": "semantic_search_beliefs",
+        "score": 0.04813677
+      }
+    ],
+    "search_ms": 535.9139442443848,
+    "rerank_ms": 399.48487281799316,
+    "classify_ms": 1561.0380172729492
+  },
+  {
+    "task": "Research Go concurrency patterns for high-throughput trading systems",
+    "intent": "research",
+    "intent_confidence": 0.615088093628905,
+    "all_intents": {
+      "research": 0.615,
+      "query": 0.593,
+      "manage": 0.582,
+      "transform": 0.571,
+      "analyze": 0.538,
+      "publish": 0.534,
+      "remember": 0.495,
+      "notify": 0.458
+    },
+    "num_candidates": 20,
+    "top_tool": "PLUS_DM",
+    "top_relevance": 0.10818896,
+    "top3": [
+      {
+        "name": "PLUS_DM",
+        "score": 0.10818896
+      },
+      {
+        "name": "ULTOSC",
+        "score": 0.1066906
+      },
+      {
+        "name": "HT_TRENDLINE",
+        "score": 0.10230471
+      }
+    ],
+    "search_ms": 544.1110134124756,
+    "rerank_ms": 658.5710048675537,
+    "classify_ms": 1403.6409854888916
+  },
+  {
+    "task": "Get the latest Modal GPU pricing for T4 vs A10G instances",
+    "intent": "transform",
+    "intent_confidence": 0.5730258362038325,
+    "all_intents": {
+      "transform": 0.573,
+      "analyze": 0.559,
+      "manage": 0.548,
+      "query": 0.546,
+      "research": 0.512,
+      "publish": 0.507,
+      "remember": 0.496,
+      "notify": 0.432
+    },
+    "num_candidates": 20,
+    "top_tool": "GLOBAL_QUOTE",
+    "top_relevance": 0.05419872,
+    "top3": [
+      {
+        "name": "GLOBAL_QUOTE",
+        "score": 0.05419872
+      },
+      {
+        "name": "MIDPRICE",
+        "score": 0.05108274
+      },
+      {
+        "name": "ULTOSC",
+        "score": 0.04742587
+      }
+    ],
+    "search_ms": 749.636173248291,
+    "rerank_ms": 1891.631841659546,
+    "classify_ms": 2449.805974960327
+  },
+  {
+    "task": "Search for recent advances in neuromorphic computing architectures",
+    "intent": "research",
+    "intent_confidence": 0.6411067167269701,
+    "all_intents": {
+      "research": 0.641,
+      "transform": 0.561,
+      "manage": 0.546,
+      "analyze": 0.533,
+      "remember": 0.517,
+      "notify": 0.493,
+      "publish": 0.472,
+      "query": 0.469
+    },
+    "num_candidates": 20,
+    "top_tool": "search",
+    "top_relevance": 0.07807817,
+    "top3": [
+      {
+        "name": "search",
+        "score": 0.07807817
+      },
+      {
+        "name": "search_all",
+        "score": 0.06954174
+      },
+      {
+        "name": "semantic_search",
+        "score": 0.06465349
+      }
+    ],
+    "search_ms": 1003.1518936157227,
+    "rerank_ms": 591.2308692932129,
+    "classify_ms": 1400.5839824676514
+  },
+  {
+    "task": "Search for recent zero-day vulnerabilities in cloud infrastructure",
+    "intent": "query",
+    "intent_confidence": 0.5413653168318837,
+    "all_intents": {
+      "query": 0.541,
+      "research": 0.54,
+      "analyze": 0.535,
+      "manage": 0.522,
+      "transform": 0.513,
+      "publish": 0.489,
+      "remember": 0.489,
+      "notify": 0.487
+    },
+    "num_candidates": 20,
+    "top_tool": "list_events",
+    "top_relevance": 0.06560484,
+    "top3": [
+      {
+        "name": "list_events",
+        "score": 0.06560484
+      },
+      {
+        "name": "search_all",
+        "score": 0.05033063
+      },
+      {
+        "name": "find_all",
+        "score": 0.04023794
+      }
+    ],
+    "search_ms": 534.9628925323486,
+    "rerank_ms": 678.8642406463623,
+    "classify_ms": 1257.0109367370605
+  },
+  {
+    "task": "Compare data center power usage effectiveness across providers",
+    "intent": "manage",
+    "intent_confidence": 0.5535741281036048,
+    "all_intents": {
+      "manage": 0.554,
+      "transform": 0.545,
+      "analyze": 0.544,
+      "query": 0.542,
+      "research": 0.537,
+      "remember": 0.481,
+      "publish": 0.465,
+      "notify": 0.404
+    },
+    "num_candidates": 20,
+    "top_tool": "MIDPOINT",
+    "top_relevance": 0.05500529,
+    "top3": [
+      {
+        "name": "MIDPOINT",
+        "score": 0.05500529
+      },
+      {
+        "name": "get_memory_stats",
+        "score": 0.04958903
+      },
+      {
+        "name": "BOP",
+        "score": 0.0433658
+      }
+    ],
+    "search_ms": 652.7948379516602,
+    "rerank_ms": 1434.3841075897217,
+    "classify_ms": 1432.6348304748535
+  },
+  {
+    "task": "Get AAPL stock price and options chain for next month expiry",
+    "intent": "query",
+    "intent_confidence": 0.6031196400262102,
+    "all_intents": {
+      "query": 0.603,
+      "analyze": 0.571,
+      "manage": 0.557,
+      "remember": 0.538,
+      "transform": 0.516,
+      "research": 0.516,
+      "publish": 0.476,
+      "notify": 0.46
+    },
+    "num_candidates": 20,
+    "top_tool": "TIME_SERIES_MONTHLY",
+    "top_relevance": 0.17895588,
+    "top3": [
+      {
+        "name": "TIME_SERIES_MONTHLY",
+        "score": 0.17895588
+      },
+      {
+        "name": "TIME_SERIES_DAILY",
+        "score": 0.16559312
+      },
+      {
+        "name": "REALTIME_OPTIONS",
+        "score": 0.16026603
+      }
+    ],
+    "search_ms": 600.3689765930176,
+    "rerank_ms": 537.3728275299072,
+    "classify_ms": 1347.961187362671
+  },
+  {
+    "task": "Find the latest CMBS issuance statistics for 2026",
+    "intent": "query",
+    "intent_confidence": 0.546086135241564,
+    "all_intents": {
+      "query": 0.546,
+      "manage": 0.521,
+      "publish": 0.517,
+      "research": 0.513,
+      "transform": 0.504,
+      "remember": 0.497,
+      "analyze": 0.492,
+      "notify": 0.426
+    },
+    "num_candidates": 20,
+    "top_tool": "CCI",
+    "top_relevance": 0.04535258,
+    "top3": [
+      {
+        "name": "CCI",
+        "score": 0.04535258
+      },
+      {
+        "name": "IPO_CALENDAR",
+        "score": 0.04208773
+      },
+      {
+        "name": "LISTING_STATUS",
+        "score": 0.03904829
+      }
+    ],
+    "search_ms": 547.8789806365967,
+    "rerank_ms": 407.4869155883789,
+    "classify_ms": 1330.651044845581
+  },
+  {
+    "task": "Research RLHF vs DPO training methods for reward models",
+    "intent": "research",
+    "intent_confidence": 0.6424756746782996,
+    "all_intents": {
+      "research": 0.642,
+      "manage": 0.591,
+      "transform": 0.553,
+      "remember": 0.538,
+      "analyze": 0.524,
+      "query": 0.509,
+      "publish": 0.5,
+      "notify": 0.484
+    },
+    "num_candidates": 20,
+    "top_tool": "PLUS_DM",
+    "top_relevance": 0.04813677,
+    "top3": [
+      {
+        "name": "PLUS_DM",
+        "score": 0.04813677
+      },
+      {
+        "name": "PPO",
+        "score": 0.0433658
+      },
+      {
+        "name": "STOCHF",
+        "score": 0.04208773
+      }
+    ],
+    "search_ms": 556.7359924316406,
+    "rerank_ms": 546.3590621948242,
+    "classify_ms": 1401.244878768921
+  }
+]

@@ -11,6 +11,7 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -105,6 +106,109 @@ NATIVE_MCPS = {
             "focus", "recall", "consolidate", "learn_skill", "query_beliefs", "cognitive_architecture"
         ],
         env_vars={"MEMORY_DATA_DIR": os.getenv("MEMORY_DATA_DIR", "data/memory")},
+    ),
+    "distributed-video-qa": NativeMCPConfig(
+        id="distributed-video-qa",
+        name="Distributed Video QA MCP",
+        module="native.distributed_video_qa.server",
+        port=int(os.getenv("VIDEO_QA_MCP_PORT", "4005")),
+        capabilities=[
+            "video_processing", "transcription", "video_qa", "video_search",
+            "summarization", "chaptering", "entity_extraction", "moment_finding",
+            "collection_qa", "video_comparison", "notes_export",
+        ],
+        env_vars={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "")},
+    ),
+    "distributed-document-qa": NativeMCPConfig(
+        id="distributed-document-qa",
+        name="Distributed Document QA MCP",
+        module="native.distributed_document_qa.server",
+        port=int(os.getenv("DOCUMENT_QA_MCP_PORT", "4006")),
+        capabilities=[
+            "document_processing", "document_qa", "document_search",
+            "text_extraction", "table_extraction", "figure_extraction",
+            "summarization", "metadata_extraction", "document_comparison",
+        ],
+        env_vars={"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "")},
+    ),
+    "distributed-dsco-bridge": NativeMCPConfig(
+        id="distributed-dsco-bridge",
+        name="Distributed Dsco Bridge MCP",
+        module="native.distributed_dsco_bridge.server",
+        port=int(os.getenv("DSCO_BRIDGE_MCP_PORT", "4007")),
+        capabilities=["execute", "task", "metrics", "pipeline", "shell", "code_execution"],
+        env_vars={
+            "DSCO_SHELL_URL": os.getenv("DSCO_SHELL_URL", "http://localhost:8000"),
+            "DSCO_CODE_URL": os.getenv("DSCO_CODE_URL", "http://localhost:8001"),
+            "DSCO_ORCH_URL": os.getenv("DSCO_ORCH_URL", "http://localhost:2050"),
+            "DSCO_ANALYTICS_URL": os.getenv("DSCO_ANALYTICS_URL", "http://localhost:2060"),
+        },
+    ),
+    "unit-fabric": NativeMCPConfig(
+        id="unit-fabric",
+        name="Unit Fabric MCP",
+        module="native.unit_fabric.server",
+        port=int(os.getenv("UNIT_FABRIC_MCP_PORT", "4008")),
+        capabilities=["unit", "agent", "team", "org", "work_graph", "ledger", "economics"],
+        env_vars={"REGISTRY_URL": os.getenv("REGISTRY_URL", "http://localhost:2016")},
+    ),
+    "finance-fabric": NativeMCPConfig(
+        id="finance-fabric",
+        name="Finance Fabric MCP",
+        module="native.finance_fabric.server",
+        port=int(os.getenv("FINANCE_FABRIC_MCP_PORT", "4009")),
+        capabilities=[
+            "banking", "payments", "ach", "wire", "brokerage",
+            "market_data", "crypto", "fx", "ledger", "finance",
+        ],
+        env_vars={
+            "REGISTRY_URL": os.getenv("REGISTRY_URL", "http://localhost:2016"),
+            "PLAID_CLIENT_ID": os.getenv("PLAID_CLIENT_ID", ""),
+            "PLAID_SECRET": os.getenv("PLAID_SECRET", ""),
+            "PLAID_ENV": os.getenv("PLAID_ENV", "sandbox"),
+            "STRIPE_API_KEY": os.getenv("STRIPE_API_KEY", ""),
+            "ALPACA_API_KEY": os.getenv("ALPACA_API_KEY", ""),
+            "ALPACA_API_SECRET": os.getenv("ALPACA_API_SECRET", ""),
+            "ALPACA_BASE_URL": os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"),
+            "COINBASE_API_KEY": os.getenv("COINBASE_API_KEY", ""),
+            "COINBASE_API_SECRET": os.getenv("COINBASE_API_SECRET", ""),
+        },
+    ),
+    "integration-fabric": NativeMCPConfig(
+        id="integration-fabric",
+        name="Integration Fabric MCP",
+        module="native.integration_fabric.server",
+        port=int(os.getenv("INTEGRATION_FABRIC_MCP_PORT", "4010")),
+        capabilities=[
+            "integration", "saas", "api", "communication", "email", "crm",
+            "support", "project", "docs", "storage", "vcs", "ci", "cloud",
+            "monitoring", "incident", "ecommerce", "social", "ai",
+        ],
+        env_vars={"REGISTRY_URL": os.getenv("REGISTRY_URL", "http://localhost:2016")},
+    ),
+    "distributed-timeline": NativeMCPConfig(
+        id="distributed-timeline",
+        name="Distributed Timeline MCP",
+        module="native.timeline_mcp.server",
+        port=int(os.getenv("TIMELINE_MCP_PORT", "4012")),
+        capabilities=[
+            "timeline", "temporal_search", "multimodal_embeddings",
+            "image_embeddings", "scheduling", "ingestion",
+        ],
+        env_vars={"JINA_API_KEY": os.getenv("JINA_API_KEY", "")},
+    ),
+    "codex-apps-mcp": NativeMCPConfig(
+        id="codex-apps-mcp",
+        name="Codex Apps MCP",
+        module="native.codex_apps_mcp.server",
+        port=int(os.getenv("CODEX_APPS_MCP_PORT", "4011")),
+        capabilities=["codex_apps", "connector_catalog", "connector_activation"],
+        env_vars={
+            "TOOLMANAGEMENT_API_URL": os.getenv("TOOLMANAGEMENT_API_URL", "http://localhost:2016"),
+            "TOOLMANAGEMENT_BEARER_TOKEN": os.getenv(
+                "TOOLMANAGEMENT_BEARER_TOKEN", os.getenv("DEFAULT_BEARER_TOKEN", "")
+            ),
+        },
     ),
 }
 
@@ -276,8 +380,20 @@ class NativeMCPManager:
         self._running = True
         self._client = httpx.AsyncClient(timeout=30.0)
 
+        # Services the supervisor owns independently are excluded here so the
+        # registry never starts/restarts them (avoids cascading restarts).
+        excluded = {
+            s.strip()
+            for s in os.environ.get("NATIVE_MCP_EXCLUDE", "").split(",")
+            if s.strip()
+        }
+        if excluded:
+            logger.info(f"NATIVE_MCP_EXCLUDE active, skipping: {sorted(excluded)}")
+
         # Initialize server states
         for mcp_id, config in NATIVE_MCPS.items():
+            if mcp_id in excluded:
+                continue
             self.servers[mcp_id] = NativeMCPState(config=config)
 
         # Start all native MCPs
@@ -286,6 +402,9 @@ class NativeMCPManager:
 
         # Start health monitoring
         self._health_task = asyncio.create_task(self._health_monitor_loop())
+
+        # Register atexit handler so child processes are cleaned up on exit
+        atexit.register(self._sync_cleanup)
 
         logger.info(f"Native MCP Manager started with {len(self.servers)} servers")
 
@@ -311,6 +430,19 @@ class NativeMCPManager:
             await self._client.aclose()
 
         logger.info("Native MCP Manager stopped")
+
+    def _sync_cleanup(self):
+        """Synchronous cleanup for atexit — kill all child processes."""
+        for mcp_id, state in self.servers.items():
+            if state.process and state.process.poll() is None:
+                try:
+                    state.process.terminate()
+                    state.process.wait(timeout=5.0)
+                except Exception:
+                    try:
+                        state.process.kill()
+                    except Exception:
+                        pass
 
     async def start_server(self, mcp_id: str) -> bool:
         """Start a specific native MCP server."""

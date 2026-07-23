@@ -379,7 +379,7 @@ class SwarmController:
                 if row[4]:
                     try:
                         payload = json.loads(row[4])
-                    except:
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         payload = {}
 
                 directive = SwarmDirective(
@@ -544,7 +544,7 @@ Respond with JSON: {{"action": "...", "params": {{}}, "reasoning": "..."}}
                     )
 
                     return decision
-            except:
+            except Exception:
                 pass
 
         return None

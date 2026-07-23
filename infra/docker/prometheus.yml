@@ -1,0 +1,62 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Engine service
+  - job_name: 'engine'
+    static_configs:
+      - targets: ['engine:8000']
+    metrics_path: '/metrics'
+
+  # Completions service
+  - job_name: 'completions'
+    static_configs:
+      - targets: ['completions:8001']
+    metrics_path: '/metrics'
+
+  # Conversations service
+  - job_name: 'conversations'
+    static_configs:
+      - targets: ['conversations:8002']
+    metrics_path: '/metrics'
+
+  # ToolManagement service
+  - job_name: 'tool-management'
+    static_configs:
+      - targets: ['tool-management:8003']
+    metrics_path: '/metrics'
+
+  # TaskScheduler service
+  - job_name: 'task-scheduler'
+    static_configs:
+      - targets: ['task-scheduler:8004']
+    metrics_path: '/metrics'
+
+  # GraphManagement service
+  - job_name: 'graph-management'
+    static_configs:
+      - targets: ['graph-management:8005']
+    metrics_path: '/metrics'
+
+  # DynamicSchema service
+  - job_name: 'dynamic-schema'
+    static_configs:
+      - targets: ['dynamic-schema:8006']
+    metrics_path: '/metrics'
+
+  # Temporal server
+  - job_name: 'temporal'
+    static_configs:
+      - targets: ['temporal:6933']
+    metrics_path: '/metrics'
+
+  # Redis (via redis_exporter if available)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']

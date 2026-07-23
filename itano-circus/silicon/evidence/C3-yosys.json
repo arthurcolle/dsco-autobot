@@ -1,0 +1,29 @@
+{
+  "gate": "C3",
+  "status": "PASS",
+  "contract": "ACX-DOT8-R1",
+  "generated_at": "2026-07-19T23:29:38.937037+00:00",
+  "tool": {
+    "name": "Yosys",
+    "version": "Yosys 0.67+post (git sha1 b8e7da6f40ae8f552c116bf6c359b07c6533e159, Release, AppleClang clang++ 21.0.0.21000099)",
+    "path": "/opt/homebrew/bin/yosys"
+  },
+  "source_sha256": {
+    "silicon/rtl/acx_dot8.sv": "c122dd3b6a1f548bde884b451d37e4297de50db0c1b36d8d8e148c6a48e6ff8f"
+  },
+  "top_module": "acx_dot8",
+  "problems": 0,
+  "generic_rtlil": {
+    "wires": 23,
+    "wire_bits": 676,
+    "cells": 17,
+    "cell_types": {
+      "$add": 7,
+      "$adff": 1,
+      "$adffe": 1,
+      "$mul": 8
+    }
+  },
+  "result": "PASS GENERIC SYNTHESIS",
+  "scope": "Technology-independent RTLIL elaboration and structural checks only; no standard-cell mapping, PDK area, timing, power, DFT, place/route, or signoff claim."
+}

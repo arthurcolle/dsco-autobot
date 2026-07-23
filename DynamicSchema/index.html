@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Extraction Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <h1>Dynamic Extraction Dashboard</h1>
+    <div>
+        <h2>Extraction Results</h2>
+        <canvas id="extractionChart" width="400" height="200"></canvas>
+    </div>
+    <div>
+        <h2>Schema Inference Results</h2>
+        <canvas id="inferenceChart" width="400" height="200"></canvas>
+    </div>
+    <script>
+        const socket = io();
+        const extractionCtx = document.getElementById('extractionChart').getContext('2d');
+        const inferenceCtx = document.getElementById('inferenceChart').getContext('2d');
+        
+        let extractionChart = new Chart(extractionCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: '# of Extractions',
+                    data: [],
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        let inferenceChart = new Chart(inferenceCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: '# of Inferences',
+                    data: [],
+                    backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                    borderColor: 'rgba(153, 102, 255, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        socket.on('extraction_update', function(data) {
+            updateChart(extractionChart, data);
+        });
+
+        socket.on('inference_update', function(data) {
+            updateChart(inferenceChart, data);
+        });
+
+        function updateChart(chart, data) {
+            chart.data.labels = data.labels;
+            chart.data.datasets[0].data = data.values;
+            chart.update();
+        }
+    </script>
+</body>
+</html>

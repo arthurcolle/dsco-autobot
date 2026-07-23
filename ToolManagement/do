@@ -2,313 +2,2023 @@
 set -euo pipefail
 
 DEFAULT_API_URL="https://tools.distributed.systems"
-DEFAULT_USE_CASE="market_intel_compound_briefing"
-DEFAULT_OBJECTIVE="Generate a daily strategic market brief"
-
 API_URL="${TOOLS_API_URL:-${TOOL_MANAGEMENT_API_URL:-$DEFAULT_API_URL}}"
-USE_CASE="${DO_USE_CASE:-$DEFAULT_USE_CASE}"
 TOKEN="${TOOLS_API_TOKEN:-${AUTH_TOKEN:-}}"
-MAX_TOTAL_COST_CENTS="${DO_MAX_TOTAL_COST_CENTS:-}"
-MAX_REINTEGRATION_COST="${DO_MAX_REINTEGRATION_COST:-}"
+
+REQUEST_TIMEOUT="${TOOLS_API_TIMEOUT:-20}"
+REQUEST_RETRIES="${TOOLS_API_RETRY:-1}"
+VERBOSE=0
+RAW=0
+JQ_FILTER=""
+PROFILE="${DO_PROFILE:-}"
+
+load_profile() {
+  local name="$1"
+  local file="$HOME/.config/do/${name}.env"
+  if [[ ! -f "$file" ]]; then
+    echo "Profile not found: $file" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$file"
+  API_URL="${TOOLS_API_URL:-${TOOL_MANAGEMENT_API_URL:-$API_URL}}"
+  TOKEN="${TOOLS_API_TOKEN:-${AUTH_TOKEN:-$TOKEN}}"
+  REQUEST_TIMEOUT="${TOOLS_API_TIMEOUT:-$REQUEST_TIMEOUT}"
+  REQUEST_RETRIES="${TOOLS_API_RETRY:-$REQUEST_RETRIES}"
+}
 
 usage() {
   cat <<USAGE
 Usage:
   ./do health
-  ./do list
-  ./do run "<objective>" [--use-case <id>] [--url <api_url>] [--token <bearer>] [--max-total-cost <cents>] [--max-reintegration-cost <cost>]
-  ./do plan "<objective>" [same flags as run]
-  ./do "<objective>"   # shorthand for run
+  ./do doctor
+  ./do tools
+  ./do search "<query>" [--limit <n>] [--backend <id>]
+  ./do describe <tool>
+  ./do exec <tool> [key=val ...]
+  ./do batch <tool1> k=v -- <tool2> k=v ...
+  ./do pipe <tool1> k=v -- <tool2> ... [--in k=v ...] [--stream]
+  ./do fork <tool1> k=v -- <tool2> ... [--join merge|array|first] [--stream]
+  ./do map <tool> --items <json|@file|-> [key=val ...]
+  ./do reduce <tool> --items <json|@file|-> [--initial <json>] [key=val ...]
+  ./do filter <predicate_tool> --items <json|@file|-> [key=val ...]
+  ./do patterns
+  ./do job submit <tool> [key=val ...] [--priority p0..p3] [--follow]
+  ./do job status|watch|cancel <job_id>
+  ./do job list [--status <s>] [--limit <n>]
+  ./do analytics [overview|usage|failures|jobs|orchestration]
+  ./do recommend "<objective>" [--intent <intent>] [--max-steps <n>] [key=val ...]
+  ./do use-cases [query] [--domain <domain>] [--limit <n>] [--economic-only]
+  ./do plan "<objective>" [--use-case <id>] [--template <name>] [key=val ...]
+  ./do run "<objective>" [--intent <intent>] [--strategy <strategy>] [--use-case-first]
+  ./do completion bash|zsh
 
-Defaults:
-  API URL:   ${DEFAULT_API_URL}
-  Use case:  ${DEFAULT_USE_CASE}
+Global options:
+  --url <api_url>       Override API URL (default: $DEFAULT_API_URL)
+  --token <bearer>      Set auth bearer token
+  --profile <name>      Source ~/.config/do/<name>.env before running
+  --timeout <seconds>   Default request timeout (default: ${REQUEST_TIMEOUT})
+  --retry <count>       Retry count for transient errors (default: ${REQUEST_RETRIES})
+  --jq <filter>         Filter successful JSON responses through jq
+  --verbose             Print request/retry diagnostics to stderr
+  --raw                 Print raw response body (no JSON pretty-print)
+  -h, --help            Show this help
 
 Env overrides:
   TOOLS_API_URL / TOOL_MANAGEMENT_API_URL
   TOOLS_API_TOKEN / AUTH_TOKEN
-  DO_USE_CASE
-  DO_MAX_TOTAL_COST_CENTS
-  DO_MAX_REINTEGRATION_COST
+  TOOLS_API_TIMEOUT
+  TOOLS_API_RETRY
+  DO_PROFILE
 
-Notes:
-  - Tries /api/v1/use-cases/* first.
-  - If deployed API is older, it auto-falls back to /api/v1/execute*.
+Examples:
+  ./do doctor
+  ./do search "semantic embeddings" --limit 5
+  ./do describe add
+  ./do exec add a=2 b=3
+  ./do batch add a=1 b=2 -- multiply a=3 b=4 -- uppercase text=hello
+  ./do pipe search query=agents -- summarize --stream
+  ./do fork search query=llms -- news topic=llms --join array
+  ./do map uppercase --items '["alpha","beta","gamma"]'
+  ./do job submit deep_research query="agent economics" --priority p0 --follow
+  ./do job list --status running
+  ./do analytics jobs
+  ./do run "research AI startup landscape" --strategy parallel --use-case-first
+  ./do run "quick check" --jq '.results[0].result'
 USAGE
 }
 
-pretty_print_json() {
-  if command -v jq >/dev/null 2>&1; then
-    jq .
-  else
-    python -m json.tool 2>/dev/null || cat
+log() {
+  if [[ "$VERBOSE" == "1" ]]; then
+    printf '[do] %s\n' "$*" >&2
   fi
 }
 
-is_success_status() {
-  [[ "$1" =~ ^2[0-9][0-9]$ ]]
+pretty_json() {
+  if command -v jq >/dev/null 2>&1; then
+    jq .
+  else
+    python3 -m json.tool 2>/dev/null || cat
+  fi
+}
+
+print_body_stdout() {
+  if [[ -n "$JQ_FILTER" ]]; then
+    printf '%s\n' "$API_BODY" | jq "$JQ_FILTER"
+  elif [[ "$RAW" == "1" ]]; then
+    printf '%s\n' "$API_BODY"
+  else
+    printf '%s\n' "$API_BODY" | pretty_json
+  fi
+}
+
+print_body_stderr() {
+  if [[ "$RAW" == "1" ]]; then
+    printf '%s\n' "$API_BODY" >&2
+  else
+    printf '%s\n' "$API_BODY" | pretty_json >&2
+  fi
 }
 
 API_STATUS=""
 API_BODY=""
-API_CURL_ERROR=""
+API_ERROR=""
+DISCOVER_USE_CASE_PATH=""
+DISCOVERED_USE_CASE_ID=""
 
+# call_api METHOD PATH [BODY] [TIMEOUT_SECONDS]
 call_api() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
+  local timeout="${4:-$REQUEST_TIMEOUT}"
 
-  local -a curl_args
-  curl_args=(
-    -sS
-    --connect-timeout 5
-    --max-time 20
-    -X "$method"
-    "$API_URL$path"
-    -H "content-type: application/json"
-  )
+  local max_attempts=$((REQUEST_RETRIES + 1))
+  local attempt rc retryable sleep_seconds
 
-  if [[ -n "$TOKEN" ]]; then
-    curl_args+=( -H "authorization: Bearer $TOKEN" )
+  API_STATUS=""
+  API_BODY=""
+  API_ERROR=""
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    log "HTTP ${method} ${path} (attempt ${attempt}/${max_attempts}, timeout=${timeout}s)"
+
+    local -a args=(
+      -sS --connect-timeout 5 --max-time "$timeout"
+      -X "$method" "$API_URL$path"
+      -H "content-type: application/json"
+    )
+    [[ -n "$TOKEN" ]] && args+=(-H "authorization: Bearer $TOKEN")
+    [[ -n "$body" ]] && args+=(-d "$body")
+
+    local tmp err
+    tmp="$(mktemp)"
+    err="$(mktemp)"
+
+    set +e
+    API_STATUS="$(curl "${args[@]}" -o "$tmp" -w "%{http_code}" 2>"$err")"
+    rc=$?
+    set -e
+
+    API_BODY="$(cat "$tmp")"
+    API_ERROR="$(cat "$err")"
+    rm -f "$tmp" "$err"
+
+    if [[ $rc -ne 0 && -z "$API_BODY" ]]; then
+      API_STATUS="000"
+      API_BODY='{"error":"Connection failed or timed out"}'
+    fi
+
+    retryable=0
+    if (( attempt < max_attempts )); then
+      if [[ $rc -ne 0 ]]; then
+        retryable=1
+      elif [[ "$API_STATUS" == "429" || "$API_STATUS" =~ ^5[0-9][0-9]$ ]]; then
+        retryable=1
+      fi
+    fi
+
+    if (( retryable == 1 )); then
+      sleep_seconds=$((attempt < 8 ? attempt : 8))
+      log "Transient failure (status=${API_STATUS}); retrying in ${sleep_seconds}s"
+      sleep "$sleep_seconds"
+      continue
+    fi
+
+    return 0
+  done
+}
+
+die_api() {
+  local path="$1"
+  echo "HTTP ${API_STATUS:-000} from $API_URL$path" >&2
+  if [[ "$VERBOSE" == "1" && -n "$API_ERROR" ]]; then
+    echo "$API_ERROR" >&2
   fi
+  [[ -n "$API_BODY" ]] && print_body_stderr
+  exit 1
+}
 
-  if [[ -n "$body" ]]; then
-    curl_args+=( -d "$body" )
-  fi
-
-  local tmp_body tmp_err rc
-  tmp_body="$(mktemp)"
-  tmp_err="$(mktemp)"
-  set +e
-  API_STATUS="$(curl "${curl_args[@]}" -o "$tmp_body" -w "%{http_code}" 2>"$tmp_err")"
-  rc=$?
-  set -e
-
-  API_BODY="$(cat "$tmp_body")"
-  API_CURL_ERROR="$(cat "$tmp_err")"
-  rm -f "$tmp_body" "$tmp_err"
-
-  if [[ $rc -ne 0 && -z "$API_BODY" ]]; then
-    API_BODY="{\"error\":\"${API_CURL_ERROR//\"/\\\"}\"}"
+ok_or_die() {
+  local path="$1"
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    print_body_stdout
+  else
+    die_api "$path"
   fi
 }
 
-print_api_or_error() {
+urlencode() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import quote
+print(quote(sys.argv[1]))
+PY
+}
+
+# sse_stream METHOD PATH [BODY] — stream SSE events, pretty-printing each data payload.
+# Returns curl's exit code; caller decides whether to fall back.
+sse_stream() {
   local method="$1"
   local path="$2"
-  local status="$API_STATUS"
+  local body="${3:-}"
 
-  if is_success_status "$status"; then
-    if [[ -n "$API_BODY" ]]; then
-      printf '%s\n' "$API_BODY" | pretty_print_json
+  local -a args=(
+    -N -sS --connect-timeout 5
+    -X "$method" "$API_URL$path"
+    -H "accept: text/event-stream"
+    -H "content-type: application/json"
+  )
+  [[ -n "$TOKEN" ]] && args+=(-H "authorization: Bearer $TOKEN")
+  [[ -n "$body" ]] && args+=(-d "$body")
+
+  log "SSE ${method} ${path}"
+  local rc=0
+  set +e
+  curl "${args[@]}" | python3 -u -c '
+import json, sys
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line.startswith("data:"):
+        continue
+    payload = line[5:].strip()
+    if not payload:
+        continue
+    try:
+        event = json.loads(payload)
+    except Exception:
+        print(payload, flush=True)
+        continue
+    etype = event.get("event_type") or event.get("type") or event.get("event") or "event"
+    compact = {k: v for k, v in event.items()
+               if k not in ("event_type", "type", "event") and v not in (None, "", [], {})}
+    print(f"[{etype}] " + json.dumps(compact, default=str), flush=True)
+'
+  rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+# parse_tool_groups "$@" — split "tool k=v k=v -- tool2 k=v" argv into
+# {"tools": [...], "arguments": [{...}, ...]} with JSON-coerced values.
+parse_tool_groups() {
+  python3 -c "
+import json, sys
+
+groups, current = [], []
+for tok in sys.argv[1:]:
+    if tok == '--':
+        if current:
+            groups.append(current)
+        current = []
+    else:
+        current.append(tok)
+if current:
+    groups.append(current)
+
+if not groups:
+    print('No tools given', file=sys.stderr)
+    sys.exit(1)
+
+def coerce(raw):
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        for cast in (int, float):
+            try:
+                return cast(raw)
+            except ValueError:
+                pass
+        return raw
+
+tools, arguments = [], []
+for g in groups:
+    tools.append(g[0])
+    inputs = {}
+    for arg in g[1:]:
+        if '=' not in arg:
+            print(f'Bad arg (expected key=val): {arg}', file=sys.stderr)
+            sys.exit(1)
+        k, v = arg.split('=', 1)
+        inputs[k] = coerce(v)
+    arguments.append(inputs)
+
+print(json.dumps({'tools': tools, 'arguments': arguments}))
+" "$@"
+}
+
+# resolve_items SPEC — accept an inline JSON array, @file, or '-' for stdin.
+resolve_items() {
+  local spec="$1"
+  local raw
+  if [[ "$spec" == "-" ]]; then
+    raw="$(cat)"
+  elif [[ "$spec" == @* ]]; then
+    raw="$(cat "${spec:1}")"
+  else
+    raw="$spec"
+  fi
+  python3 - "$raw" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1].strip()
+try:
+    items = json.loads(raw)
+except Exception:
+    # Fall back: newline-separated plain values
+    items = [line for line in raw.splitlines() if line.strip()]
+if not isinstance(items, list):
+    items = [items]
+print(json.dumps(items))
+PY
+}
+
+infer_intent() {
+  python3 - "$1" <<'PY'
+import sys
+obj = sys.argv[1].lower()
+if any(w in obj for w in ['remember', 'save', 'store', 'note']):
+    print('remember')
+elif any(w in obj for w in ['notify', 'publish', 'post', 'send']):
+    print('publish')
+elif any(w in obj for w in ['transform', 'convert', 'change', 'add', 'subtract', 'multiply', 'divide', 'uppercase', 'lowercase']):
+    print('transform')
+elif any(w in obj for w in ['analyze', 'count', 'compare', 'check', 'summarize', 'synthesize']):
+    print('analyze')
+else:
+    print('research')
+PY
+}
+
+json_map_from_kv() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+values = {}
+for arg in sys.argv[1:]:
+    if '=' not in arg:
+        print(f"Bad arg (expected key=val): {arg}", file=sys.stderr)
+        sys.exit(1)
+    key, raw = arg.split('=', 1)
+    if not key:
+        print(f"Bad arg (empty key): {arg}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        try:
+            value = int(raw)
+        except ValueError:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = raw
+
+    values[key] = value
+
+print(json.dumps(values))
+PY
+}
+
+build_inputs_json() {
+  local map_json
+  map_json="$(json_map_from_kv "$@")"
+  python3 - "$map_json" <<'PY'
+import json
+import sys
+print(json.dumps({"inputs": json.loads(sys.argv[1])}))
+PY
+}
+
+extract_first_use_case_id() {
+  python3 - <<'PY'
+import json
+import sys
+
+try:
+    payload = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    print("", end="")
+    raise SystemExit(0)
+
+use_cases = payload.get("use_cases")
+if isinstance(use_cases, list) and use_cases and isinstance(use_cases[0], dict):
+    print(str(use_cases[0].get("use_case_id") or ""), end="")
+else:
+    print("", end="")
+PY
+}
+
+discover_use_case() {
+  local objective="$1"
+  local domain="${2:-}"
+  local limit="${3:-5}"
+  DISCOVERED_USE_CASE_ID=""
+
+  local path="/api/v1/use-cases?limit=${limit}&q=$(urlencode "$objective")"
+  if [[ -n "$domain" ]]; then
+    path+="&domain=$(urlencode "$domain")"
+  fi
+  DISCOVER_USE_CASE_PATH="$path"
+
+  call_api GET "$path"
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    DISCOVERED_USE_CASE_ID="$(printf '%s' "$API_BODY" | extract_first_use_case_id)"
+    if [[ -n "$DISCOVERED_USE_CASE_ID" ]]; then
+      return 0
     fi
-    return 0
   fi
 
-  echo "HTTP ${status:-000} from $API_URL$path" >&2
-  if [[ -n "$API_BODY" ]]; then
-    printf '%s\n' "$API_BODY" | pretty_print_json >&2
-  elif [[ -n "$API_CURL_ERROR" ]]; then
-    printf '%s\n' "$API_CURL_ERROR" >&2
+  if [[ "$API_STATUS" == "401" || "$API_STATUS" == "403" ]]; then
+    return 2
   fi
-  if [[ "${status:-000}" == "000" ]]; then
-    echo "Hint: try --token <bearer> (or TOOLS_API_TOKEN) if your deployed API protects POST routes." >&2
-    echo "Hint: or run against local API with --url http://localhost:2016" >&2
-  fi
+
   return 1
 }
 
-build_objective_payload() {
-  local objective="$1"
-  OBJECTIVE="$objective" \
-  MAX_TOTAL_COST_CENTS="$MAX_TOTAL_COST_CENTS" \
-  MAX_REINTEGRATION_COST="$MAX_REINTEGRATION_COST" \
-  python - <<'PY'
-import json
-import os
-
-objective = os.getenv("OBJECTIVE", "").strip()
-payload = {"objective": objective}
-
-max_total = os.getenv("MAX_TOTAL_COST_CENTS", "").strip()
-if max_total:
-    payload["max_total_cost_cents"] = int(max_total)
-
-max_reintegration = os.getenv("MAX_REINTEGRATION_COST", "").strip()
-if max_reintegration:
-    payload["max_reintegration_cost"] = float(max_reintegration)
-
-print(json.dumps(payload))
-PY
+require_value_flag() {
+  local flag="$1"
+  local maybe_value="${2:-}"
+  if [[ -z "$maybe_value" ]]; then
+    echo "Missing value for ${flag}" >&2
+    exit 1
+  fi
 }
 
-build_legacy_execute_payload() {
-  local objective="$1"
-  OBJECTIVE="$objective" MAX_TOTAL_COST_CENTS="$MAX_TOTAL_COST_CENTS" python - <<'PY'
-import json
-import os
-
-payload = {
-    "tool_name": "search",
-    "arguments": {
-        "query": os.getenv("OBJECTIVE", "").strip(),
-        "num_results": 8,
-    },
-    "execution_mode": "auto",
-    "stream": False,
-}
-max_total = os.getenv("MAX_TOTAL_COST_CENTS", "").strip()
-if max_total:
-    payload["max_cost_cents"] = int(max_total)
-print(json.dumps(payload))
-PY
-}
-
-build_legacy_tools_payload() {
-  local objective="$1"
-  OBJECTIVE="$objective" python - <<'PY'
-import json
-import os
-
-payload = {
-    "tool": "search",
-    "arguments": {
-        "query": os.getenv("OBJECTIVE", "").strip(),
-        "num_results": 8,
-    },
-}
-print(json.dumps(payload))
-PY
-}
-
-if [[ $# -eq 0 ]]; then
-  usage
-  exit 1
-fi
-
-command="run"
-case "${1:-}" in
-  health|list|run|plan|execute)
-    command="$1"
-    shift
-    ;;
-  -h|--help|help)
-    usage
-    exit 0
-    ;;
-  *)
-    command="run"
-    ;;
-esac
-
-objective_parts=()
+# ── Parse global flags first ──
+args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --use-case)
-      USE_CASE="$2"
-      shift 2
-      ;;
     --url)
+      require_value_flag "$1" "${2:-}"
       API_URL="$2"
       shift 2
       ;;
     --token)
+      require_value_flag "$1" "${2:-}"
       TOKEN="$2"
       shift 2
       ;;
-    --max-total-cost)
-      MAX_TOTAL_COST_CENTS="$2"
+    --timeout)
+      require_value_flag "$1" "${2:-}"
+      REQUEST_TIMEOUT="$2"
       shift 2
       ;;
-    --max-reintegration-cost)
-      MAX_REINTEGRATION_COST="$2"
+    --retry)
+      require_value_flag "$1" "${2:-}"
+      REQUEST_RETRIES="$2"
       shift 2
+      ;;
+    --jq)
+      require_value_flag "$1" "${2:-}"
+      JQ_FILTER="$2"
+      shift 2
+      ;;
+    --profile)
+      require_value_flag "$1" "${2:-}"
+      PROFILE="$2"
+      load_profile "$PROFILE"
+      PROFILE_LOADED=1
+      shift 2
+      ;;
+    --verbose|-v)
+      VERBOSE=1
+      shift
+      ;;
+    --raw)
+      RAW=1
+      shift
       ;;
     -h|--help|help)
       usage
       exit 0
       ;;
     *)
-      objective_parts+=("$1")
+      args+=("$1")
       shift
       ;;
   esac
 done
 
+if [[ ${#args[@]} -gt 0 ]]; then
+  set -- "${args[@]}"
+else
+  set --
+fi
+
+if ! [[ "$REQUEST_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  echo "--timeout must be an integer number of seconds" >&2
+  exit 1
+fi
+if ! [[ "$REQUEST_RETRIES" =~ ^[0-9]+$ ]]; then
+  echo "--retry must be an integer >= 0" >&2
+  exit 1
+fi
+if (( REQUEST_RETRIES < 0 )); then
+  echo "--retry must be >= 0" >&2
+  exit 1
+fi
+if [[ -n "$JQ_FILTER" ]] && ! command -v jq >/dev/null 2>&1; then
+  echo "--jq requires jq to be installed" >&2
+  exit 1
+fi
+if [[ -n "$PROFILE" && -z "${PROFILE_LOADED:-}" ]]; then
+  # DO_PROFILE env var (not yet sourced via --profile flag)
+  load_profile "$PROFILE"
+fi
+PROFILE_LOADED=1
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+command="$1"
+shift
+
+# ═════════════════════════════════════════════════════════════════════
+# health
+# ═════════════════════════════════════════════════════════════════════
 if [[ "$command" == "health" ]]; then
   call_api GET "/health"
-  print_api_or_error GET "/health"
+  ok_or_die "/health"
   exit 0
 fi
 
-if [[ "$command" == "list" ]]; then
-  call_api GET "/api/v1/use-cases?limit=50"
-  if is_success_status "$API_STATUS"; then
-    print_api_or_error GET "/api/v1/use-cases?limit=50"
+# ═════════════════════════════════════════════════════════════════════
+# tools (list)
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "tools" || "$command" == "list" ]]; then
+  call_api GET "/api/v1/admin/list-tool-names"
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    print_body_stdout
     exit 0
   fi
-  if [[ "$API_STATUS" == "404" ]]; then
-    echo "Use-case catalog endpoint is not deployed yet on this API; falling back to tool list." >&2
-    call_api GET "/api/v1/tools?limit=50"
-    print_api_or_error GET "/api/v1/tools?limit=50"
-    exit 0
-  fi
-  print_api_or_error GET "/api/v1/use-cases?limit=50"
+
+  log "Falling back to /api/v1/tools?limit=200"
+  call_api GET "/api/v1/tools?limit=200"
+  ok_or_die "/api/v1/tools?limit=200"
   exit 0
 fi
 
-if [[ "$command" == "execute" ]]; then
-  command="run"
+# ═════════════════════════════════════════════════════════════════════
+# search "<query>" [--limit <n>] [--backend <id>]
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "search" ]]; then
+  limit="10"
+  backend=""
+  query_parts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit)
+        require_value_flag "$1" "${2:-}"
+        limit="$2"
+        shift 2
+        ;;
+      --backend)
+        require_value_flag "$1" "${2:-}"
+        backend="$2"
+        shift 2
+        ;;
+      *)
+        query_parts+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ ${#query_parts[@]} -eq 0 ]]; then
+    echo 'Usage: ./do search "<query>" [--limit <n>] [--backend <id>]' >&2
+    exit 1
+  fi
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    echo "--limit must be an integer" >&2
+    exit 1
+  fi
+
+  path="/api/v1/tools/search?q=$(urlencode "${query_parts[*]}")&limit=${limit}"
+  [[ -n "$backend" ]] && path+="&backend=$(urlencode "$backend")"
+
+  call_api GET "$path"
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    print_body_stdout
+    exit 0
+  fi
+
+  log "Semantic search unavailable (status=${API_STATUS}); falling back to client-side catalog filter"
+  call_api GET "/api/v1/tools?limit=500"
+  if ! [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    die_api "/api/v1/tools?limit=500"
+  fi
+
+  API_BODY="$(printf '%s' "$API_BODY" | python3 -c "
+import json, sys
+
+query = sys.argv[1].lower()
+limit = int(sys.argv[2])
+terms = [t for t in query.replace(',', ' ').split() if t]
+
+try:
+    tools = json.loads(sys.stdin.read() or '[]')
+except Exception:
+    tools = []
+if isinstance(tools, dict):
+    tools = tools.get('tools', [])
+
+def score(tool):
+    name = str(tool.get('name', '')).lower()
+    desc = str(tool.get('description', '')).lower()
+    tags = ' '.join(str(t) for t in tool.get('tags', []) or []).lower()
+    category = str(tool.get('category', '')).lower()
+    s = 0.0
+    for term in terms:
+        if term == name:
+            s += 10
+        elif term in name:
+            s += 5
+        if term in desc:
+            s += 2
+        if term in tags:
+            s += 3
+        if term in category:
+            s += 2
+    return s
+
+ranked = sorted(((score(t), t) for t in tools), key=lambda x: -x[0])
+results = [
+    {'name': t.get('name'), 'description': t.get('description'),
+     'category': t.get('category'), 'tags': t.get('tags'), 'score': s}
+    for s, t in ranked if s > 0
+][:limit]
+print(json.dumps({'query': query, 'mode': 'client_side_fallback',
+                  'count': len(results), 'results': results}))
+" "${query_parts[*]}" "$limit")"
+  print_body_stdout
+  exit 0
 fi
 
-objective="${objective_parts[*]:-}"
-if [[ -z "$objective" ]]; then
-  objective="$DEFAULT_OBJECTIVE"
+# ═════════════════════════════════════════════════════════════════════
+# describe <tool>
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "describe" || "$command" == "info" ]]; then
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: ./do describe <tool_name>" >&2
+    exit 1
+  fi
+
+  tool="$1"
+  call_api GET "/api/v1/tools/${tool}"
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    print_body_stdout
+    exit 0
+  fi
+
+  log "Direct lookup failed (status=${API_STATUS}); falling back to catalog scan"
+  call_api GET "/api/v1/tools?limit=500"
+  if ! [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    die_api "/api/v1/tools?limit=500"
+  fi
+
+  match="$(printf '%s' "$API_BODY" | python3 -c "
+import json, sys
+
+name = sys.argv[1]
+try:
+    tools = json.loads(sys.stdin.read() or '[]')
+except Exception:
+    tools = []
+if isinstance(tools, dict):
+    tools = tools.get('tools', [])
+
+for t in tools:
+    if t.get('name') == name:
+        print(json.dumps(t))
+        break
+" "$tool")"
+
+  if [[ -z "$match" ]]; then
+    echo "Tool not found: $tool" >&2
+    echo "Try: ./do search \"$tool\"" >&2
+    exit 1
+  fi
+
+  API_BODY="$match"
+  print_body_stdout
+  exit 0
 fi
 
-payload="$(build_objective_payload "$objective")"
+# ═════════════════════════════════════════════════════════════════════
+# doctor — composite connectivity/auth/capability diagnostics
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "doctor" ]]; then
+  overall=0
 
-endpoint="/api/v1/use-cases/${USE_CASE}/execute"
+  check() {
+    local label="$1"
+    local path="$2"
+    local extract="${3:-}"
+    local t0 t1 elapsed_ms detail
+
+    t0=$(python3 -c 'import time; print(int(time.time()*1000))')
+    call_api GET "$path"
+    t1=$(python3 -c 'import time; print(int(time.time()*1000))')
+    elapsed_ms=$((t1 - t0))
+
+    if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+      detail=""
+      if [[ -n "$extract" ]]; then
+        detail="$(printf '%s' "$API_BODY" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read() or '{}')
+    print($extract)
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+      fi
+      printf '  ✓ %-24s %4s  %5sms  %s\n' "$label" "$API_STATUS" "$elapsed_ms" "$detail"
+    else
+      printf '  ✗ %-24s %4s  %5sms\n' "$label" "${API_STATUS:-000}" "$elapsed_ms"
+      overall=1
+    fi
+  }
+
+  echo "do doctor — $API_URL"
+  echo
+  echo "Local environment:"
+  for dep in curl python3 jq; do
+    if command -v "$dep" >/dev/null 2>&1; then
+      printf '  ✓ %-24s %s\n' "$dep" "$(command -v "$dep")"
+    else
+      printf '  ✗ %-24s not found%s\n' "$dep" "$([[ "$dep" == "jq" ]] && echo ' (optional; used for pretty output and --jq)')"
+      [[ "$dep" != "jq" ]] && overall=1
+    fi
+  done
+  if [[ -n "$TOKEN" ]]; then
+    printf '  ✓ %-24s set (%s chars)\n' "auth token" "${#TOKEN}"
+  else
+    printf '  - %-24s not set\n' "auth token"
+  fi
+  echo
+  echo "API endpoints:"
+  check "health" "/health"
+  check "tool registry" "/api/v1/admin/list-tool-names" "f\"{len(d.get('tool_names', d.get('tools', [])))} tools\""
+  check "orchestration" "/api/v1/orchestration/health"
+  check "jobs" "/api/v1/jobs/analytics" "f\"{d.get('analytics', {}).get('totals', {}).get('executions', 0)} executions in window\""
+  check "compose patterns" "/compose/patterns" "f\"{len(d.get('patterns', []))} patterns\""
+  check "use cases" "/api/v1/use-cases?limit=1" "f\"{d.get('count', len(d.get('use_cases', [])))} available\""
+
+  echo
+  if [[ "$overall" == "0" ]]; then
+    echo "All checks passed."
+  else
+    echo "Some checks failed — inspect with --verbose or ./do <cmd> --raw." >&2
+  fi
+  exit "$overall"
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# exec <tool> [key=val ...]
+# Optional advanced controls: --mode --timeout-ms --priority
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "exec" || "$command" == "execute" ]]; then
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: ./do exec <tool_name> [key=val ...] [--mode <auto|sync|stream|job>] [--timeout-ms <ms>] [--priority <p0|p1|p2|p3>]" >&2
+    exit 1
+  fi
+
+  tool="$1"
+  shift
+
+  mode=""
+  timeout_ms=""
+  priority=""
+  kv_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode)
+        require_value_flag "$1" "${2:-}"
+        mode="$2"
+        shift 2
+        ;;
+      --timeout-ms)
+        require_value_flag "$1" "${2:-}"
+        timeout_ms="$2"
+        shift 2
+        ;;
+      --priority)
+        require_value_flag "$1" "${2:-}"
+        priority="$2"
+        shift 2
+        ;;
+      *)
+        kv_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$mode$timeout_ms$priority" ]]; then
+    payload="$(build_inputs_json "${kv_args[@]}")"
+    call_api POST "/api/v1/tools/${tool}/execute" "$payload"
+    ok_or_die "/api/v1/tools/${tool}/execute"
+    exit 0
+  fi
+
+  if [[ -n "$timeout_ms" && ! "$timeout_ms" =~ ^[0-9]+$ ]]; then
+    echo "--timeout-ms must be an integer" >&2
+    exit 1
+  fi
+
+  args_json="$(json_map_from_kv "${kv_args[@]}")"
+  payload="$(python3 - "$tool" "$args_json" "$mode" "$timeout_ms" "$priority" <<'PY'
+import json
+import sys
+
+payload = {
+    "tool_name": sys.argv[1],
+    "arguments": json.loads(sys.argv[2]),
+    "stream": False,
+}
+if sys.argv[3]:
+    payload["execution_mode"] = sys.argv[3]
+if sys.argv[4]:
+    payload["timeout_ms"] = int(sys.argv[4])
+if sys.argv[5]:
+    payload["priority"] = sys.argv[5]
+
+print(json.dumps(payload))
+PY
+)"
+
+  call_api POST "/api/v1/execute" "$payload"
+  ok_or_die "/api/v1/execute"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# batch <tool1> k=v ... -- <tool2> k=v ...
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "batch" ]]; then
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: ./do batch <tool> k=v -- <tool2> k=v ..." >&2
+    exit 1
+  fi
+
+  calls_json="$(python3 -c "
+import json, sys
+
+raw = sys.argv[1:]
+groups = []
+current = []
+for tok in raw:
+    if tok == '--':
+        if current:
+            groups.append(current)
+        current = []
+    else:
+        current.append(tok)
+if current:
+    groups.append(current)
+
+calls = []
+for g in groups:
+    tool_name = g[0]
+    inputs = {}
+    for arg in g[1:]:
+        if '=' not in arg:
+            print(f'Bad arg: {arg}', file=sys.stderr)
+            sys.exit(1)
+        k, v = arg.split('=', 1)
+        try:
+            v = json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            try:
+                v = int(v)
+            except ValueError:
+                try:
+                    v = float(v)
+                except ValueError:
+                    pass
+        inputs[k] = v
+    calls.append({'tool': tool_name, 'inputs': inputs})
+
+print(json.dumps({'calls': calls, 'parallel': True}))
+" "$@")"
+
+  call_api POST "/api/v1/batch" "$calls_json" 60
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    print_body_stdout
+    exit 0
+  fi
+
+  log "Batch endpoint unavailable; fanning out individual calls"
+  API_URL="$API_URL" TOKEN="$TOKEN" python3 -c "
+import asyncio, json, os, sys, time
+
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    import urllib.request, urllib.error
+    HAS_HTTPX = False
+
+calls = json.loads(sys.argv[1])['calls']
+api_url = os.environ['API_URL']
+token = os.environ.get('TOKEN', '')
+
+async def run_httpx():
+    headers = {'content-type': 'application/json'}
+    if token:
+        headers['authorization'] = f'Bearer {token}'
+    async with httpx.AsyncClient(timeout=60) as client:
+        async def one(c):
+            t0 = time.time()
+            url = f\"{api_url}/api/v1/tools/{c['tool']}/execute\"
+            try:
+                r = await client.post(url, json={'inputs': c['inputs']}, headers=headers)
+                data = r.json()
+                data['latency_ms'] = round((time.time() - t0) * 1000, 1)
+                return data
+            except Exception as e:
+                return {'tool': c['tool'], 'status': 'error', 'error': str(e),
+                        'latency_ms': round((time.time() - t0) * 1000, 1)}
+        return await asyncio.gather(*[one(c) for c in calls])
+
+def run_urllib():
+    results = []
+    for c in calls:
+        t0 = time.time()
+        url = f\"{api_url}/api/v1/tools/{c['tool']}/execute\"
+        body = json.dumps({'inputs': c['inputs']}).encode()
+        req = urllib.request.Request(url, data=body, method='POST',
+                                     headers={'content-type': 'application/json'})
+        if token:
+            req.add_header('authorization', f'Bearer {token}')
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+                data['latency_ms'] = round((time.time() - t0) * 1000, 1)
+                results.append(data)
+        except Exception as e:
+            results.append({'tool': c['tool'], 'status': 'error', 'error': str(e),
+                            'latency_ms': round((time.time() - t0) * 1000, 1)})
+    return results
+
+t_start = time.time()
+if HAS_HTTPX:
+    results = asyncio.run(run_httpx())
+else:
+    results = run_urllib()
+results = list(results)
+successful = sum(1 for r in results if r.get('status') == 'success')
+print(json.dumps({
+    'results': results,
+    'total': len(results),
+    'successful': successful,
+    'failed': len(results) - successful,
+    'total_latency_ms': round((time.time() - t_start) * 1000, 1),
+}, indent=2))
+" "$calls_json"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# pipe <t1> k=v -- <t2> ... [--in k=v ...] [--stream]
+# Server-side sequential composition: output of each tool feeds the next.
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "pipe" || "$command" == "seq" ]]; then
+  stream=0
+  initial_inputs=()
+  group_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stream)
+        stream=1
+        shift
+        ;;
+      --in)
+        require_value_flag "$1" "${2:-}"
+        initial_inputs+=("$2")
+        shift 2
+        ;;
+      *)
+        group_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ ${#group_args[@]} -eq 0 ]]; then
+    echo 'Usage: ./do pipe <tool1> k=v -- <tool2> ... [--in k=v ...] [--stream]' >&2
+    exit 1
+  fi
+
+  groups_json="$(parse_tool_groups "${group_args[@]}")"
+  inputs_json="$(json_map_from_kv ${initial_inputs[@]+"${initial_inputs[@]}"})"
+  payload="$(python3 - "$groups_json" "$inputs_json" <<'PY'
+import json
+import sys
+groups = json.loads(sys.argv[1])
+groups["inputs"] = json.loads(sys.argv[2])
+print(json.dumps(groups))
+PY
+)"
+
+  if [[ "$stream" == "1" ]]; then
+    if sse_stream POST "/compose/seq/stream" "$payload"; then
+      exit 0
+    fi
+    log "Streaming failed; falling back to blocking /compose/seq"
+  fi
+
+  call_api POST "/compose/seq" "$payload" 120
+  ok_or_die "/compose/seq"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# fork <t1> k=v -- <t2> ... [--join merge|array|first] [--in k=v ...] [--stream]
+# Server-side parallel composition with join.
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "fork" ]]; then
+  stream=0
+  join_strategy="merge"
+  initial_inputs=()
+  group_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stream)
+        stream=1
+        shift
+        ;;
+      --join)
+        require_value_flag "$1" "${2:-}"
+        join_strategy="$2"
+        shift 2
+        ;;
+      --in)
+        require_value_flag "$1" "${2:-}"
+        initial_inputs+=("$2")
+        shift 2
+        ;;
+      *)
+        group_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ ${#group_args[@]} -eq 0 ]]; then
+    echo 'Usage: ./do fork <tool1> k=v -- <tool2> ... [--join merge|array|first] [--stream]' >&2
+    exit 1
+  fi
+  case "$join_strategy" in
+    merge|array|first) ;;
+    *)
+      echo "--join must be one of: merge, array, first" >&2
+      exit 1
+      ;;
+  esac
+
+  groups_json="$(parse_tool_groups "${group_args[@]}")"
+  inputs_json="$(json_map_from_kv ${initial_inputs[@]+"${initial_inputs[@]}"})"
+  payload="$(python3 - "$groups_json" "$inputs_json" "$join_strategy" <<'PY'
+import json
+import sys
+groups = json.loads(sys.argv[1])
+groups["inputs"] = json.loads(sys.argv[2])
+groups["join_strategy"] = sys.argv[3]
+print(json.dumps(groups))
+PY
+)"
+
+  if [[ "$stream" == "1" ]]; then
+    if sse_stream POST "/compose/fork/stream" "$payload"; then
+      exit 0
+    fi
+    log "Streaming failed; falling back to blocking /compose/fork"
+  fi
+
+  call_api POST "/compose/fork" "$payload" 120
+  ok_or_die "/compose/fork"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# map|reduce|filter <tool> --items <json|@file|-> [key=val ...]
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "map" || "$command" == "reduce" || "$command" == "filter" ]]; then
+  items_spec=""
+  initial=""
+  kv_args=()
+  tool=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --items)
+        require_value_flag "$1" "${2:-}"
+        items_spec="$2"
+        shift 2
+        ;;
+      --initial)
+        require_value_flag "$1" "${2:-}"
+        initial="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$tool" ]]; then
+          tool="$1"
+        else
+          kv_args+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$tool" || -z "$items_spec" ]]; then
+    echo "Usage: ./do $command <tool> --items <json|@file|-> [--initial <json>] [key=val ...]" >&2
+    exit 1
+  fi
+
+  items_json="$(resolve_items "$items_spec")"
+  args_json="$(json_map_from_kv ${kv_args[@]+"${kv_args[@]}"})"
+  payload="$(python3 - "$command" "$tool" "$items_json" "$args_json" "$initial" <<'PY'
+import json
+import sys
+
+cmd, tool, items, arguments, initial = sys.argv[1:6]
+payload = {
+    "items": json.loads(items),
+    "arguments": json.loads(arguments),
+}
+if cmd == "filter":
+    payload["predicate"] = tool
+else:
+    payload["tool"] = tool
+if cmd == "reduce" and initial:
+    try:
+        payload["initial"] = json.loads(initial)
+    except Exception:
+        payload["initial"] = initial
+
+print(json.dumps(payload))
+PY
+)"
+
+  call_api POST "/compose/${command}" "$payload" 120
+  ok_or_die "/compose/${command}"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# patterns — list available composition patterns
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "patterns" ]]; then
+  call_api GET "/compose/patterns"
+  ok_or_die "/compose/patterns"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# job submit|status|watch|cancel|list|analytics
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "job" || "$command" == "jobs" ]]; then
+  if [[ $# -lt 1 ]]; then
+    # bare "./do jobs" == "./do job list"
+    subcommand="list"
+  else
+    subcommand="$1"
+    shift
+  fi
+
+  case "$subcommand" in
+    submit)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: ./do job submit <tool> [key=val ...] [--priority p0..p3] [--job-timeout <s>] [--dedupe-window <s>] [--convergence-key <k>] [--callback-url <url>] [--follow]" >&2
+        exit 1
+      fi
+      tool="$1"
+      shift
+
+      priority="p1"
+      job_timeout="300"
+      dedupe_window="60"
+      convergence_key=""
+      callback_url=""
+      follow=0
+      kv_args=()
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --priority)
+            require_value_flag "$1" "${2:-}"
+            priority="$2"
+            shift 2
+            ;;
+          --job-timeout)
+            require_value_flag "$1" "${2:-}"
+            job_timeout="$2"
+            shift 2
+            ;;
+          --dedupe-window)
+            require_value_flag "$1" "${2:-}"
+            dedupe_window="$2"
+            shift 2
+            ;;
+          --convergence-key)
+            require_value_flag "$1" "${2:-}"
+            convergence_key="$2"
+            shift 2
+            ;;
+          --callback-url)
+            require_value_flag "$1" "${2:-}"
+            callback_url="$2"
+            shift 2
+            ;;
+          --follow|-f)
+            follow=1
+            shift
+            ;;
+          *)
+            kv_args+=("$1")
+            shift
+            ;;
+        esac
+      done
+
+      if ! [[ "$job_timeout" =~ ^[0-9]+$ && "$dedupe_window" =~ ^[0-9]+$ ]]; then
+        echo "--job-timeout and --dedupe-window must be integers (seconds)" >&2
+        exit 1
+      fi
+
+      args_json="$(json_map_from_kv ${kv_args[@]+"${kv_args[@]}"})"
+      payload="$(python3 - "$tool" "$args_json" "$job_timeout" "$priority" "$dedupe_window" "$convergence_key" "$callback_url" <<'PY'
+import json
+import sys
+
+payload = {
+    "tool": sys.argv[1],
+    "arguments": json.loads(sys.argv[2]),
+    "timeout": float(sys.argv[3]),
+    "priority": sys.argv[4],
+    "dedupe_window_seconds": int(sys.argv[5]),
+}
+if sys.argv[6]:
+    payload["convergence_key"] = sys.argv[6]
+if sys.argv[7]:
+    payload["callback_url"] = sys.argv[7]
+
+print(json.dumps(payload))
+PY
+)"
+
+      call_api POST "/api/v1/jobs/submit" "$payload" 30
+      if ! [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+        die_api "/api/v1/jobs/submit"
+      fi
+
+      if [[ "$follow" == "0" ]]; then
+        print_body_stdout
+        exit 0
+      fi
+
+      job_id="$(printf '%s' "$API_BODY" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    print(d.get("job_id") or d.get("id") or "", end="")
+except Exception:
+    print("", end="")
+')"
+      if [[ -z "$job_id" ]]; then
+        print_body_stdout
+        echo "Could not extract job_id to follow; showing submit response above." >&2
+        exit 1
+      fi
+
+      echo "job_id: $job_id" >&2
+      if sse_stream GET "/api/v1/jobs/${job_id}/stream"; then
+        exit 0
+      fi
+
+      log "SSE unavailable; polling job status"
+      while true; do
+        call_api GET "/api/v1/jobs/${job_id}"
+        if ! [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+          die_api "/api/v1/jobs/${job_id}"
+        fi
+        job_state="$(printf '%s' "$API_BODY" | python3 -c '
+import json, sys
+try:
+    print(json.loads(sys.stdin.read() or "{}").get("status", ""), end="")
+except Exception:
+    print("", end="")
+')"
+        log "status=${job_state}"
+        case "$job_state" in
+          completed|failed|cancelled|canceled|error)
+            print_body_stdout
+            exit 0
+            ;;
+        esac
+        sleep 2
+      done
+      ;;
+
+    status|get)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: ./do job status <job_id>" >&2
+        exit 1
+      fi
+      call_api GET "/api/v1/jobs/$1"
+      ok_or_die "/api/v1/jobs/$1"
+      ;;
+
+    watch|stream|follow)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: ./do job watch <job_id>" >&2
+        exit 1
+      fi
+      if ! sse_stream GET "/api/v1/jobs/$1/stream"; then
+        log "SSE unavailable; showing current status"
+        call_api GET "/api/v1/jobs/$1"
+        ok_or_die "/api/v1/jobs/$1"
+      fi
+      ;;
+
+    cancel)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: ./do job cancel <job_id>" >&2
+        exit 1
+      fi
+      call_api POST "/api/v1/jobs/$1/cancel"
+      ok_or_die "/api/v1/jobs/$1/cancel"
+      ;;
+
+    list)
+      status_filter=""
+      limit="50"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --status)
+            require_value_flag "$1" "${2:-}"
+            status_filter="$2"
+            shift 2
+            ;;
+          --limit)
+            require_value_flag "$1" "${2:-}"
+            limit="$2"
+            shift 2
+            ;;
+          *)
+            echo "Unknown job list arg: $1" >&2
+            exit 1
+            ;;
+        esac
+      done
+      if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+        echo "--limit must be an integer" >&2
+        exit 1
+      fi
+      path="/api/v1/jobs/?limit=${limit}"
+      [[ -n "$status_filter" ]] && path+="&status=$(urlencode "$status_filter")"
+      call_api GET "$path"
+      ok_or_die "$path"
+      ;;
+
+    analytics)
+      call_api GET "/api/v1/jobs/analytics"
+      ok_or_die "/api/v1/jobs/analytics"
+      ;;
+
+    *)
+      echo "Unknown job subcommand: $subcommand (expected submit|status|watch|cancel|list|analytics)" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# analytics [overview|usage|failures|jobs|orchestration]
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "analytics" || "$command" == "stats" ]]; then
+  target="${1:-overview}"
+  case "$target" in
+    overview)      path="/api/v1/tools/analytics/overview" ;;
+    usage)         path="/api/v1/tools/analytics/usage" ;;
+    failures)      path="/api/v1/tools/analytics/failures" ;;
+    jobs)          path="/api/v1/jobs/analytics" ;;
+    orchestration) path="/api/v1/orchestration/analytics" ;;
+    *)
+      echo "Unknown analytics target: $target (expected overview|usage|failures|jobs|orchestration)" >&2
+      exit 1
+      ;;
+  esac
+  call_api GET "$path"
+  ok_or_die "$path"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# recommend "<objective>" [--intent <intent>] [--max-steps N] [key=val ...]
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "recommend" ]]; then
+  intent=""
+  max_steps="5"
+  query=""
+  data_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --intent)
+        require_value_flag "$1" "${2:-}"
+        intent="$2"
+        shift 2
+        ;;
+      --max-steps)
+        require_value_flag "$1" "${2:-}"
+        max_steps="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$query" ]]; then
+          query="$1"
+        else
+          data_args+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$query" ]]; then
+    echo 'Usage: ./do recommend "<objective>" [--intent <intent>] [--max-steps N] [key=val ...]' >&2
+    exit 1
+  fi
+  if ! [[ "$max_steps" =~ ^[0-9]+$ ]]; then
+    echo "--max-steps must be an integer" >&2
+    exit 1
+  fi
+  if [[ -z "$intent" ]]; then
+    intent="$(infer_intent "$query")"
+  fi
+
+  available_data="$(json_map_from_kv "${data_args[@]}")"
+  payload="$(python3 - "$intent" "$query" "$max_steps" "$available_data" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "intent": sys.argv[1],
+    "query": sys.argv[2],
+    "max_steps": int(sys.argv[3]),
+    "available_data": json.loads(sys.argv[4]),
+}))
+PY
+)"
+
+  call_api POST "/api/v1/orchestration/recommend" "$payload" 45
+  ok_or_die "/api/v1/orchestration/recommend"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# use-cases [query] [--domain <domain>] [--limit <n>] [--economic-only]
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "use-cases" || "$command" == "usecases" ]]; then
+  domain=""
+  limit="25"
+  economic_only=0
+  query_parts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --domain)
+        require_value_flag "$1" "${2:-}"
+        domain="$2"
+        shift 2
+        ;;
+      --limit)
+        require_value_flag "$1" "${2:-}"
+        limit="$2"
+        shift 2
+        ;;
+      --economic-only)
+        economic_only=1
+        shift
+        ;;
+      *)
+        query_parts+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    echo "--limit must be an integer" >&2
+    exit 1
+  fi
+
+  path="/api/v1/use-cases?limit=${limit}"
+  if [[ ${#query_parts[@]} -gt 0 ]]; then
+    query="${query_parts[*]}"
+    path+="&q=$(urlencode "$query")"
+  fi
+  if [[ -n "$domain" ]]; then
+    path+="&domain=$(urlencode "$domain")"
+  fi
+  if [[ "$economic_only" == "1" ]]; then
+    path+="&require_economic_hooks=true"
+  fi
+
+  call_api GET "$path"
+  ok_or_die "$path"
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+# plan "<objective>" [--use-case <id>] [--template <name>] [key=val ...]
+# ═════════════════════════════════════════════════════════════════════
 if [[ "$command" == "plan" ]]; then
-  endpoint="/api/v1/use-cases/${USE_CASE}/plan"
-fi
+  use_case_id=""
+  domain=""
+  template="default"
+  execution=""
+  max_parallel=""
+  strict_placeholders=0
+  discovery_limit="5"
+  positional=()
 
-call_api POST "$endpoint" "$payload"
-if is_success_status "$API_STATUS"; then
-  print_api_or_error POST "$endpoint"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --use-case)
+        require_value_flag "$1" "${2:-}"
+        use_case_id="$2"
+        shift 2
+        ;;
+      --domain)
+        require_value_flag "$1" "${2:-}"
+        domain="$2"
+        shift 2
+        ;;
+      --template)
+        require_value_flag "$1" "${2:-}"
+        template="$2"
+        shift 2
+        ;;
+      --execution)
+        require_value_flag "$1" "${2:-}"
+        execution="$2"
+        shift 2
+        ;;
+      --max-parallel)
+        require_value_flag "$1" "${2:-}"
+        max_parallel="$2"
+        shift 2
+        ;;
+      --strict)
+        strict_placeholders=1
+        shift
+        ;;
+      --no-strict)
+        strict_placeholders=0
+        shift
+        ;;
+      --discover-limit)
+        require_value_flag "$1" "${2:-}"
+        discovery_limit="$2"
+        shift 2
+        ;;
+      *)
+        positional+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ! [[ "$discovery_limit" =~ ^[0-9]+$ ]]; then
+    echo "--discover-limit must be an integer" >&2
+    exit 1
+  fi
+  if [[ -n "$max_parallel" && ! "$max_parallel" =~ ^[0-9]+$ ]]; then
+    echo "--max-parallel must be an integer" >&2
+    exit 1
+  fi
+
+  objective_parts=()
+  override_args=()
+  seen_override=0
+  for token in "${positional[@]}"; do
+    if [[ "$token" == *=* || "$seen_override" == "1" ]]; then
+      override_args+=("$token")
+      seen_override=1
+    else
+      objective_parts+=("$token")
+    fi
+  done
+
+  objective="${objective_parts[*]}"
+  if [[ -z "$objective" ]]; then
+    echo 'Usage: ./do plan "<objective>" [--use-case <id>] [--template <name>] [key=val ...]' >&2
+    exit 1
+  fi
+
+  if [[ -z "$use_case_id" ]]; then
+    if discover_use_case "$objective" "$domain" "$discovery_limit"; then
+      use_case_id="$DISCOVERED_USE_CASE_ID"
+      log "Auto-selected use case: ${use_case_id}"
+    else
+      discover_rc=$?
+      if [[ "$discover_rc" == "2" ]]; then
+        die_api "$DISCOVER_USE_CASE_PATH"
+      fi
+      echo "Could not auto-discover a use case for objective: $objective" >&2
+      echo "Provide one explicitly with --use-case <id> or inspect candidates via ./do use-cases \"$objective\"" >&2
+      exit 1
+    fi
+  fi
+
+  overrides_json="$(json_map_from_kv "${override_args[@]}")"
+  payload="$(python3 - "$template" "$objective" "$overrides_json" "$strict_placeholders" "$execution" "$max_parallel" <<'PY'
+import json
+import sys
+
+payload = {
+    "template": sys.argv[1],
+    "objective": sys.argv[2],
+    "overrides": json.loads(sys.argv[3]),
+    "strict_placeholders": bool(int(sys.argv[4])),
+}
+if sys.argv[5]:
+    payload["execution"] = sys.argv[5]
+if sys.argv[6]:
+    payload["max_parallel"] = int(sys.argv[6])
+
+print(json.dumps(payload))
+PY
+)"
+
+  log "Planning use case '${use_case_id}'"
+  call_api POST "/api/v1/use-cases/${use_case_id}/plan" "$payload" 90
+  ok_or_die "/api/v1/use-cases/${use_case_id}/plan"
   exit 0
 fi
 
-if [[ "$API_STATUS" != "404" ]]; then
-  print_api_or_error POST "$endpoint"
-  exit 1
-fi
+# ═════════════════════════════════════════════════════════════════════
+# run "<objective>"
+# Smart route via:
+#   1) optional use-case execute
+#   2) orchestration execute
+#   3) recommendation-driven single-tool fallback
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "run" ]]; then
+  intent=""
+  strategy="sequential"
+  max_retries="2"
+  use_case_id=""
+  use_case_first=0
+  domain=""
+  template="default"
+  execution=""
+  max_parallel=""
+  discovery_limit="5"
+  positional=()
 
-legacy_payload="$(build_legacy_execute_payload "$objective")"
-if [[ "$command" == "plan" ]]; then
-  echo "Use-case plan endpoint not deployed; falling back to admission-check." >&2
-  call_api POST "/api/v1/execute/admission-check" "$legacy_payload"
-  if is_success_status "$API_STATUS"; then
-    print_api_or_error POST "/api/v1/execute/admission-check"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --intent)
+        require_value_flag "$1" "${2:-}"
+        intent="$2"
+        shift 2
+        ;;
+      --strategy)
+        require_value_flag "$1" "${2:-}"
+        strategy="$2"
+        shift 2
+        ;;
+      --max-retries)
+        require_value_flag "$1" "${2:-}"
+        max_retries="$2"
+        shift 2
+        ;;
+      --use-case)
+        require_value_flag "$1" "${2:-}"
+        use_case_id="$2"
+        shift 2
+        ;;
+      --use-case-first)
+        use_case_first=1
+        shift
+        ;;
+      --domain)
+        require_value_flag "$1" "${2:-}"
+        domain="$2"
+        shift 2
+        ;;
+      --template)
+        require_value_flag "$1" "${2:-}"
+        template="$2"
+        shift 2
+        ;;
+      --execution)
+        require_value_flag "$1" "${2:-}"
+        execution="$2"
+        shift 2
+        ;;
+      --max-parallel)
+        require_value_flag "$1" "${2:-}"
+        max_parallel="$2"
+        shift 2
+        ;;
+      --discover-limit)
+        require_value_flag "$1" "${2:-}"
+        discovery_limit="$2"
+        shift 2
+        ;;
+      *)
+        positional+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ! [[ "$max_retries" =~ ^[0-9]+$ ]]; then
+    echo "--max-retries must be an integer" >&2
+    exit 1
+  fi
+  if [[ -n "$max_parallel" && ! "$max_parallel" =~ ^[0-9]+$ ]]; then
+    echo "--max-parallel must be an integer" >&2
+    exit 1
+  fi
+  if ! [[ "$discovery_limit" =~ ^[0-9]+$ ]]; then
+    echo "--discover-limit must be an integer" >&2
+    exit 1
+  fi
+
+  objective_parts=()
+  data_args=()
+  seen_data=0
+  for token in "${positional[@]}"; do
+    if [[ "$token" == *=* || "$seen_data" == "1" ]]; then
+      data_args+=("$token")
+      seen_data=1
+    else
+      objective_parts+=("$token")
+    fi
+  done
+
+  objective="${objective_parts[*]}"
+  if [[ -z "$objective" ]]; then
+    echo 'Usage: ./do run "<objective>" [--intent <intent>] [--strategy <strategy>] [key=val ...]' >&2
+    exit 1
+  fi
+
+  if [[ -z "$intent" ]]; then
+    intent="$(infer_intent "$objective")"
+  fi
+
+  available_data_json="$(json_map_from_kv "${data_args[@]}")"
+
+  if [[ "$use_case_first" == "1" || -n "$use_case_id" ]]; then
+    if [[ -z "$use_case_id" ]]; then
+      if discover_use_case "$objective" "$domain" "$discovery_limit"; then
+        use_case_id="$DISCOVERED_USE_CASE_ID"
+        log "Auto-selected use case for run: ${use_case_id}"
+      else
+        log "No use-case match found; continuing to orchestration"
+      fi
+    fi
+
+    if [[ -n "$use_case_id" ]]; then
+      use_case_payload="$(python3 - "$template" "$objective" "$available_data_json" "$execution" "$max_parallel" <<'PY'
+import json
+import sys
+
+payload = {
+    "template": sys.argv[1],
+    "objective": sys.argv[2],
+    "overrides": json.loads(sys.argv[3]),
+    "strict_placeholders": False,
+}
+if sys.argv[4]:
+    payload["execution"] = sys.argv[4]
+if sys.argv[5]:
+    payload["max_parallel"] = int(sys.argv[5])
+
+print(json.dumps(payload))
+PY
+)"
+
+      call_api POST "/api/v1/use-cases/${use_case_id}/execute" "$use_case_payload" 120
+      if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+        print_body_stdout
+        exit 0
+      fi
+      log "Use-case execution failed (status=${API_STATUS}); trying orchestration"
+    fi
+  fi
+
+  orch_payload="$(python3 - "$intent" "$objective" "$strategy" "$max_retries" "$available_data_json" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "intent": sys.argv[1],
+    "query": sys.argv[2],
+    "strategy": sys.argv[3],
+    "max_retries": int(sys.argv[4]),
+    "available_data": json.loads(sys.argv[5]),
+}))
+PY
+)"
+
+  call_api POST "/api/v1/orchestration/execute" "$orch_payload" 120
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    # Extract synthesized answer if present, otherwise show full response
+    answer="$(printf '%s' "$API_BODY" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+
+    # Top-level structured answer from LLM synthesis
+    ans = data.get("answer")
+    if ans:
+        print(ans)
+        conf = data.get("confidence")
+        if conf:
+            print(f"\nConfidence: {conf}")
+        facts = data.get("key_facts", [])
+        if facts:
+            print("\nKey facts:")
+            for f in facts:
+                print(f"  - {f}")
+        sources = data.get("sources", [])
+        if sources:
+            print("\nSources:")
+            for s in sources:
+                print(f"  - {s}")
+        raise SystemExit(0)
+
+    # Walk results backwards to find the best answer
+    results = data.get("results", [])
+    for r in reversed(results):
+        if r.get("status") != "success":
+            continue
+        res = r.get("result")
+        if isinstance(res, dict):
+            if res.get("answer"):
+                print(res["answer"], end="")
+                raise SystemExit(0)
+            synth = res.get("synthesis") or res.get("summary")
+            if synth:
+                print(synth, end="")
+                raise SystemExit(0)
+            findings = res.get("findings")
+            if isinstance(findings, list) and findings:
+                for f in findings:
+                    if isinstance(f, dict):
+                        print(f.get("content", f.get("text", json.dumps(f))))
+                    else:
+                        print(f)
+                raise SystemExit(0)
+        break
+except SystemExit:
+    raise
+except Exception:
+    pass
+')"
+    if [[ -n "$answer" ]]; then
+      printf '%s\n' "$answer"
+    else
+      print_body_stdout
+    fi
     exit 0
   fi
-  print_api_or_error POST "/api/v1/execute/admission-check"
-  exit 1
+
+  log "Orchestration failed (status=${API_STATUS}); trying recommendation-driven fallback"
+  rec_payload="$(python3 - "$objective" "$intent" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "query": sys.argv[1],
+    "intent": sys.argv[2],
+    "limit": 1,
+}))
+PY
+)"
+
+  call_api POST "/api/v1/tools/recommendations" "$rec_payload" 45
+  if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+    top_tool="$(printf '%s' "$API_BODY" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    print("", end="")
+    raise SystemExit(0)
+
+recs = payload.get("recommendations")
+if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+    name = recs[0].get("name")
+    print(str(name or ""), end="")
+else:
+    print("", end="")
+')"
+
+    if [[ -n "$top_tool" ]]; then
+      fallback_payload="$(python3 - "$top_tool" "$objective" "$available_data_json" <<'PY'
+import json
+import sys
+
+arguments = json.loads(sys.argv[3])
+arguments.setdefault("query", sys.argv[2])
+print(json.dumps({
+    "tool": sys.argv[1],
+    "arguments": arguments,
+}))
+PY
+)"
+
+      call_api POST "/api/v1/tools/execute" "$fallback_payload" 60
+      if [[ "$API_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+        print_body_stdout
+        exit 0
+      fi
+    fi
+  fi
+
+  echo "Could not execute objective via use-case, orchestration, or recommendation fallback." >&2
+  die_api "/api/v1/orchestration/execute"
 fi
 
-echo "Use-case execute endpoint not deployed; falling back to /api/v1/execute." >&2
-call_api POST "/api/v1/execute" "$legacy_payload"
-if is_success_status "$API_STATUS"; then
-  print_api_or_error POST "/api/v1/execute"
+# ═════════════════════════════════════════════════════════════════════
+# completion bash|zsh
+# ═════════════════════════════════════════════════════════════════════
+if [[ "$command" == "completion" ]]; then
+  shell_type="${1:-bash}"
+  commands="health doctor tools search describe exec batch pipe fork map reduce filter patterns job analytics recommend use-cases plan run completion help"
+  job_subs="submit status watch cancel list analytics"
+
+  case "$shell_type" in
+    bash)
+      cat <<BASH
+_do_complete() {
+  local cur prev
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  if [[ \$COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=( \$(compgen -W "${commands}" -- "\$cur") )
+  elif [[ "\$prev" == "job" || "\$prev" == "jobs" ]]; then
+    COMPREPLY=( \$(compgen -W "${job_subs}" -- "\$cur") )
+  elif [[ "\$prev" == "analytics" || "\$prev" == "stats" ]]; then
+    COMPREPLY=( \$(compgen -W "overview usage failures jobs orchestration" -- "\$cur") )
+  elif [[ "\$prev" == "completion" ]]; then
+    COMPREPLY=( \$(compgen -W "bash zsh" -- "\$cur") )
+  fi
+}
+complete -F _do_complete do ./do
+BASH
+      ;;
+    zsh)
+      cat <<ZSH
+#compdef do
+_do() {
+  local -a commands job_subs
+  commands=(${commands})
+  job_subs=(${job_subs})
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+  elif [[ "\${words[2]}" == "job" || "\${words[2]}" == "jobs" ]] && (( CURRENT == 3 )); then
+    _describe 'job subcommand' job_subs
+  elif [[ "\${words[2]}" == "analytics" || "\${words[2]}" == "stats" ]] && (( CURRENT == 3 )); then
+    local -a targets; targets=(overview usage failures jobs orchestration)
+    _describe 'analytics target' targets
+  fi
+}
+compdef _do do ./do
+ZSH
+      ;;
+    *)
+      echo "Usage: ./do completion bash|zsh" >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 
-if [[ "$API_STATUS" == "404" ]]; then
-  echo "/api/v1/execute not available; falling back to /api/v1/tools/execute." >&2
-  tools_payload="$(build_legacy_tools_payload "$objective")"
-  call_api POST "/api/v1/tools/execute" "$tools_payload"
-  print_api_or_error POST "/api/v1/tools/execute"
-  exit 0
-fi
-
-print_api_or_error POST "/api/v1/execute"
+# ═════════════════════════════════════════════════════════════════════
+# Unknown command
+# ═════════════════════════════════════════════════════════════════════
+echo "Unknown command: $command" >&2
+echo "Run './do --help' for usage." >&2
+exit 1

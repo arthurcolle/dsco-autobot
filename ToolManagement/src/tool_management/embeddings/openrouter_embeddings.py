@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import numpy as np
 import httpx
@@ -145,66 +145,7 @@ class JinaEmbeddings:
         return embeddings[0] if len(embeddings) > 0 else np.array([])
 
     def _tool_to_text(self, tool: Dict[str, Any]) -> str:
-        """
-        Convert tool schema to text for embedding.
-
-        Format:
-        Tool: {name}
-        Description: {description}
-        Inputs: {input_schema}
-        Outputs: {output_schema}
-        Tags: {tags}
-        Category: {category}
-        """
-        parts = []
-
-        # Name
-        if "name" in tool:
-            parts.append(f"Tool: {tool['name']}")
-
-        # Description
-        if "description" in tool:
-            parts.append(f"Description: {tool['description']}")
-
-        # Input schema
-        if "inputSchema" in tool or "input_schema" in tool:
-            schema = tool.get("inputSchema") or tool.get("input_schema", {})
-            if isinstance(schema, dict):
-                properties = schema.get("properties", {})
-                if properties:
-                    input_desc = ", ".join(
-                        f"{k} ({v.get('type', 'any')})"
-                        for k, v in properties.items()
-                    )
-                    parts.append(f"Inputs: {input_desc}")
-
-        # Output schema
-        if "outputSchema" in tool or "output_schema" in tool:
-            schema = tool.get("outputSchema") or tool.get("output_schema", {})
-            if isinstance(schema, dict):
-                properties = schema.get("properties", {})
-                if properties:
-                    output_desc = ", ".join(
-                        f"{k} ({v.get('type', 'any')})"
-                        for k, v in properties.items()
-                    )
-                    parts.append(f"Outputs: {output_desc}")
-
-        # Tags
-        if "tags" in tool and tool["tags"]:
-            parts.append(f"Tags: {', '.join(tool['tags'])}")
-
-        # Category
-        if "category" in tool:
-            parts.append(f"Category: {tool['category']}")
-
-        # Annotations
-        if "annotations" in tool:
-            ann = tool["annotations"]
-            if ann.get("backend"):
-                parts.append(f"Backend: {ann['backend']}")
-
-        return "\n".join(parts)
+        return tool_to_text(tool)
 
     def get_embedding_dim(self) -> int:
         """Get embedding dimension for the configured model"""
@@ -221,18 +162,254 @@ class JinaEmbeddings:
         await self.client.aclose()
 
 
+def tool_to_text(tool: Dict[str, Any]) -> str:
+    """
+    Convert tool schema to text for embedding.
+
+    Format:
+    Tool: {name}
+    Description: {description}
+    Inputs: {input_schema}
+    Outputs: {output_schema}
+    Tags: {tags}
+    Category: {category}
+    """
+    parts = []
+
+    # Name
+    if "name" in tool:
+        parts.append(f"Tool: {tool['name']}")
+
+    # Description
+    if "description" in tool:
+        parts.append(f"Description: {tool['description']}")
+
+    # Input schema
+    if "inputSchema" in tool or "input_schema" in tool:
+        schema = tool.get("inputSchema") or tool.get("input_schema", {})
+        if isinstance(schema, dict):
+            properties = schema.get("properties", {})
+            if properties:
+                input_desc = ", ".join(
+                    f"{k} ({v.get('type', 'any')})"
+                    for k, v in properties.items()
+                )
+                parts.append(f"Inputs: {input_desc}")
+
+    # Output schema
+    if "outputSchema" in tool or "output_schema" in tool:
+        schema = tool.get("outputSchema") or tool.get("output_schema", {})
+        if isinstance(schema, dict):
+            properties = schema.get("properties", {})
+            if properties:
+                output_desc = ", ".join(
+                    f"{k} ({v.get('type', 'any')})"
+                    for k, v in properties.items()
+                )
+                parts.append(f"Outputs: {output_desc}")
+
+    # Tags
+    if "tags" in tool and tool["tags"]:
+        parts.append(f"Tags: {', '.join(tool['tags'])}")
+
+    # Category
+    if "category" in tool:
+        parts.append(f"Category: {tool['category']}")
+
+    # Annotations
+    if "annotations" in tool:
+        ann = tool["annotations"]
+        if ann.get("backend"):
+            parts.append(f"Backend: {ann['backend']}")
+
+    return "\n".join(parts)
+
+
+class LocalHashEmbeddings:
+    """
+    Deterministic offline embeddings via feature hashing (words + char trigrams).
+
+    Much weaker than a real embedding model, but keeps semantic search
+    functional when JINA_API_KEY is absent instead of dying to keyword-only
+    fallback. Vectors are only comparable to other LocalHashEmbeddings
+    vectors — the index layer namespaces its DB per embedder so the two
+    spaces never mix.
+    """
+
+    DIM = 1024
+    name = "local-hash-v1"
+
+    def __init__(self):
+        self._embedding_cache: Dict[str, np.ndarray] = {}
+
+    @staticmethod
+    def _features(text: str) -> List[str]:
+        t = text.lower()
+        words = [w for w in "".join(c if c.isalnum() else " " for c in t).split() if w]
+        grams = []
+        for w in words:
+            padded = f"#{w}#"
+            grams.extend(padded[i:i + 3] for i in range(len(padded) - 2))
+        return words + grams
+
+    def _embed_one(self, text: str) -> np.ndarray:
+        import hashlib
+
+        vec = np.zeros(self.DIM, dtype=np.float64)
+        for feat in self._features(text):
+            digest = hashlib.blake2b(feat.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "little") % self.DIM
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vec[bucket] += sign
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else vec
+
+    async def embed(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.array([])
+        out = []
+        for text in texts:
+            cached = self._embedding_cache.get(text)
+            if cached is None:
+                cached = self._embed_one(text)
+                self._embedding_cache[text] = cached
+            out.append(cached)
+        return np.array(out)
+
+    async def embed_tool_schema(self, tool: Dict[str, Any]) -> np.ndarray:
+        text = tool_to_text(tool)
+        embeddings = await self.embed([text])
+        return embeddings[0] if len(embeddings) > 0 else np.array([])
+
+    def _tool_to_text(self, tool: Dict[str, Any]) -> str:
+        return tool_to_text(tool)
+
+    def get_embedding_dim(self) -> int:
+        return self.DIM
+
+    async def close(self):
+        pass
+
+
+class ResilientEmbeddings:
+    """
+    Wraps a primary embedding provider (Jina when JINA_API_KEY is set) with a
+    deterministic LocalHashEmbeddings fallback.
+
+    Unlike get_embedding_service(), this also survives a key that is set but
+    broken (e.g. 402 zero-balance): the first primary failure trips a sticky
+    switch to the local embedder for the rest of the process lifetime.
+
+    embed_tagged() returns (vectors, embedder_tag) so callers can namespace
+    stored vectors and never compare across embedding spaces.
+    """
+
+    PRIMARY_NAME = "jina"
+
+    def __init__(self, primary: Optional[Any] = None):
+        self._local = LocalHashEmbeddings()
+        if primary is None and os.getenv("JINA_API_KEY"):
+            try:
+                primary = JinaEmbeddings()
+            except Exception as e:
+                logger.warning(f"Failed to initialize primary embedder: {e}")
+                primary = None
+        self._primary = primary
+        self._primary_failed = False
+        self.last_error: Optional[str] = None
+
+    @property
+    def active_name(self) -> str:
+        """Tag of the embedder that the next embed() call will use."""
+        if self._primary is not None and not self._primary_failed:
+            return self.PRIMARY_NAME
+        return self._local.name
+
+    @property
+    def name(self) -> str:
+        return self.active_name
+
+    async def embed_tagged(self, texts: List[str]) -> Tuple[np.ndarray, str]:
+        """Embed texts, returning (vectors, embedder_tag actually used)."""
+        if self._primary is not None and not self._primary_failed:
+            try:
+                vectors = await self._primary.embed(texts)
+                return vectors, self.PRIMARY_NAME
+            except Exception as e:
+                self.last_error = str(e)
+                self._primary_failed = True
+                logger.warning(
+                    f"Primary embedder failed ({e}); "
+                    f"falling back to {self._local.name} for the rest of this process"
+                )
+        return await self._local.embed(texts), self._local.name
+
+    async def embed(self, texts: List[str]) -> np.ndarray:
+        vectors, _ = await self.embed_tagged(texts)
+        return vectors
+
+    async def embed_tool_schema(self, tool: Dict[str, Any]) -> np.ndarray:
+        embeddings = await self.embed([tool_to_text(tool)])
+        return embeddings[0] if len(embeddings) > 0 else np.array([])
+
+    def _tool_to_text(self, tool: Dict[str, Any]) -> str:
+        return tool_to_text(tool)
+
+    def get_embedding_dim(self) -> int:
+        if self._primary is not None and not self._primary_failed:
+            return self._primary.get_embedding_dim()
+        return self._local.get_embedding_dim()
+
+    async def close(self):
+        if self._primary is not None:
+            await self._primary.close()
+        await self._local.close()
+
+
 # Global embedding service
-_embedding_service: Optional[JinaEmbeddings] = None
+_embedding_service: Optional[Any] = None
+_resilient_embedding_service: Optional[ResilientEmbeddings] = None
 
 
-def get_embedding_service() -> JinaEmbeddings:
-    """Get or create the global Jina embedding service"""
+def get_embedding_service():
+    """
+    Get or create the global embedding service.
+
+    Prefers Jina (JINA_API_KEY set); falls back to deterministic local
+    hashing embeddings so semantic search stays available without a key.
+    """
     global _embedding_service
 
     if _embedding_service is None:
-        _embedding_service = JinaEmbeddings()
+        if os.getenv("JINA_API_KEY"):
+            _embedding_service = JinaEmbeddings()
+        else:
+            logger.warning(
+                "JINA_API_KEY not set — using LocalHashEmbeddings fallback for tool search"
+            )
+            _embedding_service = LocalHashEmbeddings()
 
     return _embedding_service
+
+
+def get_resilient_embedding_service() -> ResilientEmbeddings:
+    """
+    Get or create the global resilient embedding service.
+
+    Tries Jina when JINA_API_KEY is set; on any failure (402, network, ...)
+    it permanently falls back to LocalHashEmbeddings for this process.
+    """
+    global _resilient_embedding_service
+
+    if _resilient_embedding_service is None:
+        _resilient_embedding_service = ResilientEmbeddings()
+
+    return _resilient_embedding_service
+
+
+def embedding_service_is_local() -> bool:
+    """True when the active embedding service is the offline hashing fallback."""
+    return isinstance(get_embedding_service(), LocalHashEmbeddings)
 
 
 # Backward compatibility alias

@@ -240,6 +240,16 @@ def apply_output_guard(
     if config is None:
         config = get_default_config()
 
+    # MCP envelopes ({"content":[{"type":"text","text":"<json>"}]}) must be
+    # guarded via the structured path: blind string truncation of the inner
+    # serialized JSON produces unparseable output for large results.
+    if (
+        isinstance(result, dict)
+        and isinstance(result.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "text" for b in result["content"])
+    ):
+        return guard_mcp_content(result, tool_name, config, source_context)
+
     # Step 1: Serialize to measure size
     if isinstance(result, dict):
         text_repr = json.dumps(result)
@@ -295,22 +305,23 @@ def apply_output_guard(
             result = _aggressive_trim(result, config.max_output_chars, config.truncation_suffix)
             final_text = json.dumps(result)
 
-            # If still too big, truncate the serialized JSON itself
+            # If still too big, shrink structurally (drop list items, trim
+            # strings) so the payload REMAINS valid JSON - never chop the
+            # serialized text, which yields unparseable output.
             if len(final_text) > config.max_output_chars:
-                truncated_json = _truncate_text(final_text, config.max_output_chars, config.truncation_suffix)
-                # Return as a single text content block
-                result = {
-                    "content": [{
-                        "type": "text",
-                        "text": truncated_json,
-                    }],
-                    "_guard": {
-                        "truncated": True,
-                        "original_chars": original_chars,
-                        "urls_found": len(all_urls),
-                        "urls_captured": urls_captured,
-                    }
-                }
+                shrunk = _shrink_json_string(final_text, config.max_output_chars)
+                if shrunk is not None:
+                    try:
+                        result = json.loads(shrunk)
+                        if isinstance(result, dict):
+                            result["_guard"] = {
+                                "truncated": True,
+                                "original_chars": original_chars,
+                                "urls_found": len(all_urls),
+                                "urls_captured": urls_captured,
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
     elif isinstance(result, str) and len(result) > config.max_output_chars:
         result = _truncate_text(result, config.max_output_chars, config.truncation_suffix)
 
@@ -341,11 +352,70 @@ def _aggressive_trim(data: Dict[str, Any], target_chars: int, suffix: str) -> Di
         # Compute how much to trim this field
         new_size = max(200, size - overshoot - len(suffix))
         if new_size < size:
-            trimmed = _truncate_text(value, new_size, suffix)
+            trimmed = None
+            if value.lstrip()[:1] in ("{", "["):
+                # Serialized JSON payload: shrink structurally so it stays parseable
+                trimmed = _shrink_json_string(value, new_size)
+            if trimmed is None:
+                trimmed = _truncate_text(value, new_size, suffix)
             _set_nested(data, path, trimmed)
             overshoot -= (size - len(trimmed))
 
     return data
+
+
+def _shrink_json_string(text: str, max_chars: int) -> Optional[str]:
+    """Shrink a serialized-JSON string to ~max_chars while keeping it valid JSON.
+
+    Drops list items (biggest lists first), then truncates long inner strings.
+    Returns None if the text isn't parseable JSON.
+    """
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    def _all_lists(o: Any, acc: List[list]) -> List[list]:
+        if isinstance(o, dict):
+            for v in o.values():
+                _all_lists(v, acc)
+        elif isinstance(o, list):
+            acc.append(o)
+            for v in o:
+                _all_lists(v, acc)
+        return acc
+
+    def _trunc_strings(o: Any, cap: int) -> Any:
+        if isinstance(o, dict):
+            return {k: _trunc_strings(v, cap) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_trunc_strings(v, cap) for v in o]
+        if isinstance(o, str) and len(o) > cap:
+            return o[: cap - 1] + "…"
+        return o
+
+    trimmed = False
+    # Pass 1: shorten long strings first (progressively) - keeps list items
+    # (entities, results) intact at reduced verbosity.
+    for cap in (2000, 800, 300):
+        if len(json.dumps(obj, default=str)) <= max_chars:
+            break
+        obj = _trunc_strings(obj, cap)
+        trimmed = True
+
+    # Pass 2: only if still over budget, drop items from the biggest lists.
+    for _ in range(10_000):
+        if len(json.dumps(obj, default=str)) <= max_chars:
+            break
+        lists = [l for l in _all_lists(obj, []) if len(l) > 0]
+        if not lists:
+            break
+        max(lists, key=len).pop()
+        trimmed = True
+
+    if trimmed and isinstance(obj, dict):
+        obj["truncated"] = True
+    return json.dumps(obj, default=str)
 
 
 def _collect_strings(data: Any, path: list, result: list):
@@ -407,7 +477,12 @@ def guard_mcp_content(
                 try:
                     parsed = json.loads(text)
                     guarded = apply_output_guard(parsed, tool_name, config, source_context)
-                    text = json.dumps(guarded, indent=2) if isinstance(guarded, dict) else str(guarded)
+                    if isinstance(guarded, (dict, list)):
+                        text = json.dumps(guarded, indent=2)
+                        if len(text) > config.max_output_chars:
+                            text = json.dumps(guarded)  # compact form to respect budget
+                    else:
+                        text = str(guarded)
                 except (json.JSONDecodeError, TypeError):
                     # Plain text - just truncate
                     if len(text) > config.max_output_chars:

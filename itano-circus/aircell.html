@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#071011">
+<title>A/COLLE // SELF-ASSEMBLY FLIGHTWORKS</title>
+<style>
+  :root{
+    --ink:#071011;
+    --panel:#0a1718;
+    --panel-2:#0d1e20;
+    --line:#254044;
+    --line-hot:#55777b;
+    --paper:#d9e0d0;
+    --muted:#71898a;
+    --cyan:#67e6e4;
+    --coral:#ff745e;
+    --yellow:#e8ce75;
+    --lime:#a6e880;
+    --danger:#ff5875;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:#030707;color:var(--paper)}
+  body{
+    min-width:760px;
+    overflow:hidden;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+    letter-spacing:.02em;
+  }
+  button{font:inherit}
+  #app{
+    position:relative;
+    display:grid;
+    grid-template-columns:238px minmax(0,1fr);
+    grid-template-rows:64px minmax(0,1fr) 92px;
+    width:100vw;height:100vh;
+    background:
+      linear-gradient(rgba(103,230,228,.025) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(103,230,228,.025) 1px,transparent 1px),
+      radial-gradient(circle at 66% 34%,#102426 0,#071011 33%,#030707 76%);
+    background-size:24px 24px,24px 24px,auto;
+  }
+  #app:after{
+    content:"";position:fixed;inset:0;z-index:20;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.014) 0,rgba(255,255,255,.014) 1px,transparent 1px,transparent 4px);
+    mix-blend-mode:screen;opacity:.6;
+  }
+  .eyebrow{font-size:9px;line-height:1.4;text-transform:uppercase;letter-spacing:.18em;color:var(--muted)}
+  .tag{
+    display:inline-flex;align-items:center;gap:7px;
+    font-size:9px;line-height:1;text-transform:uppercase;letter-spacing:.12em;
+    color:var(--cyan);
+  }
+  .tag:before{content:"";width:5px;height:5px;background:currentColor;box-shadow:0 0 9px currentColor}
+
+  /* top command rail */
+  header{
+    grid-column:1/3;display:grid;grid-template-columns:238px 1fr auto;
+    border-bottom:1px solid var(--line);background:rgba(4,12,13,.91);
+    backdrop-filter:blur(12px);z-index:8;
+  }
+  .brand{
+    display:flex;align-items:center;gap:13px;padding:0 18px;
+    border-right:1px solid var(--line);
+  }
+  .brand-mark{
+    display:grid;place-items:center;width:34px;height:34px;
+    color:var(--ink);background:var(--paper);
+    font-weight:900;font-size:15px;letter-spacing:-.14em;
+    clip-path:polygon(0 0,78% 0,100% 22%,100% 100%,22% 100%,0 78%);
+  }
+  .brand strong{display:block;font-size:11px;letter-spacing:.13em}
+  .brand small{display:block;margin-top:4px;color:var(--muted);font-size:7px;letter-spacing:.15em}
+  .mission-title{display:flex;align-items:center;gap:18px;padding:0 22px;min-width:0}
+  .mission-title h1{
+    margin:0;color:var(--paper);font-size:clamp(12px,1.25vw,18px);
+    font-weight:520;letter-spacing:.08em;white-space:nowrap;
+  }
+  .mission-title h1 span{color:var(--coral)}
+  .mission-title .slash{width:1px;height:25px;background:var(--line);transform:skew(-18deg)}
+  .classic-link{
+    margin-left:auto;padding:8px 10px;border:1px solid var(--line);
+    color:var(--muted);text-decoration:none;font-size:7px;letter-spacing:.12em;
+    white-space:nowrap;transition:120ms ease;
+  }
+  .classic-link:hover{color:var(--paper);border-color:var(--coral)}
+  .header-telemetry{display:flex;align-items:stretch;height:100%}
+  .header-cell{
+    min-width:116px;padding:14px 18px 0;border-left:1px solid var(--line);
+  }
+  .header-cell b{display:block;margin-top:7px;font-size:11px;font-weight:500;color:var(--paper)}
+  #live-state{color:var(--lime)}
+
+  /* left operations rail */
+  aside{
+    min-height:0;border-right:1px solid var(--line);
+    background:rgba(6,16,17,.88);display:flex;flex-direction:column;
+    overflow:hidden;
+  }
+  .rail-section{padding:18px;border-bottom:1px solid var(--line)}
+  .rail-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px}
+  .rail-heading b{font-size:9px;font-weight:500;letter-spacing:.15em}
+  .rail-heading span{font-size:8px;color:var(--muted)}
+  .policy-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .policy{
+    position:relative;height:42px;padding:0 9px;border:1px solid var(--line);
+    color:var(--muted);background:#081315;text-align:left;cursor:pointer;
+    font-size:8px;letter-spacing:.08em;transition:120ms ease;
+  }
+  .policy:hover{color:var(--paper);border-color:var(--line-hot)}
+  .policy.active{
+    color:var(--ink);border-color:var(--paper);background:var(--paper);
+    box-shadow:0 0 22px rgba(103,230,228,.08);
+  }
+  .policy kbd{
+    position:absolute;right:6px;top:6px;color:inherit;opacity:.45;
+    font-size:7px;font-family:inherit;
+  }
+  .policy.auto{grid-column:1/3}
+  .roster{padding:15px 12px 10px;min-height:0;display:flex;flex-direction:column;flex:1}
+  #drone-list{display:flex;flex-direction:column;gap:4px;min-height:0}
+  .drone-row{
+    display:grid;grid-template-columns:14px 1fr auto;align-items:center;gap:8px;
+    width:100%;height:39px;padding:0 8px;border:1px solid transparent;
+    color:var(--muted);background:transparent;text-align:left;cursor:pointer;
+  }
+  .drone-row:hover{background:#0c1b1d;color:var(--paper)}
+  .drone-row.selected{border-color:var(--line-hot);background:#102326;color:var(--paper)}
+  .drone-row .diamond{width:7px;height:7px;transform:rotate(45deg);background:currentColor;box-shadow:0 0 8px currentColor}
+  .drone-row .identity b{display:block;font-size:9px;font-weight:500;letter-spacing:.1em}
+  .drone-row .identity small{display:block;margin-top:3px;font-size:7px;color:var(--muted);letter-spacing:.08em}
+  .drone-row .charge{font-size:8px;color:var(--paper)}
+  .payload-ops{padding:13px 18px 14px;border-top:1px solid var(--line);background:rgba(10,26,28,.62)}
+  .payload-summary{display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-bottom:10px}
+  .payload-summary b{font-size:9px;font-weight:500;color:var(--paper);letter-spacing:.1em}
+  .payload-summary span{font-size:7px;color:var(--muted);letter-spacing:.08em}
+  .payload-summary .payload-state{color:var(--yellow);text-align:right}
+  #payload-action{
+    position:relative;width:100%;height:35px;padding:0 10px;border:1px solid var(--cyan);
+    color:var(--cyan);background:rgba(103,230,228,.04);text-align:left;
+    font-size:8px;letter-spacing:.1em;cursor:pointer;transition:120ms ease;
+  }
+  #payload-action:hover{color:var(--ink);background:var(--cyan)}
+  #payload-action:disabled{cursor:wait;opacity:.5;background:transparent;color:var(--muted);border-color:var(--line)}
+  #payload-action kbd{position:absolute;right:9px;font-family:inherit;opacity:.55}
+  .rail-metrics{padding:15px 18px 18px;border-top:1px solid var(--line)}
+  .metric{margin-top:12px}
+  .metric-label{display:flex;justify-content:space-between;font-size:7px;color:var(--muted);letter-spacing:.12em}
+  .metric-label b{font-weight:500;color:var(--paper)}
+  .bar{height:2px;margin-top:7px;background:#183033;overflow:hidden}
+  .bar i{display:block;height:100%;width:50%;background:var(--cyan);box-shadow:0 0 8px currentColor;transition:width .3s linear}
+
+  /* multi camera matrix */
+  main{
+    position:relative;min-width:0;min-height:0;padding:8px;
+    background:rgba(1,6,7,.34);
+  }
+  #views{
+    display:grid;grid-template-columns:minmax(0,1.58fr) minmax(270px,.72fr);
+    grid-template-rows:repeat(3,1fr);height:100%;gap:8px;
+  }
+  .view{
+    position:relative;min-width:0;min-height:0;overflow:hidden;
+    border:1px solid var(--line);background:#061011;
+    clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px));
+  }
+  .view.primary{grid-row:1/4}
+  .view:before,.view:after{
+    content:"";position:absolute;z-index:3;pointer-events:none;background:var(--line-hot);
+  }
+  .view:before{width:34px;height:1px;left:0;top:0}
+  .view:after{width:1px;height:34px;left:0;top:0}
+  .view canvas{display:block;width:100%;height:100%;image-rendering:auto}
+  .view.primary canvas{cursor:grab}
+  .view.primary canvas:active{cursor:grabbing}
+  .view-head{
+    position:absolute;z-index:4;left:12px;right:12px;top:10px;
+    display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;
+    text-shadow:0 1px 8px #020707;
+  }
+  .camera-name{font-size:9px;letter-spacing:.14em;color:var(--paper)}
+  .camera-name span{color:var(--coral)}
+  .camera-meta{text-align:right;font-size:7px;line-height:1.7;color:var(--muted);letter-spacing:.1em}
+  .view-foot{
+    position:absolute;z-index:4;bottom:9px;left:12px;right:12px;
+    display:flex;justify-content:space-between;align-items:end;pointer-events:none;
+    color:var(--muted);font-size:7px;letter-spacing:.1em;text-shadow:0 1px 8px #020707;
+  }
+  .view-foot b{font-size:8px;font-weight:500;color:var(--cyan)}
+  .reticle{
+    position:absolute;z-index:2;left:50%;top:50%;width:64px;height:64px;
+    transform:translate(-50%,-50%);border:1px solid rgba(103,230,228,.12);
+    border-radius:50%;pointer-events:none;
+  }
+  .reticle:before,.reticle:after{content:"";position:absolute;background:rgba(103,230,228,.18)}
+  .reticle:before{width:10px;height:1px;left:26px;top:31px}
+  .reticle:after{width:1px;height:10px;left:31px;top:26px}
+  .airframe-card{
+    position:absolute;z-index:4;left:13px;top:43px;width:248px;padding:11px 12px 10px;
+    border:1px solid rgba(85,119,123,.55);background:rgba(5,16,17,.72);
+    backdrop-filter:blur(7px);pointer-events:none;
+    clip-path:polygon(0 0,calc(100% - 9px) 0,100% 9px,100% 100%,0 100%);
+  }
+  .airframe-card .spec-title{display:flex;justify-content:space-between;margin-bottom:9px;font-size:8px;letter-spacing:.12em}
+  .airframe-card .spec-title b{font-weight:500;color:var(--coral)}
+  .airframe-card .spec-title span{color:var(--muted)}
+  .spec-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 13px}
+  .spec-row{display:flex;justify-content:space-between;border-bottom:1px solid rgba(37,64,68,.45);padding-bottom:3px}
+  .spec-row span{font-size:6px;color:var(--muted);letter-spacing:.08em}
+  .spec-row b{font-size:7px;font-weight:500;color:var(--paper)}
+  .mass-line{position:relative;height:2px;margin-top:9px;background:#193033}
+  .mass-line i{display:block;width:78.6%;height:100%;background:var(--coral);box-shadow:0 0 7px var(--coral)}
+  .mass-caption{display:flex;justify-content:space-between;margin-top:5px;font-size:6px;color:var(--muted);letter-spacing:.08em}
+
+  /* lower cycle strip */
+  footer{
+    grid-column:1/3;display:grid;grid-template-columns:238px 1fr auto;
+    border-top:1px solid var(--line);background:rgba(4,12,13,.96);z-index:8;
+  }
+  .footer-status{padding:14px 18px;border-right:1px solid var(--line)}
+  .footer-status b{display:block;margin-top:8px;font-size:10px;font-weight:500;color:var(--cyan)}
+  .sequence{position:relative;display:grid;grid-template-columns:repeat(5,1fr);align-items:center;padding:13px 30px}
+  .sequence:before{content:"";position:absolute;left:10%;right:10%;top:44px;height:1px;background:var(--line)}
+  #sequence-progress{
+    position:absolute;left:10%;top:44px;height:1px;width:0;background:var(--coral);
+    box-shadow:0 0 8px var(--coral);transition:width .15s linear;
+  }
+  .seq{position:relative;text-align:center;font-size:7px;color:var(--muted);letter-spacing:.12em}
+  .seq:after{
+    content:"";position:absolute;left:50%;top:28px;width:5px;height:5px;
+    margin-left:-3px;background:#0b1718;border:1px solid var(--line-hot);transform:rotate(45deg);
+  }
+  .seq.live{color:var(--paper)}
+  .seq.live:after{background:var(--coral);border-color:var(--coral);box-shadow:0 0 8px var(--coral)}
+  .event-log{width:290px;padding:12px 18px;border-left:1px solid var(--line);overflow:hidden}
+  #event-text{margin-top:7px;color:var(--paper);font-size:8px;line-height:1.55;white-space:nowrap}
+  #toast{
+    position:fixed;right:18px;top:78px;z-index:30;padding:10px 13px;
+    color:var(--ink);background:var(--paper);font-size:8px;letter-spacing:.1em;
+    transform:translateY(-12px);opacity:0;pointer-events:none;transition:.2s ease;
+  }
+  #toast.on{transform:none;opacity:1}
+  @media(max-width:980px){
+    #app{grid-template-columns:196px minmax(0,1fr)}
+    header{grid-template-columns:196px 1fr auto}
+    footer{grid-template-columns:196px 1fr}
+    .brand{padding:0 12px}.mission-title{padding:0 14px}
+    .classic-link{display:none}
+    .header-cell:nth-child(1){display:none}
+    aside{font-size:90%}
+    #views{grid-template-columns:minmax(0,1.4fr) 240px}
+    .event-log{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <div class="brand-mark">A/8</div>
+      <div><strong>A.COLLE</strong><small>FLIGHTWORKS</small></div>
+    </div>
+    <div class="mission-title">
+      <h1>M100 SELF-ASSEMBLY <span>/</span> CELL CONTROL</h1>
+      <i class="slash"></i>
+      <div class="tag">MESH STABLE</div>
+      <a class="classic-link" href="classic.html">CLASSIC CIRCUS ↗</a>
+    </div>
+    <div class="header-telemetry">
+      <div class="header-cell"><div class="eyebrow">Mission clock</div><b id="mission-clock">T+00:00:00</b></div>
+      <div class="header-cell"><div class="eyebrow">Grid state</div><b id="live-state">● NOMINAL</b></div>
+    </div>
+  </header>
+
+  <aside>
+    <section class="rail-section">
+      <div class="rail-heading"><b>ORCHESTRATION</b><span>POLICY</span></div>
+      <div class="policy-grid">
+        <button class="policy auto active" data-mode="BALANCED">AUTONOMOUS CELL<kbd>A</kbd></button>
+        <button class="policy" data-mode="ASSEMBLE">ASSEMBLE<kbd>1</kbd></button>
+        <button class="policy" data-mode="MANUFACTURE">MICROFAB<kbd>2</kbd></button>
+        <button class="policy" data-mode="CHARGE">CHARGE<kbd>3</kbd></button>
+        <button class="policy" data-mode="CIRCUS">FLIGHT TEST<kbd>4</kbd></button>
+      </div>
+    </section>
+    <section class="roster">
+      <div class="rail-heading"><b>ACTIVE CELLS</b><span id="roster-count">06/06</span></div>
+      <div id="drone-list"></div>
+    </section>
+    <section class="payload-ops">
+      <div class="rail-heading"><b>GROUND PAYLOAD</b><span>Q9 / 353G</span></div>
+      <div class="payload-summary">
+        <b id="payload-id">QPX-01</b><b class="payload-state" id="payload-state">STOWED</b>
+        <span>190×153×107MM / 9-DOF</span><span id="payload-range">READY</span>
+      </div>
+      <button id="payload-action">DEPLOY QUADRUPED<kbd>D</kbd></button>
+    </section>
+    <section class="rail-metrics">
+      <div class="rail-heading"><b>CELL RESOURCES</b><span>LIVE</span></div>
+      <div class="metric">
+        <div class="metric-label"><span>ENERGY RESERVE</span><b id="energy-value">78%</b></div>
+        <div class="bar"><i id="energy-bar"></i></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label"><span>FEEDSTOCK</span><b id="matter-value">64%</b></div>
+        <div class="bar"><i id="matter-bar" style="background:var(--coral)"></i></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label"><span>MESH COHESION</span><b id="mesh-value">99.4%</b></div>
+        <div class="bar"><i id="mesh-bar" style="background:var(--lime)"></i></div>
+      </div>
+    </section>
+  </aside>
+
+  <main>
+    <div id="views">
+      <section class="view primary" data-camera="perspective">
+        <canvas id="perspective" aria-label="Three dimensional perspective view"></canvas>
+        <div class="view-head">
+          <div class="camera-name"><span>CAM 01</span> / ORBITAL PERSPECTIVE</div>
+          <div class="camera-meta">OPTICAL + MESH FUSION<br><span id="orbit-readout">AZ 318° / EL 24°</span></div>
+        </div>
+        <div class="airframe-card">
+          <div class="spec-title"><b>DJI MATRICE 100 / TB47D</b><span>LOAD CASE Q9</span></div>
+          <div class="spec-grid">
+            <div class="spec-row"><span>WHEELBASE</span><b>650 MM</b></div>
+            <div class="spec-row"><span>MTOW</span><b>3.600 KG</b></div>
+            <div class="spec-row"><span>AIRFRAME</span><b>2.355 KG</b></div>
+            <div class="spec-row"><span>Q9 + LATCH</span><b>0.473 KG</b></div>
+            <div class="spec-row"><span>MAX GPS</span><b>17 M/S</b></div>
+            <div class="spec-row"><span>HOVER EST.</span><b id="hover-estimate">≈17.3 MIN</b></div>
+            <div class="spec-row"><span>MOTORS</span><b>3510 × 4</b></div>
+            <div class="spec-row"><span>PROPS</span><b>1345S</b></div>
+          </div>
+          <div class="mass-line"><i id="mass-fill"></i></div>
+          <div class="mass-caption"><span id="auw-caption">AUW 2.828 KG / 78.6%</span><span id="margin-caption">MARGIN 0.772 KG</span></div>
+        </div>
+        <div class="reticle"></div>
+        <div class="view-foot">
+          <span>DRAG: ORBIT &nbsp;·&nbsp; WHEEL: RANGE &nbsp;·&nbsp; CLICK: SELECT</span>
+          <b id="primary-task">AUTONOMOUS BALANCE</b>
+        </div>
+      </section>
+      <section class="view" data-camera="plan">
+        <canvas id="plan" aria-label="Top plan view"></canvas>
+        <div class="view-head">
+          <div class="camera-name"><span>CAM 02</span> / PLAN</div>
+          <div class="camera-meta">Y+ / ORTHO<br>R 09.0M</div>
+        </div>
+        <div class="view-foot"><span>SHARED WORLD STATE</span><b>SYNC 00.2MS</b></div>
+      </section>
+      <section class="view" data-camera="side">
+        <canvas id="side" aria-label="Side elevation view"></canvas>
+        <div class="view-head">
+          <div class="camera-name"><span>CAM 03</span> / ELEVATION</div>
+          <div class="camera-meta">Z- / ORTHO<br>DATUM +00.0</div>
+        </div>
+        <div class="view-foot"><span>ALTITUDE / MODULE LOCK</span><b>BASELINE TRUE</b></div>
+      </section>
+      <section class="view" data-camera="exploded">
+        <canvas id="exploded" aria-label="Exploded drone assembly view"></canvas>
+        <div class="view-head">
+          <div class="camera-name"><span>CAM 04</span> / UNIT EXPLODED</div>
+          <div class="camera-meta"><span id="unit-id">AC-01</span><br><span id="unit-task">MICROFAB</span></div>
+        </div>
+        <div class="view-foot"><span id="module-count">08 MODULES / 08 LOCKED</span><b id="unit-charge">CELL 82%</b></div>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-status">
+      <div class="eyebrow">Current directive</div>
+      <b id="directive">BALANCE / BUILD / REPLENISH</b>
+    </div>
+    <div class="sequence">
+      <div id="sequence-progress"></div>
+      <div class="seq live" data-seq="INTAKE">01 / INTAKE</div>
+      <div class="seq live" data-seq="ASSEMBLE">02 / ASSEMBLE</div>
+      <div class="seq live" data-seq="MANUFACTURE">03 / MICROFAB</div>
+      <div class="seq live" data-seq="CHARGE">04 / CHARGE</div>
+      <div class="seq live" data-seq="CIRCUS">05 / DEPLOY</div>
+    </div>
+    <div class="event-log">
+      <div class="eyebrow">Last mesh event</div>
+      <div id="event-text">AC-06 accepted an assembly berth.</div>
+    </div>
+  </footer>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+"use strict";
+
+const TAU = Math.PI * 2;
+const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+const lerp = (a,b,t) => a+(b-a)*t;
+const smooth = t => { t=clamp(t,0,1); return t*t*(3-2*t); };
+const V = (x=0,y=0,z=0) => ({x,y,z});
+const add = (a,b) => V(a.x+b.x,a.y+b.y,a.z+b.z);
+const sub = (a,b) => V(a.x-b.x,a.y-b.y,a.z-b.z);
+const mul = (a,s) => V(a.x*s,a.y*s,a.z*s);
+const dot = (a,b) => a.x*b.x+a.y*b.y+a.z*b.z;
+const cross = (a,b) => V(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);
+const len = a => Math.hypot(a.x,a.y,a.z);
+const norm = a => { const l=len(a)||1; return mul(a,1/l); };
+const rotateY = (p,a) => V(p.x*Math.cos(a)-p.z*Math.sin(a),p.y,p.x*Math.sin(a)+p.z*Math.cos(a));
+const M100={airframeKg:2.355,mtowKg:3.600,batteryWh:99.9,chargePowerW:180,maxGpsMps:17,maxWindMps:10,hoverCases:[[0,22],[.5,17],[1,13]]};
+const Q9={massKg:.353,latchKg:.120};
+function q9Carried(d){return d.quad.state!=="GROUND";}
+function externalPayloadKg(d){return Q9.latchKg+(q9Carried(d)?Q9.massKg:0);}
+function takeoffMassKg(d){return M100.airframeKg+externalPayloadKg(d);}
+function hoverMinutes(payload){
+  if(payload<=.5)return lerp(22,17,payload/.5);
+  if(payload<=1)return lerp(17,13,(payload-.5)/.5);
+  return Math.max(9.5,13-(payload-1)*10);
+}
+const taskColors = {
+  FAB:"#ff745e",CHARGE:"#67e6e4",ASSEMBLE:"#e8ce75",FLIGHT:"#a6e880",
+  DEPLOY:"#e8ce75",RECOVER:"#67e6e4"
+};
+const directives = {
+  BALANCED:"BALANCE / BUILD / REPLENISH",
+  ASSEMBLE:"RECALL / ENUMERATE / SELF-ASSEMBLE",
+  MANUFACTURE:"FEED / PRINT / VERIFY",
+  CHARGE:"DOCK / INDUCT / EQUALIZE",
+  CIRCUS:"LAUNCH / DISPERSE / REJOIN"
+};
+
+let seed = 83177;
+function random(){ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
+function shade(hex,f){
+  const n=parseInt(hex.slice(1),16);
+  const r=clamp(((n>>16)&255)*f,0,255)|0;
+  const g=clamp(((n>>8)&255)*f,0,255)|0;
+  const b=clamp((n&255)*f,0,255)|0;
+  return "rgb("+r+","+g+","+b+")";
+}
+function pad2(n){ return String(n|0).padStart(2,"0"); }
+
+const moduleBlueprint = [
+  {name:"N1 CORE PLATES",kind:"core",home:V(0,0,0),stage:V(0,0,0),order:0},
+  {name:"3510 / ARM A",kind:"rotor",home:V(1.02,.05,.86),stage:V(2.7,1.6,.5),order:1},
+  {name:"3510 / ARM B",kind:"rotor",home:V(-1.02,.05,.86),stage:V(-2.4,1.2,1.4),order:2},
+  {name:"3510 / ARM C",kind:"rotor",home:V(1.02,.05,-.86),stage:V(2.2,-.5,-1.9),order:3},
+  {name:"3510 / ARM D",kind:"rotor",home:V(-1.02,.05,-.86),stage:V(-2.6,.2,-1.3),order:4},
+  {name:"Q9 HARD LATCH",kind:"tool",home:V(0,-.38,.28),stage:V(1.6,-1.4,2.3),order:5},
+  {name:"TB47D / 99.9WH",kind:"cell",home:V(0,.05,-.58),stage:V(-1.5,1.9,-2.1),order:6},
+  {name:"GPS / MESH NODE",kind:"node",home:V(0,.44,.08),stage:V(.8,2.5,-.4),order:7}
+];
+
+const drones = Array.from({length:6},(_,i)=>{
+  const a=i/6*TAU;
+  const drone={
+    id:"AC-"+pad2(i+1),index:i,
+    p:V(Math.cos(a)*3,1.5+(i%2)*.3,Math.sin(a)*3),
+    target:V(),yaw:-a,energy:62+random()*33,assembly:1,
+    task:"FAB",trail:[],trailClock:0,phase:random()*TAU
+  };
+  drone.quad={
+    id:"QPX-"+pad2(i+1),state:"STOWED",actionT:0,
+    p:V(drone.p.x,drone.p.y-.52,drone.p.z),site:V(),yaw:drone.yaw,
+    energy:72+random()*24,gait:random()*TAU
+  };
+  return drone;
+});
+
+const state = {
+  time:0,mode:"BALANCED",selected:0,paused:false,
+  material:76.4,mesh:99.4,built:0,buildProgress:.28,
+  policyRotation:0,lastRotation:-1,
+  camera:{yaw:-.72,pitch:.42,dist:17},
+  pointer:{down:false,moved:false,x:0,y:0}
+};
+
+const views = ["perspective","plan","side","exploded"].map(type=>({
+  type,canvas:document.getElementById(type),ctx:document.getElementById(type).getContext("2d"),
+  w:0,h:0,dpr:1,screenDrones:[]
+}));
+
+function taskFor(drone){
+  if(state.mode==="ASSEMBLE") return "ASSEMBLE";
+  if(state.mode==="MANUFACTURE") return "FAB";
+  if(state.mode==="CHARGE") return "CHARGE";
+  if(state.mode==="CIRCUS") return "FLIGHT";
+  if(drone.energy<30) return "CHARGE";
+  const slot=(drone.index+state.policyRotation)%6;
+  if(slot<3) return "FAB";
+  if(slot<5) return "CHARGE";
+  return "ASSEMBLE";
+}
+
+function rankInTask(drone,task){
+  const same=drones.filter(d=>taskFor(d)===task);
+  return {rank:same.indexOf(drone),count:same.length};
+}
+
+function targetFor(d,task){
+  if(d.quad.state==="DEPLOYING") return V(d.quad.site.x,1.55,d.quad.site.z);
+  if(d.quad.state==="RECOVERING") return V(d.quad.p.x,1.55,d.quad.p.z);
+  const r=rankInTask(d,task), n=Math.max(1,r.count);
+  if(task==="FAB"){
+    const a=r.rank/n*TAU + state.time*.08;
+    return V(2.2+Math.cos(a)*3.15,2.25+Math.sin(state.time*1.2+d.phase)*.28,Math.sin(a)*2.65);
+  }
+  if(task==="CHARGE"){
+    const z=(r.rank-(n-1)/2)*1.7;
+    return V(-4.9,.86,z);
+  }
+  if(task==="ASSEMBLE"){
+    const a=r.rank/n*TAU;
+    return V(-1.35+Math.cos(a)*1.4,2.35+Math.sin(state.time*.8+d.phase)*.2,3.65+Math.sin(a)*1.0);
+  }
+  const a=state.time*.66+d.index/6*TAU;
+  return V(
+    Math.cos(a)*5.4+Math.sin(a*2.7)*1.1,
+    2.7+Math.sin(a*1.9+d.phase)*1.75,
+    Math.sin(a)*4.1+Math.cos(a*2.2)*.8
+  );
+}
+
+function event(message){
+  document.getElementById("event-text").textContent=message;
+}
+let toastTimer=0;
+function toast(message){
+  const el=document.getElementById("toast");
+  el.textContent=message;el.classList.add("on");
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("on"),1400);
+}
+
+function setMode(mode,announce=true){
+  if(!directives[mode]) return;
+  state.mode=mode;
+  document.querySelectorAll(".policy").forEach(b=>b.classList.toggle("active",b.dataset.mode===mode));
+  document.getElementById("directive").textContent=directives[mode];
+  document.getElementById("primary-task").textContent=mode==="BALANCED"?"AUTONOMOUS BALANCE":directives[mode];
+  document.querySelectorAll(".seq").forEach(el=>{
+    const seq=el.dataset.seq;
+    el.classList.toggle("live",mode==="BALANCED" || seq===mode || (mode==="MANUFACTURE"&&seq==="INTAKE"));
+  });
+  if(announce){
+    const label=mode==="BALANCED"?"autonomous cell":mode.toLowerCase();
+    event("Swarm policy changed to "+label+".");
+    toast("POLICY // "+mode);
+  }
+}
+
+document.querySelectorAll(".policy").forEach(btn=>btn.addEventListener("click",()=>setMode(btn.dataset.mode)));
+
+function buildRoster(){
+  const list=document.getElementById("drone-list");
+  drones.forEach((d,i)=>{
+    const b=document.createElement("button");
+    b.className="drone-row"+(i===state.selected?" selected":"");
+    b.dataset.drone=i;
+    b.innerHTML='<i class="diamond"></i><span class="identity"><b>'+d.id+'</b><small>WAITING FOR MESH</small></span><span class="charge">--%</span>';
+    b.addEventListener("click",()=>selectDrone(i));
+    list.appendChild(b);
+  });
+}
+function selectDrone(i){
+  state.selected=clamp(i,0,drones.length-1);
+  document.querySelectorAll(".drone-row").forEach((r,k)=>r.classList.toggle("selected",k===state.selected));
+  event(drones[state.selected].id+" promoted to inspection channel.");
+  toast("INSPECT // "+drones[state.selected].id);
+}
+buildRoster();
+
+function payloadAction(){
+  const d=drones[state.selected],q=d.quad;
+  if(q.state==="STOWED"){
+    if(d.energy<45||d.assembly<.98){event(d.id+" deployment blocked: requires ≥45% reserve and locked modules.");toast("DEPLOY BLOCKED // SAFETY GATE");return;}
+    const col=d.index%3,row=Math.floor(d.index/3);
+    q.site=V(-4+col*4,0,-4.65+row*1.25);
+    q.actionT=0;q.state="DEPLOYING";
+    event(d.id+" routing "+q.id+" to ground deployment lane.");
+    toast("DEPLOY // "+q.id);
+  }else if(q.state==="GROUND"){
+    q.actionT=0;q.state="RECOVERING";
+    event(d.id+" recalled to recover "+q.id+".");
+    toast("RECOVER // "+q.id);
+  }
+}
+document.getElementById("payload-action").addEventListener("click",payloadAction);
+
+function resizeView(view){
+  const rect=view.canvas.getBoundingClientRect();
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const w=Math.max(1,Math.round(rect.width)),h=Math.max(1,Math.round(rect.height));
+  if(view.w!==w||view.h!==h||view.dpr!==dpr){
+    view.w=w;view.h=h;view.dpr=dpr;
+    view.canvas.width=Math.round(w*dpr);view.canvas.height=Math.round(h*dpr);
+    view.ctx.setTransform(dpr,0,0,dpr,0,0);
+    view.ctx.imageSmoothingEnabled=true;
+  }
+}
+
+function camera(type,w,h){
+  let pos,target,up=V(0,1,0),ortho=0;
+  if(type==="perspective"){
+    const c=state.camera,cp=Math.cos(c.pitch);
+    target=V(0,1.8,0);
+    pos=add(target,V(Math.sin(c.yaw)*cp*c.dist,Math.sin(c.pitch)*c.dist,Math.cos(c.yaw)*cp*c.dist));
+  }else if(type==="plan"){
+    pos=V(0,20,.001);target=V(0,0,0);up=V(0,0,-1);ortho=Math.min(w/18,h/14);
+  }else if(type==="side"){
+    pos=V(0,3.6,18);target=V(0,2,0);ortho=Math.min(w/18,h/8.5);
+  }else{
+    const a=-.68+Math.sin(state.time*.08)*.08;
+    target=V(0,0,0);pos=V(Math.sin(a)*7,4.1,Math.cos(a)*7);
+  }
+  const forward=norm(sub(target,pos));
+  const right=norm(cross(forward,up));
+  const trueUp=norm(cross(right,forward));
+  return {pos,forward,right,up:trueUp,ortho,f:Math.min(w,h)*1.08,w,h};
+}
+
+function project(cam,p){
+  const q=sub(p,cam.pos),depth=dot(q,cam.forward);
+  if(cam.ortho){
+    return {x:cam.w/2+dot(q,cam.right)*cam.ortho,y:cam.h/2-dot(q,cam.up)*cam.ortho,z:depth,s:cam.ortho};
+  }
+  if(depth<.12) return null;
+  return {x:cam.w/2+dot(q,cam.right)*cam.f/depth,y:cam.h/2-dot(q,cam.up)*cam.f/depth,z:depth,s:cam.f/depth};
+}
+
+function poly(cmds,cam,points,fill,stroke,alpha=.9,width=1){
+  const pts=points.map(p=>project(cam,p));
+  if(pts.some(p=>!p)) return;
+  cmds.push({kind:"poly",pts,depth:pts.reduce((s,p)=>s+p.z,0)/pts.length,fill,stroke,alpha,width});
+}
+function line3(cmds,cam,points,color,alpha=.7,width=1,dash=0,glow=0){
+  const pts=points.map(p=>project(cam,p)).filter(Boolean);
+  if(pts.length<2) return;
+  cmds.push({kind:"line",pts,depth:pts.reduce((s,p)=>s+p.z,0)/pts.length,color,alpha,width,dash,glow});
+}
+function point3(cmds,cam,p,r,color,alpha=.9,glow=0){
+  const q=project(cam,p);if(!q)return;
+  cmds.push({kind:"point",p:q,depth:q.z,r:Math.max(1,r*q.s),color,alpha,glow});
+}
+function text3(cmds,cam,p,text,color="#d9e0d0",align="left"){
+  const q=project(cam,p);if(!q)return;
+  cmds.push({kind:"text",p:q,depth:q.z,text,color,align});
+}
+function box3(cmds,cam,c,size,yaw,color,alpha=.86,wire=false){
+  const x=size.x/2,y=size.y/2,z=size.z/2;
+  const local=[V(-x,-y,-z),V(x,-y,-z),V(x,y,-z),V(-x,y,-z),V(-x,-y,z),V(x,-y,z),V(x,y,z),V(-x,y,z)];
+  const verts=local.map(p=>add(c,rotateY(p,yaw)));
+  const faces=[
+    {i:[0,1,2,3],f:.58},{i:[4,7,6,5],f:.94},{i:[0,4,5,1],f:.48},
+    {i:[3,2,6,7],f:1.18},{i:[1,5,6,2],f:.78},{i:[0,3,7,4],f:.67}
+  ];
+  faces.forEach(face=>poly(cmds,cam,face.i.map(i=>verts[i]),wire?"rgba(0,0,0,0)":shade(color,face.f),shade(color,1.24),wire ? .18 : alpha,wire ? 1 : .65));
+}
+function ring3(cmds,cam,c,r,color,alpha=.7,plane="y",segments=28){
+  const pts=[];
+  for(let i=0;i<=segments;i++){
+    const a=i/segments*TAU;
+    if(plane==="y")pts.push(V(c.x+Math.cos(a)*r,c.y,c.z+Math.sin(a)*r));
+    else if(plane==="z")pts.push(V(c.x+Math.cos(a)*r,c.y+Math.sin(a)*r,c.z));
+    else pts.push(V(c.x,c.y+Math.cos(a)*r,c.z+Math.sin(a)*r));
+  }
+  line3(cmds,cam,pts,color,alpha,1,0,4);
+}
+
+function flush(ctx,cmds){
+  cmds.sort((a,b)=>b.depth-a.depth);
+  ctx.lineJoin="round";ctx.lineCap="round";
+  for(const c of cmds){
+    ctx.save();ctx.globalAlpha=c.alpha==null?1:c.alpha;
+    if(c.kind==="poly"){
+      ctx.beginPath();ctx.moveTo(c.pts[0].x,c.pts[0].y);
+      for(let i=1;i<c.pts.length;i++)ctx.lineTo(c.pts[i].x,c.pts[i].y);
+      ctx.closePath();ctx.fillStyle=c.fill;ctx.fill();
+      if(c.stroke){ctx.strokeStyle=c.stroke;ctx.lineWidth=c.width;ctx.stroke();}
+    }else if(c.kind==="line"){
+      ctx.beginPath();ctx.moveTo(c.pts[0].x,c.pts[0].y);
+      for(let i=1;i<c.pts.length;i++)ctx.lineTo(c.pts[i].x,c.pts[i].y);
+      ctx.strokeStyle=c.color;ctx.lineWidth=c.width;
+      if(c.dash)ctx.setLineDash([c.dash,c.dash*1.4]);
+      if(c.glow){ctx.shadowColor=c.color;ctx.shadowBlur=c.glow;}
+      ctx.stroke();
+    }else if(c.kind==="point"){
+      ctx.fillStyle=c.color;if(c.glow){ctx.shadowColor=c.color;ctx.shadowBlur=c.glow;}
+      ctx.beginPath();ctx.arc(c.p.x,c.p.y,c.r,0,TAU);ctx.fill();
+    }else if(c.kind==="text"){
+      ctx.fillStyle=c.color;ctx.font="7px ui-monospace, monospace";ctx.textAlign=c.align;
+      ctx.shadowColor="#020707";ctx.shadowBlur=5;ctx.fillText(c.text,c.p.x,c.p.y);
+    }
+    ctx.restore();
+  }
+}
+
+function modulePositions(d,exploded=false){
+  const factor=exploded?2.15:1;
+  return moduleBlueprint.map((m,i)=>{
+    const stagger=i===0?1:clamp((d.assembly*1.7-m.order*.1),0,1);
+    const lock=smooth(stagger);
+    let local=V(
+      lerp(m.stage.x,m.home.x,lock)*factor,
+      lerp(m.stage.y,m.home.y,lock)*factor,
+      lerp(m.stage.z,m.home.z,lock)*factor
+    );
+    if(!exploded){
+      const drift=(1-lock)*.22;
+      local.x+=Math.sin(state.time*1.7+i)*drift;
+      local.y+=Math.cos(state.time*1.3+i*2)*drift;
+    }else{
+      local=mul(m.home,factor);
+    }
+    const base=exploded?V(0,0,0):d.p;
+    const yaw=exploded?-.18:d.yaw;
+    return {blue:m,p:add(base,rotateY(local,yaw)),lock};
+  });
+}
+
+function drawDrone(cmds,cam,d,exploded=false){
+  const color=taskColors[d.task]||taskColors.FAB;
+  const mods=modulePositions(d,exploded);
+  const core=mods[0].p;
+  const yaw=exploded?-.18:d.yaw;
+
+  // Matrice 100 central frame: stacked G10 plates, N1 controller and expansion rails.
+  box3(cmds,cam,add(core,V(0,-.09,0)),V(.92,.11,.76),yaw,"#657476",.94);
+  box3(cmds,cam,add(core,V(0,.10,0)),V(.82,.10,.68),yaw,"#a7b0aa",.94);
+  box3(cmds,cam,add(core,V(0,.19,.04)),V(.42,.17,.38),yaw,"#d4d9d1",.92);
+  for(let s=-1;s<=1;s+=2){
+    const railA=add(core,rotateY(V(s*.48,-.20,0),yaw));
+    box3(cmds,cam,railA,V(.07,.08,1.02),yaw,"#526365",.9);
+  }
+  point3(cmds,cam,add(core,V(0,.31,0)),.045,"#f3f5ec",1,7);
+
+  // Four carbon arms, DJI 3510 motors, 1345s propellers and navigation LEDs.
+  mods.slice(1,5).forEach((m,j)=>{
+    const delta=sub(m.p,core),armLength=Math.hypot(delta.x,delta.z);
+    const armYaw=Math.atan2(delta.x,delta.z);
+    const mid=V((core.x+m.p.x)/2,(core.y+m.p.y)/2,(core.z+m.p.z)/2);
+    if(m.lock>.28 || exploded){
+      box3(cmds,cam,mid,V(.13,.11,armLength),armYaw,"#344548",.94);
+      line3(cmds,cam,[core,m.p],"#9aa9a4",.36,.7);
+    }
+    box3(cmds,cam,add(m.p,V(0,.04,0)),V(.29,.22,.29),armYaw,"#788689",.96);
+    ring3(cmds,cam,add(m.p,V(0,.16,0)),.16,"#cbd2cc",.62);
+    const propYaw=state.time*(j%2?-9:9)+j*.73;
+    box3(cmds,cam,add(m.p,V(0,.22,0)),V(1.15,.028,.075),propYaw,"#c7d1ca",.75);
+    box3(cmds,cam,add(m.p,V(0,.225,0)),V(1.15,.024,.065),propYaw+Math.PI/2,"#819092",.63);
+    ring3(cmds,cam,add(m.p,V(0,.215,0)),.57,color,.16,"y",36);
+    point3(cmds,cam,add(m.p,V(0,-.07,0)),.035,j<2?"#67e6e4":"#ff745e",.96,5);
+  });
+
+  // Fixed landing gear and skids, mounted to the central plate.
+  for(const side of [-1,1]){
+    const top=add(core,rotateY(V(side*.39,-.10,0),yaw));
+    const foot=add(core,rotateY(V(side*.48,-.66,0),yaw));
+    line3(cmds,cam,[top,foot],"#778789",.9,2);
+    box3(cmds,cam,foot,V(.075,.07,1.05),yaw,"#687779",.9);
+    point3(cmds,cam,add(foot,rotateY(V(0,0,.48),yaw)),.035,"#b9c2bc",.8);
+    point3(cmds,cam,add(foot,rotateY(V(0,0,-.48),yaw)),.035,"#b9c2bc",.8);
+  }
+
+  // Payload hard point, TB47D battery and GPS/mesh mast remain independent assembly groups.
+  const latch=mods[5].p,battery=mods[6].p,node=mods[7].p;
+  box3(cmds,cam,latch,V(.46,.16,.38),yaw,"#b65e4e",.96);
+  for(const s of [-1,1])line3(cmds,cam,[add(latch,rotateY(V(s*.17,-.08,-.16),yaw)),add(latch,rotateY(V(s*.17,-.18,.16),yaw))],"#d5dcd5",.78,1.2);
+  point3(cmds,cam,add(latch,V(0,-.12,0)),.05,color,1,6);
+  box3(cmds,cam,battery,V(.76,.31,.46),yaw,"#344f53",.97);
+  for(let k=-1;k<=1;k++)line3(cmds,cam,[add(battery,rotateY(V(k*.18,-.15,-.23),yaw)),add(battery,rotateY(V(k*.18,.15,-.23),yaw))],"#67e6e4",.62,.8);
+  line3(cmds,cam,[add(core,V(0,.24,0)),node],"#a9b3ad",.72,1.2);
+  box3(cmds,cam,node,V(.27,.08,.27),yaw,"#d2d7d0",.96);
+  ring3(cmds,cam,add(node,V(0,.05,0)),.16,"#e8ce75",.72);
+
+  if(exploded){
+    const shortNames=["N1 CORE","3510 / A","3510 / B","3510 / C","3510 / D","Q9 LATCH","TB47D","GPS / MESH"];
+    mods.forEach((m,i)=>{
+      const dir=m.p.x>=0?1:-1;
+      const labelPos=add(m.p,V(dir*.72,(i%2?-.05:.12),0));
+      line3(cmds,cam,[m.p,labelPos],"#55777b",.62,.7);
+      text3(cmds,cam,labelPos,shortNames[i]+" / "+pad2(i+1),color,dir>0?"left":"right");
+    });
+    const qp=V(0,-1.52,.05);
+    drawQuadruped(cmds,cam,d,qp,yaw,true,true);
+    line3(cmds,cam,[latch,add(qp,V(0,.16,0))],"#e8ce75",.5,.8,3);
+    text3(cmds,cam,add(qp,V(.68,-.02,0)),d.quad.id+" / 353G","#e8ce75","left");
+  }else if(d.quad.state==="STOWED"){
+    drawQuadruped(cmds,cam,d,d.quad.p,d.yaw,true,false);
+  }
+
+  if(!exploded){
+    ring3(cmds,cam,V(d.p.x,d.p.y-.72,d.p.z),1.12,color,d.index===state.selected ? .72 : .18);
+    if(d.index===state.selected){
+      text3(cmds,cam,add(d.p,V(0,1.22,0)),d.id+" / M100 / "+d.task,color,"center");
+      line3(cmds,cam,[add(d.p,V(0,.72,0)),add(d.p,V(0,1.08,0))],color,.65,.8);
+    }
+  }
+}
+
+function drawQuadruped(cmds,cam,d,p,yaw,folded=false,exploded=false){
+  const q=d.quad,color=folded?"#e8ce75":"#67e6e4";
+  const world=local=>add(p,rotateY(local,yaw));
+  box3(cmds,cam,p,V(.48,.18,.28),yaw,"#7e8d8b",.96);
+  box3(cmds,cam,world(V(0,.12,-.02)),V(.31,.08,.2),yaw,"#314d51",.94);
+  const head=world(V(0,.02,.24));
+  box3(cmds,cam,head,V(.24,.18,.18),yaw,"#a9b3ad",.96);
+  point3(cmds,cam,world(V(-.065,.055,.34)),.022,color,1,5);
+  point3(cmds,cam,world(V(.065,.055,.34)),.022,color,1,5);
+
+  const gait=state.time*5.2+q.gait;
+  [[-1,1],[1,1],[-1,-1],[1,-1]].forEach((leg,i)=>{
+    const sx=leg[0],sz=leg[1],phase=(i===0||i===3)?0:Math.PI;
+    const hip=world(V(sx*.18,-.03,sz*.12));
+    let knee,foot;
+    if(folded){
+      knee=world(V(sx*.27,-.02,sz*.08));
+      foot=world(V(sx*.24,-.12,-sz*.04));
+    }else{
+      const stride=Math.sin(gait+phase)*.075;
+      knee=world(V(sx*.24,-.16,sz*.13+stride));
+      foot=world(V(sx*.27,-.31,sz*.16+stride*1.6));
+    }
+    line3(cmds,cam,[hip,knee,foot],"#9aa9a4",.96,2);
+    point3(cmds,cam,knee,.025,"#d9e0d0",.95);
+    point3(cmds,cam,foot,.028,color,.9,3);
+  });
+  point3(cmds,cam,world(V(0,.17,-.02)),.035,"#67e6e4",.85,5);
+  if(!folded && d.index===state.selected){
+    text3(cmds,cam,add(p,V(0,.52,0)),q.id+" / GROUND "+(q.energy|0)+"%",color,"center");
+  }
+  if(exploded)ring3(cmds,cam,V(p.x,p.y-.34,p.z),.46,color,.25);
+}
+
+function drawGrid(cmds,cam){
+  for(let x=-8;x<=8;x++){
+    const major=x%4===0;
+    line3(cmds,cam,[V(x,0,-6),V(x,0,6)],major?"#29484b":"#142b2d",major?.34:.19,major?.8:.45);
+  }
+  for(let z=-6;z<=6;z++){
+    const major=z%3===0;
+    line3(cmds,cam,[V(-8,0,z),V(8,0,z)],major?"#29484b":"#142b2d",major?.34:.19,major?.8:.45);
+  }
+  line3(cmds,cam,[V(-8,.02,0),V(8,.02,0)],"#67e6e4",.2,.7);
+  line3(cmds,cam,[V(0,.02,-6),V(0,.02,6)],"#ff745e",.18,.7);
+}
+
+function drawSite(cmds,cam){
+  // microfabrication cradle
+  const fab=V(2.2,0,0);
+  box3(cmds,cam,V(fab.x,.14,fab.z),V(3.2,.28,3.0),0,"#20393b",.72);
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>{
+    box3(cmds,cam,V(fab.x+q[0]*1.22,.78,fab.z+q[1]*1.05),V(.13,1.55,.13),0,"#50696a",.84);
+  });
+  ring3(cmds,cam,V(fab.x,1.08,fab.z),1.34,"#ff745e",.5);
+  ring3(cmds,cam,V(fab.x,.42,fab.z),1.08,"#ff745e",.25);
+  const h=.25+state.buildProgress*1.9;
+  box3(cmds,cam,V(fab.x,.29+h/2,fab.z),V(1.25,h,1.25),state.time*.13,"#bd5b4c",.16,true);
+  for(let y=.38;y<.3+h;y+=.25){
+    ring3(cmds,cam,V(fab.x,y,fab.z),.66,"#ff745e",.14);
+  }
+  text3(cmds,cam,V(fab.x,2.55,fab.z),"µFAB / "+pad2(state.built)+" COMPLETE","#ff745e","center");
+
+  // inductive charge deck
+  const dock=V(-4.9,0,0);
+  box3(cmds,cam,V(dock.x,.11,dock.z),V(2.5,.22,5.3),0,"#183538",.78);
+  [-1.7,0,1.7].forEach((z,i)=>{
+    ring3(cmds,cam,V(dock.x,.24,z),.64,"#67e6e4",.38);
+    ring3(cmds,cam,V(dock.x,.25,z),.34,"#67e6e4",.68);
+    point3(cmds,cam,V(dock.x,.27,z),.06,"#67e6e4",.9,8);
+  });
+  box3(cmds,cam,V(-6,.92,0),V(.22,1.7,4.7),0,"#31585b",.65);
+  text3(cmds,cam,V(-4.9,.3,-2.9),"INDUCTIVE DECK","#67e6e4","center");
+
+  // self-assembly berth
+  const berth=V(-1.35,0,3.65);
+  box3(cmds,cam,V(berth.x,.09,berth.z),V(3.3,.18,2.5),0,"#363826",.6);
+  for(let x=-1;x<=1;x+=2){
+    for(let z=-1;z<=1;z+=2)box3(cmds,cam,V(berth.x+x*1.2,.9,berth.z+z*.8),V(.1,1.8,.1),0,"#777151",.66);
+  }
+  text3(cmds,cam,V(berth.x,.2,5.05),"ASSEMBLY BERTH","#e8ce75","center");
+}
+
+function drawTransfers(cmds,cam){
+  drones.forEach(d=>{
+    if(d.task==="FAB"){
+      const target=V(2.2,.65+state.buildProgress*.9,0);
+      line3(cmds,cam,[d.p,target],"#ff745e",.13,.7,4);
+      for(let k=0;k<4;k++){
+        const q=(state.time*.48+k/4+d.index*.09)%1;
+        const p=add(mul(d.p,1-q),mul(target,q));
+        p.y+=Math.sin(q*Math.PI)*.42;
+        point3(cmds,cam,p,.035,"#ffb49f",.85,5);
+      }
+    }else if(d.task==="CHARGE"){
+      const base=V(-4.9,.26,clamp(d.p.z,-1.7,1.7));
+      line3(cmds,cam,[base,d.p],"#67e6e4",.42,1,3,5);
+      for(let k=0;k<3;k++){
+        const q=(state.time*.7+k/3)%1;
+        point3(cmds,cam,add(mul(base,1-q),mul(d.p,q)),.04,"#d5ffff",.92,6);
+      }
+    }
+  });
+}
+
+function renderWorld(view){
+  resizeView(view);
+  const ctx=view.ctx,w=view.w,h=view.h;
+  ctx.clearRect(0,0,w,h);
+  const grad=ctx.createRadialGradient(w*.52,h*.45,2,w*.52,h*.45,Math.max(w,h)*.72);
+  grad.addColorStop(0,"#102426");grad.addColorStop(.55,"#071314");grad.addColorStop(1,"#030909");
+  ctx.fillStyle=grad;ctx.fillRect(0,0,w,h);
+  const cam=camera(view.type,w,h),cmds=[];
+  view.screenDrones=[];
+
+  if(view.type==="exploded"){
+    // Local datum and the selected unit, separated into named functional modules.
+    for(let i=-3;i<=3;i++)line3(cmds,cam,[V(i,-1.45,-3),V(i,-1.45,3)],i===0?"#31585b":"#142a2c",i===0?.35:.16,.6);
+    for(let i=-3;i<=3;i++)line3(cmds,cam,[V(-3,-1.45,i),V(3,-1.45,i)],i===0?"#31585b":"#142a2c",i===0?.35:.16,.6);
+    drawDrone(cmds,cam,drones[state.selected],true);
+    ring3(cmds,cam,V(0,-1.42,0),1.65,taskColors[drones[state.selected].task],.28);
+  }else{
+    drawGrid(cmds,cam);drawSite(cmds,cam);
+    drones.forEach(d=>{
+      if(d.trail.length>1){
+        for(let i=1;i<d.trail.length;i++){
+          const alpha=(i/d.trail.length)*((d.task==="FLIGHT")?.38:.08);
+          line3(cmds,cam,[d.trail[i-1],d.trail[i]],taskColors[d.task],alpha,1);
+        }
+      }
+    });
+    drawTransfers(cmds,cam);
+    drones.forEach(d=>{
+      drawDrone(cmds,cam,d,false);
+      if(d.quad.state!=="STOWED"){
+        const folded=d.quad.state!=="GROUND";
+        drawQuadruped(cmds,cam,d,d.quad.p,d.quad.yaw,folded,false);
+        if(d.quad.state==="DEPLOYING" || d.quad.state==="RECOVERING"){
+          line3(cmds,cam,[add(d.p,V(0,-.34,0)),add(d.quad.p,V(0,.15,0))],"#e8ce75",.58,1,3,4);
+          for(let k=0;k<3;k++){
+            const q=(state.time*.8+k/3)%1;
+            point3(cmds,cam,add(mul(add(d.p,V(0,-.34,0)),1-q),mul(add(d.quad.p,V(0,.15,0)),q)),.025,"#fff2b5",.86,4);
+          }
+        }
+      }
+      const q=project(cam,d.p);if(q)view.screenDrones[d.index]=q;
+    });
+    // world boundary brackets
+    line3(cmds,cam,[V(-8,.03,-6),V(-8,.03,6),V(8,.03,6),V(8,.03,-6),V(-8,.03,-6)],"#587174",.32,.8,5);
+  }
+  flush(ctx,cmds);
+
+  // compact view-specific coordinate scale
+  ctx.save();ctx.globalAlpha=.5;ctx.strokeStyle="#55777b";ctx.fillStyle="#71898a";ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(14,h-27);ctx.lineTo(64,h-27);ctx.stroke();
+  ctx.font="7px ui-monospace, monospace";ctx.fillText(view.type==="plan"?"2.0 M":"1.0 M",14,h-32);ctx.restore();
+}
+
+function updateQuadruped(d,dt){
+  const q=d.quad;
+  if(q.state==="STOWED"){
+    q.p=add(d.p,rotateY(V(0,-.69,.04),d.yaw));
+    q.yaw=d.yaw;
+    if(d.task==="CHARGE")q.energy=clamp(q.energy+dt*(100/(70*60)),0,100);
+    return;
+  }
+  if(q.state==="DEPLOYING"){
+    const horizontal=Math.hypot(d.p.x-q.site.x,d.p.z-q.site.z);
+    if(horizontal<.3 && Math.abs(d.p.y-1.55)<.18)q.actionT+=dt;
+    else q.actionT=0;
+    const release=smooth(q.actionT/2.25);
+    q.p=V(d.p.x,lerp(d.p.y-.69,.34,release),d.p.z);
+    q.yaw=d.yaw;
+    if(release>=1){
+      q.state="GROUND";q.actionT=0;q.site=V(q.p.x,0,q.p.z);
+      event(q.id+" has weight on feet; aerial hard point is clear.");
+      toast("GROUND // "+q.id);
+    }
+    return;
+  }
+  if(q.state==="GROUND"){
+    const a=state.time*.48+d.index*.81;
+    q.p.x=q.site.x+Math.cos(a)*.66;
+    q.p.y=.34;
+    q.p.z=q.site.z+Math.sin(a*1.17)*.5;
+    q.yaw=Math.atan2(-Math.sin(a),Math.cos(a*1.17));
+    q.energy=clamp(q.energy-dt*(100/(95*60)),0,100);
+    if(q.energy<12){q.state="RECOVERING";q.actionT=0;event(q.id+" reserve low; deterministic aerial recovery issued.");}
+    return;
+  }
+  if(q.state==="RECOVERING"){
+    const horizontal=Math.hypot(d.p.x-q.p.x,d.p.z-q.p.z);
+    if(horizontal<.32 && Math.abs(d.p.y-1.55)<.2)q.actionT+=dt;
+    const pickup=smooth(q.actionT/2.1);
+    if(q.actionT>0){
+      q.p.x=lerp(q.p.x,d.p.x,1-Math.exp(-dt*4));
+      q.p.z=lerp(q.p.z,d.p.z,1-Math.exp(-dt*4));
+      q.p.y=lerp(.34,d.p.y-.69,pickup);
+      q.yaw=lerp(q.yaw,d.yaw,1-Math.exp(-dt*3));
+    }
+    if(pickup>=1){
+      q.state="STOWED";q.actionT=0;q.p=add(d.p,V(0,-.69,0));q.yaw=d.yaw;
+      event(d.id+" hard-latched "+q.id+" and verified payload continuity.");
+      toast("LATCHED // "+q.id);
+    }
+  }
+}
+
+function update(dt){
+  if(state.paused)return;
+  state.time+=dt;
+  if(state.mode==="BALANCED"){
+    state.policyRotation=Math.floor(state.time/10)%6;
+    if(state.policyRotation!==state.lastRotation){
+      state.lastRotation=state.policyRotation;
+      if(state.time>1)event("Mesh rotated roles; no cell remained idle.");
+    }
+  }
+  let fabCount=0,chargeCount=0,assemblyCount=0;
+  drones.forEach(d=>{
+    const baseTask=taskFor(d);
+    d.task=d.quad.state==="DEPLOYING"?"DEPLOY":d.quad.state==="RECOVERING"?"RECOVER":baseTask;
+    if(d.task==="FAB")fabCount++;
+    if(d.task==="CHARGE")chargeCount++;
+    if(d.task==="ASSEMBLE")assemblyCount++;
+    d.target=targetFor(d,d.task);
+    const ease=1-Math.exp(-dt*(d.task==="FLIGHT"?2.1:1.35));
+    const old=V(d.p.x,d.p.y,d.p.z);
+    d.p.x=lerp(d.p.x,d.target.x,ease);d.p.y=lerp(d.p.y,d.target.y,ease);d.p.z=lerp(d.p.z,d.target.z,ease);
+    const velocity=sub(d.p,old);
+    if(Math.hypot(velocity.x,velocity.z)>.0001)d.yaw=Math.atan2(velocity.x,velocity.z);
+    if(d.task==="FAB")d.yaw=Math.atan2(2.2-d.p.x,0-d.p.z);
+    if(d.task==="CHARGE")d.energy=clamp(d.energy+dt*(100/(42*60)),0,100);
+    else{
+      const endurance=hoverMinutes(externalPayloadKg(d))*60,activity=d.task==="FLIGHT"?1.08:d.task==="DEPLOY"||d.task==="RECOVER"?1.04:.96;
+      d.energy=clamp(d.energy-dt*(100/endurance)*activity,0,100);
+    }
+    if(d.task==="ASSEMBLE"){
+      const q=(state.time+d.index*.82)%7.2;
+      d.assembly=q<4.8?smooth(q/4.8):1;
+    }else d.assembly=lerp(d.assembly,1,1-Math.exp(-dt*3));
+    d.trailClock+=dt;
+    if(d.trailClock>.06){
+      d.trailClock=0;d.trail.push(V(d.p.x,d.p.y,d.p.z));
+      if(d.trail.length>70)d.trail.shift();
+    }
+    updateQuadruped(d,dt);
+  });
+  if(fabCount){
+    state.buildProgress+=dt*.014*fabCount;
+    state.material=clamp(state.material-dt*.018*fabCount,8,100);
+    if(state.buildProgress>=1){
+      state.buildProgress=.04;state.built++;
+      event("µFAB completed lattice unit "+pad2(state.built)+".");
+    }
+  }
+  if(chargeCount)state.material=clamp(state.material+dt*.006,0,100);
+  state.mesh=99.15+Math.sin(state.time*.7)*.23-assemblyCount*.035;
+}
+
+let uiClock=0;
+function updateUI(dt){
+  uiClock+=dt;if(uiClock<.12)return;uiClock=0;
+  const sec=state.time|0;
+  document.getElementById("mission-clock").textContent="T+"+pad2(sec/3600)+":"+pad2((sec/60)%60)+":"+pad2(sec%60);
+  document.getElementById("orbit-readout").textContent="AZ "+pad2(((state.camera.yaw*180/Math.PI)%360+360)%360)+"° / EL "+pad2(state.camera.pitch*180/Math.PI)+"°";
+  const avg=drones.reduce((s,d)=>s+d.energy,0)/drones.length;
+  document.getElementById("energy-value").textContent=(avg|0)+"%";
+  document.getElementById("energy-bar").style.width=avg+"%";
+  document.getElementById("matter-value").textContent=(state.material|0)+"%";
+  document.getElementById("matter-bar").style.width=state.material+"%";
+  document.getElementById("mesh-value").textContent=state.mesh.toFixed(1)+"%";
+  document.getElementById("mesh-bar").style.width=state.mesh+"%";
+  document.getElementById("sequence-progress").style.width=((state.time%20)/20*80)+"%";
+  const selected=drones[state.selected];
+  const gross=takeoffMassKg(selected),payload=externalPayloadKg(selected),margin=M100.mtowKg-gross;
+  document.getElementById("mass-fill").style.width=(gross/M100.mtowKg*100).toFixed(1)+"%";
+  document.getElementById("auw-caption").textContent="AUW "+gross.toFixed(3)+" KG / "+(gross/M100.mtowKg*100).toFixed(1)+"%";
+  document.getElementById("margin-caption").textContent="MARGIN "+margin.toFixed(3)+" KG";
+  document.getElementById("hover-estimate").textContent="≈"+hoverMinutes(payload).toFixed(1)+" MIN";
+  document.getElementById("unit-id").textContent=selected.id;
+  document.getElementById("unit-task").textContent=selected.task+" / Q:"+selected.quad.state;
+  document.getElementById("unit-charge").textContent="CELL "+(selected.energy|0)+"%";
+  const locked=moduleBlueprint.filter((m,i)=>i===0||clamp(selected.assembly*1.7-m.order*.1,0,1)>.94).length;
+  document.getElementById("module-count").textContent=pad2(moduleBlueprint.length)+" GROUPS / "+pad2(locked)+" LOCKED";
+  const q=selected.quad,payloadButton=document.getElementById("payload-action");
+  document.getElementById("payload-id").textContent=q.id;
+  document.getElementById("payload-state").textContent=q.state;
+  document.getElementById("payload-range").textContent="Q CELL "+(q.energy|0)+"%";
+  if(q.state==="STOWED"){
+    payloadButton.disabled=selected.energy<45||selected.assembly<.98;payloadButton.firstChild.nodeValue=payloadButton.disabled?"DEPLOY BLOCKED / RESERVE OR LOCK":"DEPLOY QUADRUPED";
+  }else if(q.state==="GROUND"){
+    payloadButton.disabled=false;payloadButton.firstChild.nodeValue="RECOVER QUADRUPED";
+  }else{
+    payloadButton.disabled=true;
+    payloadButton.firstChild.nodeValue=q.state==="DEPLOYING"?(q.actionT>0?"LOWERING PAYLOAD":"ROUTING TO LANE"):(q.actionT>0?"HARD-LATCHING":"ALIGNING FOR PICKUP");
+  }
+  document.querySelectorAll(".drone-row").forEach((row,i)=>{
+    const d=drones[i],c=taskColors[d.task];
+    row.style.color=c;
+    const qTag=d.quad.state==="STOWED"?(d.assembly<.98?"LINKING":"Q:STOWED"):"Q:"+d.quad.state;
+    row.querySelector("small").textContent=d.task+" / "+qTag;
+    row.querySelector(".charge").textContent=(d.energy|0)+"%";
+  });
+}
+
+const primary=document.getElementById("perspective");
+primary.addEventListener("pointerdown",e=>{
+  state.pointer.down=true;state.pointer.moved=false;state.pointer.x=e.clientX;state.pointer.y=e.clientY;
+  primary.setPointerCapture(e.pointerId);
+});
+primary.addEventListener("pointermove",e=>{
+  if(!state.pointer.down)return;
+  const dx=e.clientX-state.pointer.x,dy=e.clientY-state.pointer.y;
+  if(Math.abs(dx)+Math.abs(dy)>2)state.pointer.moved=true;
+  state.camera.yaw-=dx*.006;state.camera.pitch=clamp(state.camera.pitch+dy*.005,.08,1.15);
+  state.pointer.x=e.clientX;state.pointer.y=e.clientY;
+});
+primary.addEventListener("pointerup",e=>{
+  state.pointer.down=false;
+  if(!state.pointer.moved)pickDrone(views[0],e);
+});
+primary.addEventListener("wheel",e=>{
+  e.preventDefault();state.camera.dist=clamp(state.camera.dist+e.deltaY*.012,8,28);
+},{passive:false});
+document.getElementById("plan").addEventListener("click",e=>pickDrone(views[1],e));
+document.getElementById("side").addEventListener("click",e=>pickDrone(views[2],e));
+
+function pickDrone(view,e){
+  const rect=view.canvas.getBoundingClientRect();
+  const x=e.clientX-rect.left,y=e.clientY-rect.top;
+  let best=-1,dist=28;
+  view.screenDrones.forEach((p,i)=>{
+    const d=Math.hypot(p.x-x,p.y-y);
+    if(d<dist){dist=d;best=i;}
+  });
+  if(best>=0)selectDrone(best);
+}
+
+window.addEventListener("keydown",e=>{
+  if(e.key==="a"||e.key==="A")setMode("BALANCED");
+  if(e.key==="1")setMode("ASSEMBLE");
+  if(e.key==="2")setMode("MANUFACTURE");
+  if(e.key==="3")setMode("CHARGE");
+  if(e.key==="4")setMode("CIRCUS");
+  if(e.key==="d"||e.key==="D")payloadAction();
+  if(e.code==="Space"){
+    e.preventDefault();state.paused=!state.paused;
+    document.getElementById("live-state").textContent=state.paused?"Ⅱ HOLD":"● NOMINAL";
+    document.getElementById("live-state").style.color=state.paused?"var(--yellow)":"var(--lime)";
+    toast(state.paused?"SIMULATION HOLD":"SIMULATION LIVE");
+  }
+});
+
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(.035,(now-last)/1000);last=now;
+  update(dt);views.forEach(renderWorld);updateUI(dt);
+  requestAnimationFrame(frame);
+}
+setMode("BALANCED",false);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

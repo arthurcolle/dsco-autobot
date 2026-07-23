@@ -7,6 +7,8 @@ Starts native MCP servers as background processes:
 - distributed-research-mcp (port 4002)
 - distributed-publish-mcp (port 4003)
 - distributed-memory-mcp (port 4004)
+- distributed-video-qa (port 4005)
+- distributed-document-qa (port 4006)
 
 Run with:
     python -m native.launcher
@@ -18,6 +20,8 @@ Options:
     --research-only     Only start the research MCP
     --publish-only      Only start the publish MCP
     --memory-only       Only start the memory MCP
+    --video-only        Only start the video Q&A MCP
+    --document-only     Only start the document Q&A MCP
     --wait-for-ready    Block until all servers are healthy
     --test              Run connectivity test after startup
 """
@@ -74,6 +78,30 @@ SERVERS = {
         "module": "native.distributed_memory_mcp.server",
         "port": int(os.getenv("MEMORY_MCP_PORT", "4004")),
         "env_key": "MEMORY_DATA_DIR"
+    },
+    "video": {
+        "name": "distributed-video-qa",
+        "module": "native.distributed_video_qa",
+        "port": int(os.getenv("VIDEO_MCP_PORT", "4005")),
+        "env_key": "OPENAI_API_KEY"
+    },
+    "document": {
+        "name": "distributed-document-qa",
+        "module": "native.distributed_document_qa",
+        "port": int(os.getenv("DOCUMENT_MCP_PORT", "4006")),
+        "env_key": "OPENAI_API_KEY"
+    },
+    "codex-apps": {
+        "name": "codex-apps-mcp",
+        "module": "native.codex_apps_mcp.server",
+        "port": int(os.getenv("CODEX_APPS_MCP_PORT", "4011")),
+        "env_key": "TOOLMANAGEMENT_API_URL"
+    },
+    "timeline": {
+        "name": "distributed-timeline",
+        "module": "native.timeline_mcp.server",
+        "port": int(os.getenv("TIMELINE_MCP_PORT", "4012")),
+        "env_key": "JINA_API_KEY"
     }
 }
 
@@ -192,8 +220,12 @@ async def run_launcher(args: argparse.Namespace):
         servers_to_start = ["publish"]
     elif args.memory_only:
         servers_to_start = ["memory"]
+    elif args.video_only:
+        servers_to_start = ["video"]
+    elif args.document_only:
+        servers_to_start = ["document"]
     else:
-        servers_to_start = ["search", "research", "publish", "memory"]
+        servers_to_start = ["search", "research", "publish", "memory", "video", "document"]
 
     # Start servers
     for server_key in servers_to_start:
@@ -306,6 +338,16 @@ def main():
         "--memory-only",
         action="store_true",
         help="Only start the memory MCP"
+    )
+    parser.add_argument(
+        "--video-only",
+        action="store_true",
+        help="Only start the video Q&A MCP"
+    )
+    parser.add_argument(
+        "--document-only",
+        action="store_true",
+        help="Only start the document Q&A MCP"
     )
     parser.add_argument(
         "--wait-for-ready",

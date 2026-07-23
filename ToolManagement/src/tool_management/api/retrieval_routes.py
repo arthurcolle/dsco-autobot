@@ -8,11 +8,14 @@ Provides endpoints for:
 - Context budget management
 """
 
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 import httpx
 import os
+
+logger = logging.getLogger(__name__)
 
 from ..context.retrieval import (
     ToolRetriever,
@@ -141,36 +144,94 @@ async def search_tools(
     backend: Optional[str] = Query(None),
 ):
     """Quick semantic search for tools."""
-    retriever = get_tool_retriever(jina_api_key=os.getenv("JINA_API_KEY"))
-    ctx_manager = get_tool_context_manager()
-
-    # Try GraphSub first
-    results = await retriever.retrieve(
-        query=q,
-        strategy=RetrievalStrategy.SEMANTIC,
-        limit=limit,
-        backend_filter=backend,
-    )
+    # Try GraphSub first; semantic retrieval depends on external embedding
+    # APIs (rate limits, outages), so degrade instead of 500ing.
+    try:
+        retriever = get_tool_retriever(jina_api_key=os.getenv("JINA_API_KEY"))
+        results = await retriever.retrieve(
+            query=q,
+            strategy=RetrievalStrategy.SEMANTIC,
+            limit=limit,
+            backend_filter=backend,
+        )
+    except Exception as e:
+        logger.warning(f"Semantic retrieval failed for {q!r}: {e}")
+        results = []
 
     # Fallback to local context manager
     if not results:
-        local_results = ctx_manager.search_tools(
-            query=q,
-            backend_id=backend,
-            limit=limit,
-        )
+        try:
+            ctx_manager = get_tool_context_manager()
+            local_results = ctx_manager.search_tools(
+                query=q,
+                backend_id=backend,
+                limit=limit,
+            )
+        except Exception as e:
+            logger.warning(f"Context-manager search failed for {q!r}: {e}")
+            local_results = []
+        if local_results:
+            return {
+                "query": q,
+                "source": "local",
+                "results": [
+                    {
+                        "name": s.name,
+                        "backend": s.backend_id,
+                        "score": 1.0,
+                        "description": s.description[:200] if s.description else "",
+                    }
+                    for s in local_results
+                ],
+            }
+
+        # Final fallback: text search over the durable store and registry
+        merged = []
+        try:
+            from ..persistence import get_tool_store
+
+            rows, _total = get_tool_store().query_tools(search=q, limit=limit)
+            if not rows and " " in q.strip():
+                # All-words match found nothing; relax to any-word
+                rows, _total = get_tool_store().query_tools(
+                    search=q, limit=limit, match_any=True
+                )
+            merged.extend(
+                {
+                    "name": row.get("name"),
+                    "backend": row.get("backend_id"),
+                    "score": 0.5,
+                    "description": (row.get("description") or "")[:200],
+                }
+                for row in rows
+            )
+        except Exception as e:
+            logger.warning(f"Tool-store search failed for {q!r}: {e}")
+        if not backend and len(merged) < limit:
+            try:
+                from ..registry import get_registry as get_local_registry
+
+                terms = [t for t in q.lower().split() if t]
+                seen = {m["name"] for m in merged}
+                for tool in get_local_registry().list_all():
+                    if tool.name in seen:
+                        continue
+                    haystack = f"{tool.name} {tool.description or ''}".lower()
+                    if any(t in haystack for t in terms):
+                        merged.append(
+                            {
+                                "name": tool.name,
+                                "backend": "local-registry",
+                                "score": 0.5,
+                                "description": (tool.description or "")[:200],
+                            }
+                        )
+            except Exception as e:
+                logger.warning(f"Registry search failed for {q!r}: {e}")
         return {
             "query": q,
-            "source": "local",
-            "results": [
-                {
-                    "name": s.name,
-                    "backend": s.backend_id,
-                    "score": 1.0,
-                    "description": s.description[:200] if s.description else "",
-                }
-                for s in local_results
-            ],
+            "source": "text_fallback",
+            "results": merged[:limit],
         }
 
     return {

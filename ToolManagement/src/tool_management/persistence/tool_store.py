@@ -7,8 +7,12 @@ No more in-memory-only registration that disappears on restart.
 
 import os
 import json
+import shutil
 import time
+import threading
+import uuid
 import duckdb
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -39,13 +43,13 @@ class RegisteredTool:
     backend_id: str
     backend_url: str
     description: str = ""
-    input_schema: Dict = None
-    output_schema: Dict = None
-    tags: List[str] = None
+    input_schema: Optional[Dict] = None
+    output_schema: Optional[Dict] = None
+    tags: Optional[List[str]] = None
     category: str = "general"
     version: str = "1.0.0"
-    created_at: str = None
-    updated_at: str = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     call_count: int = 0
     error_count: int = 0
     avg_latency_ms: float = 0.0
@@ -63,6 +67,88 @@ class RegisteredTool:
             self.updated_at = self.created_at
 
 
+def _json_safe_value(value):
+    """DuckDB returns TIMESTAMP columns as datetime objects; JSON callers need ISO strings."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def category_candidates(category: Optional[str]) -> List[str]:
+    """
+    Expand a category filter into the naming variants used across backends.
+
+    Backends register categories inconsistently ("unit", "unit-fabric",
+    "distributed-unit", "distributed-unit-mcp"). Callers pass any of these;
+    match all of them so filtering behaves the same everywhere.
+    """
+    c = (category or "").strip().lower()
+    if not c:
+        return []
+    stem = c
+    if stem.startswith("distributed-"):
+        stem = stem[len("distributed-"):]
+    for suffix in ("-mcp", "-fabric"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    stem = stem.strip("-") or c
+    return sorted({
+        c,
+        stem,
+        f"{stem}-mcp",
+        f"{stem}-fabric",
+        f"distributed-{stem}",
+        f"distributed-{stem}-mcp",
+    })
+
+
+def _category_where(category: str, params: List[Any]) -> str:
+    """Build a WHERE fragment matching category variants against category or backend_id.
+
+    Also matches the integration-fabric naming convention so a category filter
+    works even for tools registered before per-tool taxonomy existed:
+      - primitives  ``{provider}_{category}_{op}``  -> name LIKE '%_weather_%'
+      - canonical   ``{category}__{op}``            -> name LIKE 'weather__%'
+      - description ``... in {category}`` / ``[canonical:{category}]``
+      - tags array contains the bare category stem
+    """
+    cands = category_candidates(category)
+    placeholders = ", ".join("?" for _ in cands)
+    params.extend(cands)  # lower(category) IN (...)
+    params.extend(cands)  # lower(backend_id) IN (...)
+
+    stem = (category or "").strip().lower()
+    if stem.startswith("distributed-"):
+        stem = stem[len("distributed-"):]
+    for suffix in ("-mcp", "-fabric"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    stem = stem.strip("-")
+
+    extra = ""
+    if stem:
+        # name-pattern + description + tags fallbacks (repairs legacy rows)
+        params.extend([
+            f"%\\_{stem}\\_%",     # provider_{cat}_op
+            f"{stem}\\_\\_%",       # {cat}__op canonical
+            f"% in {stem}",         # "...(kind) in {cat}" descriptions
+            f"[canonical:{stem}]%", # canonical description prefix
+            f'%"{stem}"%',          # tags JSON contains the stem
+        ])
+        extra = (
+            " OR lower(name) LIKE ? ESCAPE '\\'"
+            " OR lower(name) LIKE ? ESCAPE '\\'"
+            " OR lower(description) LIKE ?"
+            " OR lower(description) LIKE ?"
+            " OR lower(tags::VARCHAR) LIKE ?"
+        )
+
+    return (
+        f"(lower(category) IN ({placeholders}) "
+        f"OR lower(backend_id) IN ({placeholders}){extra})"
+    )
+
+
 class ToolStore:
     """
     Durable tool storage with DuckDB.
@@ -75,6 +161,8 @@ class ToolStore:
     """
 
     _instance = None
+    _conn = None
+    _lock = threading.RLock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -92,19 +180,32 @@ class ToolStore:
         self._initialized = True
         logger.info(f"ToolStore initialized at {self.db_path}")
 
-    def _get_conn(self, read_only: bool = False) -> duckdb.DuckDBPyConnection:
-        import time as _time
-        for attempt in range(3):
-            try:
-                # DuckDB rejects mixed connection configurations (read_only vs read_write)
-                # within the same process. Keep one consistent mode for all callers.
-                return duckdb.connect(self.db_path)
-            except Exception as e:
-                if attempt < 2 and ("lock" in str(e).lower() or "busy" in str(e).lower()
-                                     or "WAL" in str(e) or "Conflict" in str(e)):
-                    _time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise
+    @contextmanager
+    def _get_conn(self, read_only: bool = False):
+        # Serialize every DB operation through ONE long-lived connection.
+        #
+        # DuckDB permits only a single read-write connection to a file per
+        # process and its connections are not safe for concurrent use. The
+        # old code called duckdb.connect() on every operation; under the
+        # backends' push-announce flood those concurrent connects collided
+        # ("database already attached"), each retry slept inside an
+        # asyncio.to_thread worker, and the bounded thread pool was exhausted
+        # -- wedging execute/jobs/health and crash-looping the container.
+        # A process-wide lock turns that flood into fast, serialized upserts.
+        with ToolStore._lock:
+            if ToolStore._conn is None:
+                ToolStore._conn = duckdb.connect(self.db_path)
+            yield ToolStore._conn
+
+    def _close_conn(self):
+        """Close the shared connection (e.g. before deleting DB files)."""
+        with ToolStore._lock:
+            if ToolStore._conn is not None:
+                try:
+                    ToolStore._conn.close()
+                except Exception:
+                    pass
+                ToolStore._conn = None
 
     def _init_schema(self):
         """Initialize database schema, recovering from WAL corruption if needed."""
@@ -113,16 +214,24 @@ class ToolStore:
         except Exception as e:
             if "WAL" in str(e) or "Conflict" in str(e):
                 logger.warning(f"DuckDB WAL corrupted, deleting WAL and retrying: {e}")
+                self._close_conn()
                 import pathlib
                 wal_path = pathlib.Path(self.db_path + ".wal")
                 if wal_path.exists():
+                    backup = f"{self.db_path}.wal.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    shutil.copy2(str(wal_path), backup)
+                    logger.warning(f"WAL backed up to {backup}")
                     wal_path.unlink()
                 try:
                     self._create_tables()
                 except Exception:
                     logger.warning("DB still broken after WAL removal, recreating from scratch")
+                    self._close_conn()
                     db = pathlib.Path(self.db_path)
                     if db.exists():
+                        db_backup = f"{self.db_path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        shutil.copy2(str(db), db_backup)
+                        logger.warning(f"DB backed up to {db_backup}")
                         db.unlink()
                     self._create_tables()
             else:
@@ -165,6 +274,26 @@ class ToolStore:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS integration_feedback (
+                    feedback_id VARCHAR PRIMARY KEY,
+                    backend_id VARCHAR NOT NULL,
+                    tool_name VARCHAR,
+                    outcome VARCHAR,
+                    category VARCHAR DEFAULT 'other',
+                    rating INTEGER,
+                    message VARCHAR NOT NULL,
+                    suggested_fix VARCHAR,
+                    context JSON,
+                    session_id VARCHAR,
+                    trace_id VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_backend ON integration_feedback(backend_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_tool ON integration_feedback(tool_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_created ON integration_feedback(created_at)")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS idempotency_records (
@@ -295,6 +424,15 @@ class ToolStore:
         """Register or update a tool."""
         now = datetime.utcnow().isoformat()
         with self._get_conn() as conn:
+            # DuckDB forbids ON CONFLICT DO UPDATE on indexed columns
+            # (name, backend_id, category all carry indexes), so emulate the
+            # upsert with delete-then-insert inside a transaction.
+            existing_created = conn.execute(
+                "SELECT created_at FROM tools WHERE tool_id = ?", [tool.tool_id]
+            ).fetchone()
+            created_at = (existing_created[0] if existing_created else None) or tool.created_at or now
+
+            conn.execute("DELETE FROM tools WHERE tool_id = ?", [tool.tool_id])
             conn.execute("""
                 INSERT INTO tools (
                     tool_id, name, backend_id, backend_url, description,
@@ -302,22 +440,11 @@ class ToolStore:
                     created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (tool_id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    backend_id = EXCLUDED.backend_id,
-                    backend_url = EXCLUDED.backend_url,
-                    description = EXCLUDED.description,
-                    input_schema = EXCLUDED.input_schema,
-                    output_schema = EXCLUDED.output_schema,
-                    tags = EXCLUDED.tags,
-                    category = EXCLUDED.category,
-                    version = EXCLUDED.version,
-                    updated_at = EXCLUDED.updated_at
             """, [
                 tool.tool_id, tool.name, tool.backend_id, tool.backend_url,
                 tool.description, json.dumps(tool.input_schema), json.dumps(tool.output_schema),
                 json.dumps(tool.tags), tool.category, tool.version,
-                tool.created_at or now, now
+                created_at, now
             ])
 
             # Update backend tool count
@@ -355,7 +482,7 @@ class ToolStore:
                 return RegisteredTool(**data)
         return None
 
-    def get_tool_by_name(self, name: str, backend_id: str = None) -> Optional[RegisteredTool]:
+    def get_tool_by_name(self, name: str, backend_id: Optional[str] = None) -> Optional[RegisteredTool]:
         """Get tool by name, optionally filtered by backend."""
         with self._get_conn(read_only=True) as conn:
             if backend_id is None and ":" in name:
@@ -391,7 +518,7 @@ class ToolStore:
                 return RegisteredTool(**data)
         return None
 
-    def list_tools(self, backend_id: str = None, category: str = None, limit: int = 100, offset: int = 0) -> List[RegisteredTool]:
+    def list_tools(self, backend_id: Optional[str] = None, category: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[RegisteredTool]:
         """List tools with optional filters and pagination."""
         query = "SELECT * FROM tools WHERE 1=1"
         params = []
@@ -400,8 +527,7 @@ class ToolStore:
             query += " AND backend_id = ?"
             params.append(backend_id)
         if category:
-            query += " AND category = ?"
-            params.append(category)
+            query += " AND " + _category_where(category, params)
 
         query += f" ORDER BY name LIMIT {limit} OFFSET {offset}"
 
@@ -419,7 +545,7 @@ class ToolStore:
 
             return tools
 
-    def count_tools(self, backend_id: str = None, category: str = None) -> int:
+    def count_tools(self, backend_id: Optional[str] = None, category: Optional[str] = None) -> int:
         """Count tools matching filters."""
         query = "SELECT COUNT(*) FROM tools WHERE 1=1"
         params = []
@@ -428,8 +554,7 @@ class ToolStore:
             query += " AND backend_id = ?"
             params.append(backend_id)
         if category:
-            query += " AND category = ?"
-            params.append(category)
+            query += " AND " + _category_where(category, params)
 
         with self._get_conn(read_only=True) as conn:
             return conn.execute(query, params).fetchone()[0]
@@ -437,6 +562,28 @@ class ToolStore:
     def list_tools_by_backend(self, backend_id: str) -> List[RegisteredTool]:
         """List all tools for a specific backend."""
         return self.list_tools(backend_id=backend_id, limit=1000)
+
+    def prune_backend_tools(self, backend_id: str, keep_tool_ids: List[str]) -> int:
+        """Delete this backend's tools that are NOT in keep_tool_ids.
+
+        Called on announce so renamed/removed tools don't linger in the
+        catalog and shadow other backends' names. Returns rows removed.
+        """
+        keep = set(keep_tool_ids)
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT tool_id FROM tools WHERE backend_id = ?", [backend_id]
+            ).fetchall()
+            stale = [r[0] for r in rows if r[0] not in keep]
+            for tool_id in stale:
+                conn.execute("DELETE FROM tools WHERE tool_id = ?", [tool_id])
+            if stale:
+                conn.execute("""
+                    UPDATE backends SET tool_count = (
+                        SELECT COUNT(*) FROM tools WHERE backend_id = ?
+                    ) WHERE backend_id = ?
+                """, [backend_id, backend_id])
+        return len(stale)
 
     def find_backend_for_tool(self, tool_name: str) -> Optional[str]:
         """Find which backend provides a tool by name."""
@@ -478,12 +625,15 @@ class ToolStore:
         limit: int = 100,
         offset: int = 0,
         columns: Optional[List[str]] = None,
+        match_any: bool = False,
     ) -> tuple[List[Dict], int]:
         """
         Advanced tool query with text search, sorting, tag filtering, and column projection.
 
         Args:
             search: Text search across name and description (ILIKE)
+            match_any: For multi-word searches, match tools containing ANY word
+                (default requires ALL words)
             backend_id: Filter by backend
             category: Filter by category
             tags: Filter tools that have ANY of these tags
@@ -516,13 +666,13 @@ class ToolStore:
                 for word in words:
                     word_clauses.append("(name ILIKE ? OR description ILIKE ?)")
                     params.extend([f"%{word}%", f"%{word}%"])
-                where_clauses.append(f"({' AND '.join(word_clauses)})")
+                joiner = " OR " if match_any else " AND "
+                where_clauses.append(f"({joiner.join(word_clauses)})")
         if backend_id:
             where_clauses.append("backend_id = ?")
             params.append(backend_id)
         if category:
-            where_clauses.append("category = ?")
-            params.append(category)
+            where_clauses.append(_category_where(category, params))
         if tags:
             # DuckDB JSON: check if tags array contains any of the given tags
             tag_conditions = []
@@ -560,7 +710,7 @@ class ToolStore:
 
             rows = []
             for row in results:
-                d = dict(zip(col_names, row))
+                d = {k: _json_safe_value(v) for k, v in zip(col_names, row)}
                 # Deserialize JSON columns if present
                 for jcol in ("input_schema", "output_schema", "tags"):
                     if jcol in d and d[jcol] is not None:
@@ -750,8 +900,9 @@ class ToolStore:
         if not tool:
             return None
 
-        props = tool.input_schema.get("properties", {})
-        required = set(tool.input_schema.get("required", []))
+        input_schema = tool.input_schema or {}
+        props = input_schema.get("properties", {})
+        required = set(input_schema.get("required", []))
 
         params = []
         for pname, pschema in props.items():
@@ -1259,6 +1410,107 @@ class ToolStore:
                 "total_call_history_rows": int(total_call_history),
                 "dependency_edges": int(dependency_edges),
             }
+
+    # ==================== Integration Feedback ====================
+
+    def record_feedback(
+        self,
+        *,
+        backend_id: str,
+        message: str,
+        tool_name: Optional[str] = None,
+        outcome: Optional[str] = None,
+        category: str = "other",
+        rating: Optional[int] = None,
+        suggested_fix: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record AI-agent feedback about a tool/integration for later review."""
+        feedback_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO integration_feedback (
+                    feedback_id, backend_id, tool_name, outcome, category, rating,
+                    message, suggested_fix, context, session_id, trace_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    feedback_id, backend_id, tool_name, outcome, category or "other", rating,
+                    message[:5000], suggested_fix, json.dumps(context) if context else None,
+                    session_id, trace_id, now,
+                ],
+            )
+        return {"feedback_id": feedback_id, "status": "recorded", "created_at": now}
+
+    def query_feedback(
+        self,
+        *,
+        backend_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        where = ["1=1"]
+        params: List[Any] = []
+        if backend_id:
+            where.append("backend_id = ?"); params.append(backend_id)
+        if tool_name:
+            where.append("tool_name = ?"); params.append(tool_name)
+        if category:
+            where.append("category = ?"); params.append(category)
+        where_sql = " AND ".join(where)
+
+        with self._get_conn(read_only=True) as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM integration_feedback WHERE {where_sql}", params
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"""
+                SELECT feedback_id, backend_id, tool_name, outcome, category, rating,
+                       message, suggested_fix, context, session_id, trace_id, created_at
+                FROM integration_feedback WHERE {where_sql}
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            ).fetchall()
+            cols = [d[0] for d in conn.description]
+
+        items = []
+        for row in rows:
+            d = {k: _json_safe_value(v) for k, v in zip(cols, row)}
+            if d.get("context"):
+                d["context"] = json.loads(d["context"]) if isinstance(d["context"], str) else d["context"]
+            items.append(d)
+        return items, int(total)
+
+    def feedback_stats(self) -> Dict[str, Any]:
+        with self._get_conn(read_only=True) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM integration_feedback").fetchone()[0]
+            by_backend = dict(conn.execute(
+                "SELECT backend_id, COUNT(*) FROM integration_feedback GROUP BY 1 ORDER BY 2 DESC"
+            ).fetchall())
+            by_category = dict(conn.execute(
+                "SELECT category, COUNT(*) FROM integration_feedback GROUP BY 1 ORDER BY 2 DESC"
+            ).fetchall())
+            by_outcome = dict(conn.execute(
+                "SELECT outcome, COUNT(*) FROM integration_feedback WHERE outcome IS NOT NULL GROUP BY 1"
+            ).fetchall())
+            avg_rating = conn.execute(
+                "SELECT AVG(rating) FROM integration_feedback WHERE rating IS NOT NULL"
+            ).fetchone()[0]
+        return {
+            "total_feedback": int(total),
+            "by_backend": by_backend,
+            "by_category": by_category,
+            "by_outcome": by_outcome,
+            "avg_rating": round(float(avg_rating), 2) if avg_rating is not None else None,
+        }
 
 
 def _build_signature(name: str, props: Dict, required: set) -> str:

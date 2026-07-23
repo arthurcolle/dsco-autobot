@@ -57,7 +57,7 @@ def web():
     os.environ["DATA_DIR"] = "/data"  # For SemanticBeliefStore persistence
 
     # API keys for cross-MCP calls (embeddings from search, etc.)
-    os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"
+    os.environ["JINA_API_KEY"] = "jina_c6997e7c38a240cabdd77d13dbfd4e40bP6-IWJ__OX8bSG51488ro0g6sQQ"
 
     from native.distributed_memory_mcp.server import app
     return app

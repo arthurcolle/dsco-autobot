@@ -1,0 +1,26 @@
+{
+  "gate": "C2",
+  "status": "PASS",
+  "contract": "ACX-DOT8-R1",
+  "generated_at": "2026-07-19T23:30:15.503506+00:00",
+  "tool": {
+    "name": "Verilator",
+    "version": "Verilator 5.050 2026-07-01 rev vUNKNOWN-built20260701",
+    "path": "/opt/homebrew/bin/verilator"
+  },
+  "compiler": "/opt/homebrew/opt/llvm/bin/clang++",
+  "vectors_executed": 6,
+  "source_sha256": {
+    "silicon/rtl/acx_dot8.sv": "c122dd3b6a1f548bde884b451d37e4297de50db0c1b36d8d8e148c6a48e6ff8f",
+    "silicon/tb/acx_dot8_tb.sv": "0a56719467494a3da76eaf02d6bcd6135ba3df821bec046acb2ebcc6d54be3bf",
+    "silicon/vectors.json": "0fc5599c47fe5905a417f240d2c9140b854e049ee81c0c6fba6fcc59e7c45f88"
+  },
+  "checks": [
+    "SystemVerilog lint",
+    "compiled timing model",
+    "assertions enabled",
+    "self-checking six-vector simulation"
+  ],
+  "result": "PASS ACX-DOT8-R1",
+  "scope": "Block-level functional RTL evidence only; not GPU verification closure, CDC/RDC, formal coverage, FPGA correlation, or silicon signoff."
+}

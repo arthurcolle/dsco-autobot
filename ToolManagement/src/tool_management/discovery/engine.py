@@ -222,7 +222,7 @@ class AdvancedToolDiscoveryEngine:
             embeddings = self.embedder.encode([text1, text2])
             similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
             return float(similarity)
-        except:
+        except Exception:
             return 0.0
 
     def _determine_relationship_type(self, tool1: ToolDefinition, tool2: ToolDefinition) -> str:

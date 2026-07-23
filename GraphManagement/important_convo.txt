@@ -1,0 +1,3868 @@
+give me the tool schema I've been using with tool management to register fasetapi endpoints with pydantic input and output schemes {
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}
+
+
+
+give me the tool schema I've been using with tool management to register fasetapi endpoints with pydantic input and output schemes {
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}
+
+
+give me the tool schema I've been using with tool management to register fasetapi endpoints with pydantic input and output schemes {
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}give me the tool schema I've been using with tool management to register fasetapi endpoints with pydantic input and output schemes {
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}give me the tool schema I've been using with tool management to register fasetapi endpoints with pydantic input and output schemes {
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}
+ChatGPT said:
+
+Got you. Here’s a clean, drop‑in “tool schema” + FastAPI/Pydantic setup that matches a payload like:
+
+{
+  "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+  "strategy": "default"
+}
+
+1) Pydantic models (input + output)
+
+# models.py
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field
+
+Strategy = Literal["default", "explain", "profile"]
+
+class CypherQueryIn(BaseModel):
+    """
+    Input contract for the cypher query tool.
+    """
+    query: str = Field(
+        ...,
+        min_length=1,
+        description="Cypher to execute. Use `strategy='explain'`/`'profile'` to plan without/with execution."
+    )
+    strategy: Strategy = Field(
+        "default",
+        description="Execution strategy: 'default' runs the query, 'explain' returns a plan, 'profile' profiles the plan."
+    )
+
+class CypherQueryOut(BaseModel):
+    """
+    Output contract for the cypher query tool.
+    """
+    columns: List[str] = Field(..., description="Column names returned by the query.")
+    rows: List[Dict[str, Any]] = Field(
+        ...,
+        description="Result rows as a list of objects mapping column -> value."
+    )
+    elapsed_ms: int = Field(..., ge=0, description="Wall time spent executing/planning.")
+    strategy: Strategy = Field(..., description="Echoes the execution strategy used.")
+    plan: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Planner output. Present for 'explain'/'profile'."
+    )
+    stats: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Engine statistics (updates, db hits, etc.) when available."
+    )
+    warnings: Optional[List[str]] = Field(
+        None,
+        description="Non-fatal warnings emitted by the engine/driver."
+    )
+
+class CypherErrorOut(BaseModel):
+    """
+    Error contract for the cypher query tool.
+    """
+    code: Literal["BadRequest", "ValidationError", "QueryError", "Timeout", "InternalError"]
+    error: str = Field(..., description="Short human-readable error.")
+    detail: Optional[str] = Field(None, description="Long-form diagnostic detail.")
+    elapsed_ms: Optional[int] = Field(None, ge=0, description="Time spent before failure.")
+
+2) FastAPI endpoint that uses the models
+
+# api.py
+from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+from models import CypherQueryIn, CypherQueryOut, CypherErrorOut
+
+app = FastAPI(title="Graph Tools API")
+router = APIRouter(prefix="/tools", tags=["tools", "graph"])
+
+@router.post(
+    "/neo4j/cypher",
+    response_model=CypherQueryOut,
+    responses={
+        400: {"model": CypherErrorOut},
+        422: {"model": CypherErrorOut},
+        500: {"model": CypherErrorOut}
+    },
+    summary="Execute/plan a Cypher query",
+    description="Runs a Cypher query or returns an execution plan depending on `strategy`."
+)
+async def neo4j_cypher(payload: CypherQueryIn):
+    # — stubbed behavior; swap in your Neo4j driver logic —
+    try:
+        # Example minimal fake response that fits the schema:
+        if payload.strategy == "explain":
+            return CypherQueryOut(
+                columns=[],
+                rows=[],
+                elapsed_ms=2,
+                strategy="explain",
+                plan={"pipeline": "dummy", "operators": []},
+                stats=None,
+                warnings=None
+            )
+        # default/profile → pretend we “ran” it and have results
+        return CypherQueryOut(
+            columns=["p2", "k", "p"],
+            rows=[
+                {"p2": {"name": "Roger Waters"}, "k": {"since": 2020}, "p": {"name": "Amelia"}}
+            ],
+            elapsed_ms=7,
+            strategy=payload.strategy,
+            plan=( {"profiled": True} if payload.strategy == "profile" else None ),
+            stats={"rows": 1, "updates": 0},
+            warnings=None
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="InternalError: " + str(e))
+
+app.include_router(router)
+
+3) Tool manifest (“tool schema”) for your tool manager
+
+This is the JSON object most teams register with their internal tool registry. It embeds JSON Schema generated from the Pydantic models and specifies the HTTP binding.
+
+{
+  "name": "neo4j_cypher",
+  "version": "1.0.0",
+  "description": "Execute or plan a Cypher query against the graph database.",
+  "endpoint": {
+    "method": "POST",
+    "path": "/tools/neo4j/cypher",
+    "produces": ["application/json"],
+    "consumes": ["application/json"]
+  },
+  "auth": { "type": "none" },
+  "tags": ["graph", "neo4j", "cypher", "tools"],
+  "input_schema": {
+    "type": "object",
+    "title": "CypherQueryIn",
+    "description": "Input contract for the cypher query tool.",
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Cypher to execute. Use `strategy='explain'`/`'profile'` to plan without/with execution."
+      },
+      "strategy": {
+        "type": "string",
+        "description": "Execution strategy: 'default' runs the query, 'explain' returns a plan, 'profile' profiles the plan.",
+        "enum": ["default", "explain", "profile"],
+        "default": "default"
+      }
+    },
+    "required": ["query"]
+  },
+  "output_schema": {
+    "type": "object",
+    "title": "CypherQueryOut",
+    "description": "Output contract for the cypher query tool.",
+    "additionalProperties": false,
+    "properties": {
+      "columns": {
+        "type": "array",
+        "description": "Column names returned by the query.",
+        "items": { "type": "string" }
+      },
+      "rows": {
+        "type": "array",
+        "description": "Result rows as a list of objects mapping column -> value.",
+        "items": { "type": "object", "additionalProperties": {} }
+      },
+      "elapsed_ms": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Wall time spent executing/planning."
+      },
+      "strategy": {
+        "type": "string",
+        "enum": ["default", "explain", "profile"],
+        "description": "Echoes the execution strategy used."
+      },
+      "plan": {
+        "type": ["object", "null"],
+        "description": "Planner output. Present for 'explain'/'profile'.",
+        "additionalProperties": {}
+      },
+      "stats": {
+        "type": ["object", "null"],
+        "description": "Engine statistics (updates, db hits, etc.) when available.",
+        "additionalProperties": {}
+      },
+      "warnings": {
+        "type": ["array", "null"],
+        "description": "Non-fatal warnings emitted by the engine/driver.",
+        "items": { "type": "string" }
+      }
+    },
+    "required": ["columns", "rows", "elapsed_ms", "strategy"]
+  },
+  "error_schema": {
+    "type": "object",
+    "title": "CypherErrorOut",
+    "additionalProperties": false,
+    "properties": {
+      "code": {
+        "type": "string",
+        "enum": ["BadRequest", "ValidationError", "QueryError", "Timeout", "InternalError"]
+      },
+      "error": { "type": "string" },
+      "detail": { "type": ["string", "null"] },
+      "elapsed_ms": { "type": ["integer", "null"], "minimum": 0 }
+    },
+    "required": ["code", "error"]
+  },
+  "timeouts": { "request_ms": 30000 },
+  "rate_limit": { "unit": "minute", "limit": 120 },
+  "examples": {
+    "input": {
+      "query": "CREATE (p:Person {name: 'Amelia'})-[k:KNOWS]->(p2:Person {name: 'Roger Waters'}) RETURN p2, k, p LIMIT 3",
+      "strategy": "default"
+    },
+    "success_response": {
+      "columns": ["p2", "k", "p"],
+      "rows": [
+        { "p2": {"name": "Roger Waters"}, "k": {"since": 2020}, "p": {"name": "Amelia"} }
+      ],
+      "elapsed_ms": 7,
+      "strategy": "default",
+      "plan": null,
+      "stats": { "rows": 1, "updates": 0 },
+      "warnings": null
+    },
+    "error_response": {
+      "code": "QueryError",
+      "error": "Syntax error at line 1 near 'CREAT'",
+      "detail": "Expected 'CREATE' but found 'CREAT'",
+      "elapsed_ms": 1
+    }
+  }
+}
+
+    If your registry expects an OpenAI‑style “tool” entry (function‑calling), you can also expose the parameters (input) only:
+
+{
+  "type": "function",
+  "function": {
+    "name": "neo4j_cypher",
+    "description": "Execute or plan a Cypher query against the graph database.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "minLength": 1, "description": "Cypher to execute." },
+        "strategy": { "type": "string", "enum": ["default", "explain", "profile"], "default": "default" }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    }
+  }
+}
+
+4) Quick cURL to sanity‑check
+
+curl -X POST http://localhost:8000/tools/neo4j/cypher \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "CREATE (p:Person {name: \"Amelia\"})-[k:KNOWS]->(p2:Person {name: \"Roger Waters\"}) RETURN p2, k, p LIMIT 3",
+    "strategy": "default"
+  }'
+
+This matches the body you showed and gives you a consistent, self‑describing tool contract that your tool manager can register and introspect.
+You said:
+We had something like ad-hoc tools, HTTP action tools (GET,PUT,POST,DELETE,OPTIONS, etc) that we had a @tools.endpoint(description=",,,") or other params that were option since most could be inferred from doc strings and also the input output schemas (defined as subclasses of pydantic model. We had the tool management working -> on deploy, we'd synchronize the services that were connected and allow them to be indexed. Once indexed, potentially hundreds of integration servers could be connected and the individual "toolkits" (could be individual routers, could be arbitrary subsets) are made available to the tool management server's connected clients as wrapped endpoints / tools. This allows for multi-hop retrieval over toolkits, even during thinking phases, allowing for robust inter-operable AI machinery. Previously, we used Tool, ToolAction, ToolSchema (input schema and output schemas), ToolCall, and ToolResult. We also have another microservice, another graph native microservice, where the conversations are represented as subgraphs. Central node for conversation and ID, and then we defined it as a hierarchically embedded structure. Messages may have different content blocks, and we want to embed message content, but also we may want to retrieve based on 'graph closeness' so defined additional inter-relationships in the graph schema. As a result then, we can retrieve in very sophisticated manners. Please recall this and then try to recall and generate this
+ChatGPT said:
+Request for GPT-5 Pro
+Reasoned for 8m 0s
+
+Love this architecture. Based on what you described (ad‑hoc tools + HTTP action tools, @tools.endpoint(...) with inference from docstrings and Pydantic I/O, registry/indexing into “toolkits”, multi‑hop retrieval, and a separate graph‑native convo service with hierarchical structure + graph‑closeness retrieval), here’s a faithful reconstruction you can drop into a codebase.
+
+Below I lay out:
+
+    Core models that mirror your old nouns: Tool, ToolAction, ToolSchema, ToolCall, ToolResult, plus Toolkit and ServiceDescriptor.
+
+    @tools.endpoint decorator with schema inference from function annotations + docstrings.
+
+    Discovery & export into a registry‑friendly “tool schema” (JSON) including OpenAI‑style “function” spec generation.
+
+    FastAPI glue to expose /.well-known/tools & /.well-known/openai-tools.
+
+    Sync client to push descriptors to the Tool Management server on deploy.
+
+    Indexing/search shapes (in‑memory placeholder + clean interfaces so you can swap a real vector store).
+
+    Multi‑hop retrieval planner skeleton for chaining across toolkits.
+
+    Graph‑native conversation service: Cypher schema, nodes/edges, plus retrieval patterns for “graph closeness” + hybrid similarity.
+
+1) Core models (Pydantic v2)
+
+    tooling_models.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Literal, Union
+from pydantic import BaseModel, Field
+from enum import Enum
+from datetime import datetime
+from uuid import uuid4
+
+# ===== Enums =====
+class ToolActionType(str, Enum):
+    ADHOC = "adhoc"
+    HTTP = "http"
+
+class HttpMethod(str, Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    PATCH = "PATCH"
+    DELETE = "DELETE"
+    OPTIONS = "OPTIONS"
+    HEAD = "HEAD"
+
+# ===== Schemas =====
+class ToolSchema(BaseModel):
+    """
+    Describes input/output schema for a tool action. Wraps JSON Schema derived from a Pydantic model.
+    """
+    title: Optional[str] = None
+    content_type: str = Field(default="application/json")
+    json_schema: Dict[str, Any] = Field(default_factory=dict)
+    python_type: Optional[str] = Field(
+        default=None, description="Optional dotted path to the Pydantic class for round-trip resolution."
+    )
+
+# ===== Actions =====
+class BaseToolAction(BaseModel):
+    type: ToolActionType
+    name: str
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+
+class AdhocToolAction(BaseToolAction):
+    type: Literal[ToolActionType.ADHOC] = ToolActionType.ADHOC
+    python_name: Optional[str] = None
+    python_module: Optional[str] = None
+    idempotent: Optional[bool] = None
+    cache_ttl_seconds: Optional[int] = None
+
+class HttpToolAction(BaseToolAction):
+    type: Literal[ToolActionType.HTTP] = ToolActionType.HTTP
+    method: HttpMethod
+    path: str
+    # Optional extra schemas for HTTP shape control:
+    query_schema: Optional[ToolSchema] = None
+    header_schema: Optional[ToolSchema] = None
+    path_params_schema: Optional[ToolSchema] = None
+    auth: Optional[Dict[str, Any]] = None  # e.g. { "type": "bearer" } | { "type": "none" }
+    timeouts_ms: Optional[int] = None
+    rate_limit: Optional[Dict[str, Any]] = None  # { "unit": "minute", "limit": 120 }
+
+ToolAction = Union[AdhocToolAction, HttpToolAction]
+
+# ===== Tool / Toolkit / Service =====
+class Tool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    toolkit: Optional[str] = None
+    version: Optional[str] = "1.0.0"
+    actions: List[ToolAction] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    # service bindings
+    service_id: Optional[str] = None
+    service_url: Optional[str] = None
+
+class Toolkit(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    tools: List[Tool] = Field(default_factory=list)
+
+class ServiceDescriptor(BaseModel):
+    service_id: str
+    service_name: str
+    base_url: str
+    version: str
+    toolkits: List[Toolkit]
+    # Free-form capabilities & metadata for discovery
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    registered_at: datetime = Field(default_factory=datetime.utcnow)
+
+# ===== Calls / Results =====
+class ToolExecutionContext(BaseModel):
+    user_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    message_id: Optional[str] = None
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
+    trace_parent: Optional[str] = None
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
+class ToolCall(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    service_id: Optional[str] = None
+    tool_name: str
+    action_name: str
+    action_type: ToolActionType
+    args: Dict[str, Any]
+    context: ToolExecutionContext
+    issued_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ToolResult(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    call_id: str
+    status: Literal["ok", "error"]
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    http_status: Optional[int] = None
+    headers: Optional[Dict[str, str]] = None
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    ended_at: datetime = Field(default_factory=datetime.utcnow)
+    latency_ms: Optional[int] = None
+    stats: Dict[str, Any] = Field(default_factory=dict)
+
+2) @tools.endpoint(...) decorator with inference
+
+    tools_decorator.py
+
+from __future__ import annotations
+import inspect
+from typing import Any, Callable, Dict, Optional, Type, get_type_hints, List
+from pydantic import BaseModel
+from tooling_models import (
+    ToolSchema, ToolActionType, HttpMethod, AdhocToolAction, HttpToolAction
+)
+
+def _model_to_schema(model_cls: Optional[Type[BaseModel]]) -> Optional[ToolSchema]:
+    if model_cls is None:
+        return None
+    if not (isinstance(model_cls, type) and issubclass(model_cls, BaseModel)):
+        raise TypeError(f"Expected Pydantic BaseModel subclass, got {model_cls}")
+    js = model_cls.model_json_schema()
+    return ToolSchema(
+        title=js.get("title"),
+        json_schema=js,
+        python_type=f"{model_cls.__module__}.{model_cls.__name__}",
+    )
+
+def _infer_io_from_signature(fn: Callable) -> Dict[str, Optional[Type[BaseModel]]]:
+    """
+    Infer input and output Pydantic models from function signature:
+      async def fn(payload: InModel, ctx: ToolExecutionContext) -> OutModel: ...
+    or:
+      async def fn(payload: InModel) -> OutModel
+    """
+    hints = get_type_hints(fn, include_extras=True)
+    sig = inspect.signature(fn)
+    in_model = None
+    out_model = None
+
+    # infer input: first param annotated with BaseModel subclass
+    for p in sig.parameters.values():
+        annot = hints.get(p.name)
+        if isinstance(annot, type) and issubclass(annot, BaseModel):
+            in_model = annot
+            break
+
+    # infer output
+    ret = hints.get("return")
+    if isinstance(ret, type) and issubclass(ret, BaseModel):
+        out_model = ret
+
+    return {"in_model": in_model, "out_model": out_model}
+
+def endpoint(
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,  # fallback: docstring
+    toolkit: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+
+    # HTTP wiring (if provided -> HTTP action; else -> adhoc)
+    method: Optional[HttpMethod] = None,
+    path: Optional[str] = None,
+
+    # Pydantic models (optional; inferred if omitted)
+    input_model: Optional[Type[BaseModel]] = None,
+    output_model: Optional[Type[BaseModel]] = None,
+
+    # Execution hints
+    idempotent: Optional[bool] = None,
+    cache_ttl_seconds: Optional[int] = None,
+    auth: Optional[Dict[str, Any]] = None,
+    timeouts_ms: Optional[int] = None,
+    rate_limit: Optional[Dict[str, Any]] = None,
+):
+    """
+    Decorate a function to register it as a tool endpoint.
+    If method+path are given -> HTTP tool; otherwise -> ad-hoc function tool.
+    """
+    def _decorator(fn: Callable):
+        nonlocal name, description, input_model, output_model
+
+        # infer io
+        inferred = _infer_io_from_signature(fn)
+        input_model = input_model or inferred["in_model"]
+        output_model = output_model or inferred["out_model"]
+
+        if description is None:
+            description = inspect.getdoc(fn) or ""
+
+        # schemas
+        input_schema = _model_to_schema(input_model)
+        output_schema = _model_to_schema(output_model)
+
+        # decide action type
+        if method and path:
+            action = HttpToolAction(
+                type="http",
+                name=name or fn.__name__,
+                description=description,
+                tags=tags or [],
+                method=method,
+                path=path,
+                input_schema=input_schema,
+                output_schema=output_schema,
+                auth=auth,
+                timeouts_ms=timeouts_ms,
+                rate_limit=rate_limit,
+            )
+        else:
+            action = AdhocToolAction(
+                type="adhoc",
+                name=name or fn.__name__,
+                description=description,
+                tags=tags or [],
+                input_schema=input_schema,
+                output_schema=output_schema,
+                python_name=fn.__name__,
+                python_module=fn.__module__,
+                idempotent=idempotent,
+                cache_ttl_seconds=cache_ttl_seconds,
+            )
+
+        # attach metadata for discovery
+        setattr(fn, "__tool_action__", action)
+        setattr(fn, "__tool_meta__", {
+            "tool_name": name or fn.__name__,
+            "toolkit": toolkit,
+            "description": description,
+            "tags": tags or [],
+        })
+        return fn
+    return _decorator
+
+3) Discovery & export into “tool schema”
+
+    discovery.py
+
+from __future__ import annotations
+import importlib, inspect, pkgutil
+from typing import Any, Dict, Iterable, List, Optional
+from pydantic import BaseModel
+from tooling_models import ServiceDescriptor, Toolkit, Tool, ToolAction
+from tools_decorator import endpoint
+
+def _collect_actions_from_module(mod) -> List[ToolAction]:
+    actions: List[ToolAction] = []
+    for _, obj in inspect.getmembers(mod):
+        if callable(obj) and hasattr(obj, "__tool_action__"):
+            actions.append(getattr(obj, "__tool_action__"))
+    return actions
+
+def discover_tools_from_modules(
+    modules: Iterable[str],
+    *,
+    default_toolkit: Optional[str] = None
+) -> List[Tool]:
+    tools: Dict[str, Tool] = {}
+    for mod_name in modules:
+        mod = importlib.import_module(mod_name)
+        actions = _collect_actions_from_module(mod)
+        for fn_name, obj in inspect.getmembers(mod):
+            if callable(obj) and hasattr(obj, "__tool_action__"):
+                action = getattr(obj, "__tool_action__")
+                meta = getattr(obj, "__tool_meta__", {})
+                tool_name = meta.get("tool_name") or obj.__name__
+                toolkit = meta.get("toolkit") or default_toolkit or mod_name.split(".")[-1]
+                description = meta.get("description") or ""
+                tags = meta.get("tags") or []
+
+                if tool_name not in tools:
+                    tools[tool_name] = Tool(
+                        name=tool_name,
+                        description=description,
+                        toolkit=toolkit,
+                        version="1.0.0",
+                        actions=[],
+                        tags=tags,
+                    )
+                tools[tool_name].actions.append(action)
+    return list(tools.values())
+
+def build_service_descriptor(
+    *,
+    service_id: str,
+    service_name: str,
+    base_url: str,
+    version: str,
+    modules: Iterable[str],
+    toolkit_name: Optional[str] = None,
+    toolkit_id: Optional[str] = None,
+    toolkit_desc: Optional[str] = None,
+    capabilities: Optional[Dict[str, Any]] = None,
+) -> ServiceDescriptor:
+    tools = discover_tools_from_modules(modules, default_toolkit=toolkit_name)
+    tk = Toolkit(
+        id=toolkit_id or f"{service_id}:{toolkit_name or 'default'}",
+        name=toolkit_name or "default",
+        description=toolkit_desc,
+        tools=tools,
+    )
+    # Bind service data onto tool entries
+    for t in tk.tools:
+        t.service_id = service_id
+        t.service_url = base_url
+
+    return ServiceDescriptor(
+        service_id=service_id,
+        service_name=service_name,
+        base_url=base_url,
+        version=version,
+        toolkits=[tk],
+        capabilities=capabilities or {},
+    )
+
+# --- OpenAI-function spec conversion (for LLM tool-calling) ---
+def to_openai_tools(descriptor: ServiceDescriptor) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for tk in descriptor.toolkits:
+        for tool in tk.tools:
+            for action in tool.actions:
+                if action.input_schema is None:
+                    continue
+                out.append({
+                    "type": "function",
+                    "function": {
+                        "name": f"{tool.name}.{action.name}",
+                        "description": action.description or tool.description or "",
+                        "parameters": action.input_schema.json_schema or {"type": "object"},
+                    }
+                })
+    return out
+
+# Utility to serialize to dict (e.g., for a .well-known endpoint)
+def to_dict(descriptor: ServiceDescriptor) -> Dict[str, Any]:
+    return descriptor.model_dump()
+
+4) FastAPI glue: expose well‑known specs
+
+    service_app.py
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from discovery import build_service_descriptor, to_dict, to_openai_tools
+
+# Import your modules that contain @tools.endpoint functions
+MODULES = [
+    "toolkits.graph_tools",    # example module
+    "toolkits.utils_tools",    # example module
+]
+
+app = FastAPI(title="Integration Service")
+
+# Construct descriptor at startup (ready for sync to management on deploy)
+DESCRIPTOR = build_service_descriptor(
+    service_id="graph-svc",
+    service_name="Graph Integration Service",
+    base_url="http://graph-svc.internal",
+    version="1.2.3",
+    modules=MODULES,
+    toolkit_name="graph",
+    toolkit_id="graph-toolkit",
+    toolkit_desc="Graph/Neo4j and utility endpoints",
+    capabilities={"multi-hop": True, "http-tools": True, "adhoc-tools": True},
+)
+
+@app.get("/.well-known/tools")
+async def well_known_tools():
+    return JSONResponse(to_dict(DESCRIPTOR))
+
+@app.get("/.well-known/openai-tools")
+async def well_known_openai_tools():
+    return JSONResponse(to_openai_tools(DESCRIPTOR))
+
+5) Example: define ad‑hoc + HTTP tools with @tools.endpoint
+
+    toolkits/graph_tools.py
+
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
+from tools_decorator import endpoint
+from tooling_models import HttpMethod
+
+# --- I/O models ---
+class CypherIn(BaseModel):
+    """Cypher statement & optional strategy hints."""
+    query: str = Field(..., min_length=1)
+    strategy: Optional[str] = Field(default="default", description="default|explain|profile")
+
+class CypherRow(BaseModel):
+    data: Dict[str, Any]
+
+class CypherOut(BaseModel):
+    columns: List[str]
+    rows: List[CypherRow]
+    elapsed_ms: int
+    strategy: str
+    plan: Optional[Dict[str, Any]] = None
+    stats: Optional[Dict[str, Any]] = None
+    warnings: Optional[List[str]] = None
+
+# --- Ad-hoc tool (function tool) ---
+@endpoint(
+    description="Execute/plan a Cypher query against the configured graph database.",
+    toolkit="graph",
+    tags=["neo4j", "cypher", "adhoc"],
+    # I/O will be inferred from annotations below:
+)
+async def cypher(payload: CypherIn) -> CypherOut:
+    """
+    Runs the given Cypher. Use strategy='explain' to plan without execution or 'profile' to profile.
+    """
+    # NOTE: Stub logic for example only
+    return CypherOut(
+        columns=["p2", "k", "p"],
+        rows=[CypherRow(data={"p2": {"name": "Roger Waters"}, "k": {}, "p": {"name": "Amelia"}})],
+        elapsed_ms=5,
+        strategy=payload.strategy or "default",
+        plan=None,
+        stats={"rows": 1},
+    )
+
+# --- HTTP action tool (wraps an actual HTTP endpoint) ---
+class CreatePersonIn(BaseModel):
+    name: str
+
+class CreatePersonOut(BaseModel):
+    node_id: str
+    labels: List[str]
+    properties: Dict[str, Any]
+
+@endpoint(
+    name="create_person",
+    description="HTTP tool for creating a Person node.",
+    toolkit="graph",
+    method=HttpMethod.POST,
+    path="/neo4j/persons",
+    tags=["neo4j", "http"],
+)
+async def create_person_http(payload: CreatePersonIn) -> CreatePersonOut:
+    """
+    HTTP facade: POST /neo4j/persons with JSON body { name }.
+    (Implementation detail can be a FastAPI route handler or just a logical wrapper.)
+    """
+    # Stub: pretend it created a node
+    return CreatePersonOut(node_id="123", labels=["Person"], properties={"name": payload.name})
+
+    toolkits/utils_tools.py (tiny extra example)
+
+from pydantic import BaseModel, Field
+from tools_decorator import endpoint
+
+class EchoIn(BaseModel):
+    text: str = Field(..., min_length=1)
+
+class EchoOut(BaseModel):
+    text: str
+
+@endpoint(description="Echo a string back.", toolkit="utils", tags=["adhoc", "debug"])
+async def echo(payload: EchoIn) -> EchoOut:
+    """Simple echo tool, handy for debugging orchestrations."""
+    return EchoOut(text=payload.text)
+
+6) Sync to Tool Management on deploy
+
+    management_client.py
+
+import httpx
+from typing import Optional
+from discovery import to_dict
+from tooling_models import ServiceDescriptor
+
+class ToolManagementClient:
+    def __init__(self, base_url: str, api_key: Optional[str] = None, timeout=30.0):
+        self.base_url = base_url.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.timeout = timeout
+
+    def register_service(self, descriptor: ServiceDescriptor) -> dict:
+        url = f"{self.base_url}/registry/register"
+        payload = to_dict(descriptor)
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(url, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    def search(self, query: str, top_k: int = 8) -> dict:
+        url = f"{self.base_url}/registry/search"
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.get(url, params={"q": query, "k": top_k})
+            r.raise_for_status()
+            return r.json()
+
+On service startup (or as part of your deploy hook), call:
+
+# in service_app.py after building DESCRIPTOR
+# from management_client import ToolManagementClient
+# ToolManagementClient("http://tool-mgmt.internal").register_service(DESCRIPTOR)
+
+7) Management server: indexing/search (interface + in‑mem impl)
+
+    mgmt_index.py (clean interfaces; swap in your vector DB later)
+
+from __future__ import annotations
+from typing import List, Dict, Any, Tuple
+from tooling_models import ServiceDescriptor, Tool, ToolAction
+
+def _flatten_tool_text(tool: Tool, action: ToolAction) -> str:
+    parts = [
+        tool.name, tool.description or "", tool.toolkit or "",
+        action.name, action.description or "", action.type.value
+    ]
+    if action.input_schema and action.input_schema.json_schema:
+        parts.append(str(action.input_schema.json_schema))
+    if action.output_schema and action.output_schema.json_schema:
+        parts.append(str(action.output_schema.json_schema))
+    return "\n".join(parts)
+
+class IndexStore:
+    def __init__(self):
+        self.records: List[Dict[str, Any]] = []  # {id, text, payload}
+
+    def upsert_service(self, d: ServiceDescriptor):
+        # remove old
+        self.records = [r for r in self.records if r["payload"].get("service_id") != d.service_id]
+        # add new
+        for tk in d.toolkits:
+            for tool in tk.tools:
+                for action in tool.actions:
+                    rid = f"{d.service_id}:{tool.name}:{action.name}"
+                    self.records.append({
+                        "id": rid,
+                        "text": _flatten_tool_text(tool, action),
+                        "payload": {
+                            "service_id": d.service_id,
+                            "service_url": d.base_url,
+                            "tool_name": tool.name,
+                            "action_name": action.name,
+                            "action_type": action.type.value,
+                            "toolkit": tool.toolkit,
+                            "http": getattr(action, "path", None),
+                            "method": getattr(action, "method", None).value if getattr(action, "method", None) else None,
+                        }
+                    })
+
+    def search(self, q: str, k: int = 8) -> List[Dict[str, Any]]:
+        # ultra-simple lexical scoring; replace with embeddings/ANN
+        ql = q.lower()
+        scored = []
+        for r in self.records:
+            text = r["text"].lower()
+            # naive score: count overlaps
+            score = sum(1 for tok in ql.split() if tok in text)
+            scored.append((score, r))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [dict(score=s, **r) for s, r in scored[:k]]
+
+    management_server.py (FastAPI)
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from tooling_models import ServiceDescriptor
+from mgmt_index import IndexStore
+
+app = FastAPI(title="Tool Management Server")
+INDEX = IndexStore()
+
+@app.post("/registry/register")
+async def register(d: ServiceDescriptor):
+    INDEX.upsert_service(d)
+    return {"status": "ok", "service_id": d.service_id, "tools": sum(len(t.tools) for t in d.toolkits)}
+
+@app.get("/registry/search")
+async def search(q: str, k: int = 8):
+    results = INDEX.search(q, k)
+    return {"query": q, "results": results}
+
+8) Multi‑hop retrieval planner (skeleton)
+
+    planner.py
+
+from typing import List, Dict, Any
+from management_client import ToolManagementClient
+
+class ToolMatch(dict):
+    """Convenience wrapper: includes service_url, tool_name, action_name, score, and http binding if present."""
+    pass
+
+class MultiHopPlanner:
+    """
+    Trivial chain-of-tools planner: given a natural-language subgoal sequence, match each to a tool action.
+    In practice hook this into your LLM 'thinking phases' to produce/score subgoals, then map to tools.
+    """
+    def __init__(self, mgmt: ToolManagementClient):
+        self.mgmt = mgmt
+
+    def find_tools(self, need: str, top_k: int = 5) -> List[ToolMatch]:
+        data = self.mgmt.search(need, top_k)
+        return [ToolMatch(r) for r in data.get("results", [])]
+
+    def plan(self, subgoals: List[str]) -> List[ToolMatch]:
+        plan: List[ToolMatch] = []
+        for g in subgoals:
+            matches = self.find_tools(g, top_k=1)
+            if matches:
+                plan.append(matches[0])
+        return plan
+
+    # Execution wrapper (pseudo; wire to your HTTP/adhoc adapters)
+    def execute(self, plan: List[ToolMatch], inputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        results = []
+        for step, args in zip(plan, inputs):
+            if step.get("http"):
+                # POST/GET etc to step['payload']['service_url'] + http path
+                # ... (left as exercise; re-use your existing gateway)
+                pass
+            else:
+                # Call adhoc function via RPC / runner
+                pass
+        return results
+
+9) Graph‑native conversation service (Neo4j/Memgraph‑style)
+
+Graph model (nodes + rels)
+
+    Conversation: (c:Conversation {id, title?, created_at})
+
+    Message: (m:Message {id, role, ts, text?, tokens?, level?, embedding?})
+
+    Block: (b:Block {id, type, mime?, text?, uri?, embedding?})
+
+    ToolCall: (tc:ToolCall {id, tool_name, action_name, args_json, issued_at})
+
+    ToolResult: (tr:ToolResult {id, status, output_json?, error?, latency_ms?, ended_at})
+
+    Entity: (e:Entity {name}) (optional for mentions)
+
+Relationships (weighted for closeness)
+
+    (c)-[:HAS_MESSAGE]->(m)
+
+    (m)-[:NEXT]->(m_next) (sequence)
+
+    (m)-[:REPLY_TO]->(m_parent)
+
+    (m)-[:HAS_BLOCK]->(b)
+
+    (m)-[:CALLS_TOOL]->(tc)
+
+    (tc)-[:YIELDS]->(tr)
+
+    (m)-[:MENTIONS]->(e)
+
+    Similarity edges (optional offline enrichment):
+    (m)-[:SIMILAR {score}]->(m2) and (b)-[:SIMILAR {score}]->(b2)
+
+Indexes/constraints (Cypher)
+
+CREATE CONSTRAINT conv_id IF NOT EXISTS FOR (c:Conversation) REQUIRE c.id IS UNIQUE;
+CREATE CONSTRAINT msg_id  IF NOT EXISTS FOR (m:Message)      REQUIRE m.id IS UNIQUE;
+CREATE CONSTRAINT blk_id  IF NOT EXISTS FOR (b:Block)        REQUIRE b.id IS UNIQUE;
+CREATE CONSTRAINT tc_id   IF NOT EXISTS FOR (t:ToolCall)     REQUIRE t.id IS UNIQUE;
+CREATE CONSTRAINT tr_id   IF NOT EXISTS FOR (t:ToolResult)   REQUIRE t.id IS UNIQUE;
+CREATE INDEX ent_name IF NOT EXISTS FOR (e:Entity) ON (e.name);
+
+    If your graph supports vector indexes, also:
+
+// Neo4j 5+ example (adjust dims):
+CREATE VECTOR INDEX msg_emb IF NOT EXISTS FOR (m:Message) ON (m.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+CREATE VECTOR INDEX blk_emb IF NOT EXISTS FOR (b:Block) ON (b.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+
+Write API stubs (FastAPI)
+
+    conv_graph_service.py
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+from neo4j import GraphDatabase  # or your driver
+
+app = FastAPI(title="Conversation Graph Service")
+
+# --- config your driver ---
+# driver = GraphDatabase.driver(NEO4J_URI, auth=(USER, PASS))
+
+class BlockIn(BaseModel):
+    id: str
+    type: str
+    mime: Optional[str] = None
+    text: Optional[str] = None
+    uri: Optional[str] = None
+    embedding: Optional[List[float]] = None
+
+class MessageIn(BaseModel):
+    id: str
+    role: str
+    text: Optional[str] = None
+    tokens: Optional[int] = None
+    level: Optional[int] = None
+    ts: Optional[str] = None
+    embedding: Optional[List[float]] = None
+    blocks: List[BlockIn] = []
+
+class UpsertMessageRequest(BaseModel):
+    conversation_id: str
+    message: MessageIn
+    reply_to: Optional[str] = None
+
+@app.post("/conversations/upsert_message")
+async def upsert_message(req: UpsertMessageRequest):
+    """
+    Upserts Conversation, Message, Blocks; wires NEXT/REPLY_TO edges, preserves order via Message.level.
+    """
+    q = """
+    MERGE (c:Conversation {id: $cid})
+      ON CREATE SET c.created_at = timestamp()
+    MERGE (m:Message {id: $mid})
+      ON CREATE SET m.role=$role, m.ts=coalesce($ts, timestamp())
+      ON MATCH  SET m.role=$role
+    SET m.text=$text, m.tokens=$tokens, m.level=$level, m.embedding=$embedding
+    MERGE (c)-[:HAS_MESSAGE]->(m)
+    WITH c,m
+    FOREACH (rid IN CASE WHEN $reply_to IS NULL THEN [] ELSE [$reply_to] END |
+      MERGE (mp:Message {id: rid})
+      MERGE (m)-[:REPLY_TO]->(mp)
+    )
+    WITH m
+    UNWIND $blocks AS b
+      MERGE (bl:Block {id: b.id})
+      SET bl.type=b.type, bl.mime=b.mime, bl.text=b.text, bl.uri=b.uri, bl.embedding=b.embedding
+      MERGE (m)-[:HAS_BLOCK]->(bl)
+    RETURN m.id AS mid
+    """
+    params = {
+        "cid": req.conversation_id,
+        "mid": req.message.id,
+        "role": req.message.role,
+        "ts": req.message.ts,
+        "text": req.message.text,
+        "tokens": req.message.tokens,
+        "level": req.message.level,
+        "embedding": req.message.embedding,
+        "blocks": [b.model_dump() for b in req.message.blocks],
+        "reply_to": req.reply_to,
+    }
+    # with driver.session() as s:
+    #     rec = s.run(q, **params).single()
+    #     return {"message_id": rec["mid"]}
+    return {"message_id": req.message.id}  # stub for demo
+
+Graph‑closeness retrieval (hybrid: relationship weights + similarity)
+
+Heuristic scoring (customizable):
+
+score = α * exp(-λ * hop_length)
+      + β * (SIMILAR.score if SIMILAR exists else 0)
+      + γ * temporal_decay
+      + δ * tool_call overlap
+
+Cypher sketch (structural component):
+
+// Find K closest messages to a pivot by structure only (depth ≤ 4)
+MATCH (m0:Message {id: $pivot})
+MATCH p=(m0)-[r:HAS_MESSAGE|NEXT|REPLY_TO|CALLS_TOOL|YIELDS|HAS_BLOCK|MENTIONS|SIMILAR*1..4]-(m:Message)
+WITH m, reduce(w=0.0, x IN relationships(p) |
+  w + CASE type(x)
+        WHEN 'SIMILAR' THEN 2.5
+        WHEN 'REPLY_TO' THEN 1.8
+        WHEN 'NEXT' THEN 1.2
+        WHEN 'CALLS_TOOL' THEN 1.0
+        WHEN 'YIELDS' THEN 1.0
+        WHEN 'HAS_BLOCK' THEN 0.7
+        WHEN 'HAS_MESSAGE' THEN 0.7
+        WHEN 'MENTIONS' THEN 0.9
+        ELSE 0.5 END
+) AS path_weight
+RETURN m.id AS message_id, max(path_weight) AS structural_score
+ORDER BY structural_score DESC
+LIMIT $k;
+
+If vector search is available, blend with cosine similarity:
+
+// Neo4j 5+ vector search example (optional)
+MATCH (m0:Message {id: $pivot})
+CALL db.index.vector.queryNodes('msg_emb', $k, m0.embedding) YIELD node, score
+RETURN node.id AS message_id, score AS vector_score
+
+Then fuse in app‑layer:
+
+fused = α * normalize(structural_score) + β * normalize(vector_score)
+
+10) Example: the concrete “tool schema” emitted (/.well-known/tools)
+
+You’ll get a top‑level ServiceDescriptor with embedded Toolkit → Tools → ToolActions. A minimal example for the two tools above will look like:
+
+{
+  "service_id": "graph-svc",
+  "service_name": "Graph Integration Service",
+  "base_url": "http://graph-svc.internal",
+  "version": "1.2.3",
+  "toolkits": [
+    {
+      "id": "graph-svc:graph-toolkit",
+      "name": "graph",
+      "description": "Graph/Neo4j and utility endpoints",
+      "tags": [],
+      "tools": [
+        {
+          "name": "cypher",
+          "description": "Runs the given Cypher. Use strategy='explain' to plan without execution or 'profile' to profile.",
+          "toolkit": "graph",
+          "version": "1.0.0",
+          "tags": ["neo4j","cypher","adhoc"],
+          "service_id": "graph-svc",
+          "service_url": "http://graph-svc.internal",
+          "actions": [
+            {
+              "type": "adhoc",
+              "name": "cypher",
+              "description": "Execute/plan a Cypher query against the configured graph database.",
+              "tags": ["neo4j","cypher","adhoc"],
+              "input_schema": { "title": "CypherIn", "content_type": "application/json", "json_schema": { "...": "..." } },
+              "output_schema": { "title": "CypherOut", "content_type": "application/json", "json_schema": { "...": "..." } },
+              "python_name": "cypher",
+              "python_module": "toolkits.graph_tools"
+            }
+          ]
+        },
+        {
+          "name": "create_person",
+          "description": "HTTP tool for creating a Person node.",
+          "toolkit": "graph",
+          "version": "1.0.0",
+          "tags": ["neo4j","http"],
+          "service_id": "graph-svc",
+          "service_url": "http://graph-svc.internal",
+          "actions": [
+            {
+              "type": "http",
+              "name": "create_person",
+              "description": "HTTP tool for creating a Person node.",
+              "tags": ["neo4j","http"],
+              "method": "POST",
+              "path": "/neo4j/persons",
+              "input_schema": { "title": "CreatePersonIn", "content_type": "application/json", "json_schema": { "...": "..." } },
+              "output_schema": { "title": "CreatePersonOut", "content_type": "application/json", "json_schema": { "...": "..." } }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "capabilities": { "multi-hop": true, "http-tools": true, "adhoc-tools": true },
+  "registered_at": "2025-11-15T00:00:00Z"
+}
+
+And your OpenAI‑style function export (/.well-known/openai-tools) for LLM tool‑calling becomes:
+
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "cypher.cypher",
+      "description": "Execute/plan a Cypher query against the configured graph database.",
+      "parameters": { "...": "Pydantic JSON schema for CypherIn ..." }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_person.create_person",
+      "description": "HTTP tool for creating a Person node.",
+      "parameters": { "...": "Pydantic JSON schema for CreatePersonIn ..." }
+    }
+  }
+]
+
+11) End‑to‑end flow recap (matches your prior system)
+
+    Service defines endpoints using @tools.endpoint(...).
+
+    On deploy, the service builds a ServiceDescriptor and syncs it to the Tool Management server (/registry/register).
+
+    Tool Management indexes all actions (across hundreds of integration servers) into a search space keyed by “toolkits” and action metadata.
+
+    At inference time, the orchestrator/planner runs multi‑hop retrieval over this index to pick a chain of actions (from possibly different toolkits/services).
+
+    A separate graph‑native convo service stores conversations as subgraphs (Conversation → Messages → Blocks, plus ToolCalls/ToolResults), enriching with SIMILAR edges and MENTIONS. Retrieval blends graph closeness + vector similarity + recency to surface the right context/tool results during the “thinking” phases.
+
+If you want, I can also wire a tiny gateway that adapts an AdhocToolAction call into an HTTP POST (so everything—adhoc or HTTP—can be proxied uniformly through the tool management server).
+You said:
+Tools.adhoc can be something like tools.snippet type and it can be multiple languages, etc. For other types of implementations beyond quick snippets, we;ll have to add containerization and ability to build arbitrary languages, but for now we want to illustrate core concept. @tools.endpoint( ) was a decorator for FastAPI endpoints, now we want to treat the graph management client problem and think of clever ways to instantiate remote graph objects from a decorator
+ChatGPT said:
+Request for GPT-5 Pro
+Reasoned for 2m 45s
+
+Okay, let’s level this up. You want:
+
+    tools.adhoc ⇒ a tools.snippet action that can run small multi‑language snippets with Pydantic I/O.
+
+    Keep @tools.endpoint(...) for FastAPI, but
+
+    Solve the “graph management client” problem and provide clever ways to instantiate remote graph objects via a decorator, so your endpoints and tools can transparently persist/query the graph microservice.
+
+Below is a compact, production‑shaped sketch you can drop into your codebase. It extends the model set you already have (Tool / ToolAction / ToolSchema / ToolCall / ToolResult) with a SnippetToolAction, a minimal SnippetRunner, and a graph‑native object system (@graph.object) that autoinstantiates remote objects and can be auto‑wired into @tools.endpoint.
+A) Extend the action model: SnippetToolAction
+
+    tooling_models.py (additions only)
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Union, Literal
+from pydantic import BaseModel, Field
+from enum import Enum
+
+# --- existing enums ---
+class ToolActionType(str, Enum):
+    ADHOC = "adhoc"
+    HTTP = "http"
+    SNIPPET = "snippet"  # ⟵ NEW
+
+class SnippetLanguage(str, Enum):
+    python = "python"
+    javascript = "javascript"
+    bash = "bash"
+    sql = "sql"
+    cypher = "cypher"
+    graphql = "graphql"
+
+class SnippetSpec(BaseModel):
+    language: SnippetLanguage
+    source: str = Field(..., description="Snippet source code")
+    entrypoint: Optional[str] = Field(
+        None,
+        description="Name of function to call (Python/JS); ignored for shell/SQL/Cypher."
+    )
+    requirements: List[str] = Field(
+        default_factory=list,
+        description="Lightweight deps hint; real containerization comes later."
+    )
+    timeout_ms: Optional[int] = 10_000
+    note: Optional[str] = None
+
+class BaseToolAction(BaseModel):
+    type: ToolActionType
+    name: str
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    input_schema: Optional["ToolSchema"] = None
+    output_schema: Optional["ToolSchema"] = None
+
+class SnippetToolAction(BaseToolAction):
+    type: Literal[ToolActionType.SNIPPET] = ToolActionType.SNIPPET
+    snippet: SnippetSpec
+    idempotent: Optional[bool] = None
+    cache_ttl_seconds: Optional[int] = None
+    # Optional: bind a service to fetch drivers (e.g., GraphClient for cypher/sql)
+    bound_service_id: Optional[str] = None
+
+# keep your existing AdhocToolAction + HttpToolAction…
+ToolAction = Union["AdhocToolAction", "HttpToolAction", SnippetToolAction]
+
+(Leave your existing AdhocToolAction/HttpToolAction intact. We’re just adding a third action type.)
+B) Minimal snippet runner (multi‑language ABI)
+
+ABI (uniform across languages)
+
+    Input: a Python dict parsed from your Pydantic input model.
+
+    Output: a Python dict that must validate against your Pydantic output model.
+
+    Snippets must export main(input) (Python/Node). Bash/SQL/Cypher/GraphQL use conventions below.
+
+    snippet_runner.py
+
+from __future__ import annotations
+import subprocess, sys, json, tempfile, textwrap
+from typing import Dict, Any, Optional
+from tooling_models import SnippetSpec, SnippetLanguage
+
+class SnippetRunner:
+    def __init__(self, graph_client_factory=None):
+        """
+        graph_client_factory: Optional callable(service_id) -> GraphClient
+        used for cypher/sql snippets that need a driver.
+        """
+        self.graph_client_factory = graph_client_factory or (lambda _sid: None)
+
+    def run(self, spec: SnippetSpec, input_dict: Dict[str, Any], *, service_id: Optional[str] = None) -> Dict[str, Any]:
+        lang = spec.language
+        if lang == SnippetLanguage.python:
+            return self._run_python(spec, input_dict)
+        if lang == SnippetLanguage.javascript:
+            return self._run_node(spec, input_dict)
+        if lang == SnippetLanguage.bash:
+            return self._run_bash(spec, input_dict)
+        if lang in (SnippetLanguage.sql, SnippetLanguage.cypher, SnippetLanguage.graphql):
+            return self._run_graphish(spec, input_dict, service_id)
+        raise ValueError(f"Unsupported snippet language: {lang}")
+
+    def _run_python(self, spec: SnippetSpec, input_dict: Dict[str, Any]) -> Dict[str, Any]:
+        # SECURITY NOTE: This uses exec for illustration only. Sandbox in production.
+        src = textwrap.dedent(spec.source)
+        ns: Dict[str, Any] = {}
+        exec(src, ns, ns)
+        entry = spec.entrypoint or "main"
+        if entry not in ns or not callable(ns[entry]):
+            raise ValueError(f"Python snippet missing callable '{entry}'")
+        out = ns[entry](input_dict)
+        if not isinstance(out, dict):
+            raise TypeError("Python snippet must return dict")
+        return out
+
+    def _run_node(self, spec: SnippetSpec, input_dict: Dict[str, Any]) -> Dict[str, Any]:
+        # Requires node installed in the runtime. Minimal shim; containerize later.
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
+            f.write(spec.source)
+            path = f.name
+        entry = spec.entrypoint or "main"
+        wrapper = f"import * as m from '{path}';" \
+                  f"const i = JSON.parse(process.argv[2]);" \
+                  f"Promise.resolve(m['{entry}'](i)).then(o=>{{" \
+                  f"console.log(JSON.stringify(o||{{}})); }}).catch(e=>{{" \
+                  f"console.error(e); process.exit(1); }});"
+        out = subprocess.check_output(["node", "--eval", wrapper, json.dumps(input_dict)], timeout=(spec.timeout_ms or 10000)/1000.0)
+        return json.loads(out.decode())
+
+    def _run_bash(self, spec: SnippetSpec, input_dict: Dict[str, Any]) -> Dict[str, Any]:
+        env = dict(**{**dict(), "INPUT_JSON": json.dumps(input_dict)})
+        out = subprocess.check_output(["bash", "-c", spec.source], env=env, timeout=(spec.timeout_ms or 10000)/1000.0)
+        s = out.decode().strip()
+        return json.loads(s) if s else {}
+
+    def _run_graphish(self, spec: SnippetSpec, input_dict: Dict[str, Any], service_id: Optional[str]) -> Dict[str, Any]:
+        gc = self.graph_client_factory(service_id) if service_id else None
+        if spec.language == SnippetLanguage.cypher:
+            if not gc:
+                raise RuntimeError("No GraphClient bound; cannot run Cypher snippet.")
+            # Convention: provide 'params' under input; return { columns, rows, stats }
+            return gc.cypher(spec.source, params=input_dict.get("params", {}), strategy=input_dict.get("strategy", "default"))
+        if spec.language == SnippetLanguage.sql:
+            if not gc or not hasattr(gc, "sql"):
+                raise RuntimeError("No SQL client bound; cannot run SQL snippet.")
+            return gc.sql(spec.source, params=input_dict.get("params", {}))
+        if spec.language == SnippetLanguage.graphql:
+            if not gc or not hasattr(gc, "graphql"):
+                raise RuntimeError("No GraphQL client bound; cannot run GraphQL snippet.")
+            return gc.graphql(spec.source, variables=input_dict.get("variables", {}))
+        raise ValueError("Unsupported graph-ish snippet")
+
+    In production you’ll swap the Python exec/Node subprocess with a sandbox or container. For now, it’s intentionally lightweight to illustrate the concept.
+
+C) Upgrading @tools.endpoint: declare snippets and auto‑graph wiring
+
+We keep @tools.endpoint for FastAPI tooling, but add:
+
+    snippet: SnippetSpec | None → if present, register a SnippetToolAction (no Python callable needed).
+
+    graph_automerge: bool = False and graph_service_id: Optional[str] → if enabled, auto‑instantiate remote graph objects found in the input model before calling your endpoint function.
+
+    tools_decorator.py (key changes only)
+
+from __future__ import annotations
+import inspect
+from typing import Any, Callable, Optional, Type, List, get_type_hints
+from pydantic import BaseModel
+from tooling_models import (
+    ToolSchema, ToolActionType, HttpMethod,
+    AdhocToolAction, HttpToolAction, SnippetToolAction, SnippetSpec
+)
+from graph_runtime import GraphObject, graph_automerge_inputs  # ⟵ see Section D
+
+def endpoint(
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    toolkit: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+
+    # HTTP wiring
+    method: Optional[HttpMethod] = None,
+    path: Optional[str] = None,
+
+    # Pydantic I/O (inferred if omitted)
+    input_model: Optional[Type[BaseModel]] = None,
+    output_model: Optional[Type[BaseModel]] = None,
+
+    # ADHOC callable specifics
+    idempotent: Optional[bool] = None,
+    cache_ttl_seconds: Optional[int] = None,
+
+    # SNIPPET specifics
+    snippet: Optional[SnippetSpec] = None,
+    bound_service_id: Optional[str] = None,
+
+    # Graph auto-wiring
+    graph_automerge: bool = False,
+    graph_service_id: Optional[str] = None,
+
+    # HTTP extras
+    auth: Optional[dict] = None,
+    timeouts_ms: Optional[int] = None,
+    rate_limit: Optional[dict] = None,
+):
+    """
+    - If snippet is provided -> registers a SnippetToolAction.
+    - Else if method+path -> HttpToolAction.
+    - Else -> Adhoc callable tool.
+    - If graph_automerge=True, any GraphObject instances found in 'input_model' will be
+      MERGE'd into the remote graph microservice before your function runs.
+    """
+    def _decorator(fn: Optional[Callable] = None):
+        nonlocal name, description, input_model, output_model
+        def _model_to_schema(model_cls: Optional[Type[BaseModel]]):
+            if model_cls is None: return None
+            js = model_cls.model_json_schema()
+            return ToolSchema(title=js.get("title"), json_schema=js, python_type=f"{model_cls.__module__}.{model_cls.__name__}")
+
+        def _infer_io(_fn: Callable):
+            hints = get_type_hints(_fn, include_extras=True)
+            in_model = None; out_model = None
+            for p in inspect.signature(_fn).parameters.values():
+                annot = hints.get(p.name)
+                if isinstance(annot, type) and issubclass(annot, BaseModel):
+                    in_model = annot; break
+            ret = hints.get("return")
+            if isinstance(ret, type) and issubclass(ret, BaseModel):
+                out_model = ret
+            return in_model, out_model
+
+        def _attach_action(_fn: Optional[Callable]):
+            nonlocal input_model, output_model
+            if description is None:
+                desc = inspect.getdoc(_fn) if _fn else ""
+            else:
+                desc = description
+
+            if _fn and (input_model is None or output_model is None):
+                inf_in, inf_out = _infer_io(_fn)
+                input_model = input_model or inf_in
+                output_model = output_model or inf_out
+
+            inp_schema = _model_to_schema(input_model)
+            out_schema = _model_to_schema(output_model)
+
+            if snippet is not None:
+                action = SnippetToolAction(
+                    type="snippet",
+                    name=name or (_fn.__name__ if _fn else "snippet"),
+                    description=desc or "",
+                    tags=tags or [],
+                    input_schema=inp_schema,
+                    output_schema=out_schema,
+                    snippet=snippet,
+                    idempotent=idempotent,
+                    cache_ttl_seconds=cache_ttl_seconds,
+                    bound_service_id=bound_service_id,
+                )
+            elif method and path:
+                action = HttpToolAction(
+                    type="http",
+                    name=name or (_fn.__name__ if _fn else "http_action"),
+                    description=desc or "",
+                    tags=tags or [],
+                    method=method, path=path,
+                    input_schema=inp_schema, output_schema=out_schema,
+                    auth=auth, timeouts_ms=timeouts_ms, rate_limit=rate_limit
+                )
+            else:
+                action = AdhocToolAction(
+                    type="adhoc",
+                    name=name or _fn.__name__,
+                    description=desc or "",
+                    tags=tags or [],
+                    input_schema=inp_schema, output_schema=out_schema,
+                    python_name=_fn.__name__, python_module=_fn.__module__,
+                    idempotent=idempotent, cache_ttl_seconds=cache_ttl_seconds,
+                )
+
+            meta = {
+                "tool_name": name or (_fn.__name__ if _fn else "tool"),
+                "toolkit": toolkit,
+                "description": desc or "",
+                "tags": tags or [],
+                "graph_automerge": graph_automerge,
+                "graph_service_id": graph_service_id,
+            }
+
+            # Attach to fn (or a dummy callable for pure snippets)
+            target = _fn or (lambda *a, **k: None)
+            setattr(target, "__tool_action__", action)
+            setattr(target, "__tool_meta__", meta)
+            return target
+
+        if fn is not None:
+            wrapped = fn
+            if graph_automerge and input_model is not None:
+                # auto-merge GraphObjects appearing in input before calling fn
+                async def wrapper(payload, *args, **kwargs):
+                    payload = graph_automerge_inputs(payload, service_id=graph_service_id)
+                    return await fn(payload, *args, **kwargs)
+                wrapped = _attach_action(wrapper)
+            else:
+                wrapped = _attach_action(fn)
+            return wrapped
+
+        # decorator used as @endpoint(...)(fn)
+        def inner(_fn: Callable):
+            return _attach_action(_fn)
+        return inner
+    return _decorator
+
+D) Graph management client + remote graph objects via decorator
+
+We’ll define:
+
+    GraphClient: tiny client to your graph microservice (Neo4j façade).
+
+    @graph.object(label=..., key=...): decorate a Pydantic model to become a remote GraphObject.
+
+    Auto‑persist on construction (optional) and lazy handle semantics (GraphRef).
+
+    graph_automerge_inputs(...): walk an input model and auto‑MERGE any GraphObjects (or lists of them). This plugs directly into @tools.endpoint(graph_automerge=True, …).
+
+    graph_runtime.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Type, Iterable, Union
+from pydantic import BaseModel, Field
+import httpx
+from dataclasses import dataclass
+from copy import deepcopy
+
+# --- Client ---------------------------------------------------------
+
+class GraphClient:
+    def __init__(self, base_url: str, api_key: Optional[str] = None, timeout: float = 15.0):
+        self.base_url = base_url.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.timeout = timeout
+
+    def cypher(self, query: str, params: Dict[str, Any] = None, strategy: str = "default") -> Dict[str, Any]:
+        body = {"query": query, "strategy": strategy, "params": params or {}}
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/cypher", json=body)
+            r.raise_for_status()
+            return r.json()
+
+    def merge_node(self, label: str, key: Dict[str, Any], props: Dict[str, Any] = None) -> Dict[str, Any]:
+        payload = {"label": label, "key": key, "props": props or {}}
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/nodes/merge", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    def merge_rel(self, out_label: str, out_key: Dict[str, Any], rel_type: str, in_label: str, in_key: Dict[str, Any], props: Dict[str, Any] = None) -> Dict[str, Any]:
+        payload = {"out": {"label": out_label, "key": out_key},
+                   "rel": {"type": rel_type, "props": props or {}},
+                   "in":  {"label": in_label,  "key": in_key}}
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/rels/merge", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+# Simple registry so decorators can find the client by service_id.
+_GRAPH_CLIENTS: Dict[str, GraphClient] = {}
+def register_graph_client(service_id: str, base_url: str, api_key: Optional[str] = None):
+    _GRAPH_CLIENTS[service_id] = GraphClient(base_url, api_key=api_key)
+
+def get_graph_client(service_id: str) -> GraphClient:
+    if service_id not in _GRAPH_CLIENTS:
+        raise RuntimeError(f"No GraphClient registered for service_id={service_id}")
+    return _GRAPH_CLIENTS[service_id]
+
+# --- Graph Objects --------------------------------------------------
+
+@dataclass
+class GraphMeta:
+    label: str
+    key_fields: List[str]
+    service_id: str
+    persist_on_init: bool = False
+
+class GraphObject(BaseModel):
+    """Base class for remote graph-backed objects."""
+    __graph__: GraphMeta
+
+    def _graph_identity(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self.__graph__.key_fields}
+
+    def _graph_props(self) -> Dict[str, Any]:
+        # props = all model fields minus key fields
+        return {k: getattr(self, k) for k in self.model_fields if k not in self.__graph__.key_fields}
+
+    def merge(self):
+        g = get_graph_client(self.__graph__.service_id)
+        return g.merge_node(self.__graph__.label, self._graph_identity(), self._graph_props())
+
+    def relate_to(self, other: "GraphObject", rel_type: str, props: Dict[str, Any] = None):
+        g = get_graph_client(self.__graph__.service_id)
+        return g.merge_rel(self.__graph__.label, self._graph_identity(), rel_type, other.__graph__.label, other._graph_identity(), props or {})
+
+def object(label: str, key: Union[str, List[str]], service_id: str, persist_on_init: bool = False):
+    """
+    Decorate a Pydantic model class -> remote GraphObject.
+    Persist immediately on construction if persist_on_init=True.
+    """
+    def _decorator(cls: Type[BaseModel]):
+        key_fields = [key] if isinstance(key, str) else list(key)
+        # Create dynamic subclass mixing GraphObject
+        name = f"{cls.__name__}Graph"
+        attrs = dict(cls.__dict__)
+        # Build a new Pydantic model subclassing both GraphObject and original
+        NewCls = type(name, (GraphObject, cls), {})
+        NewCls.__graph__ = GraphMeta(label=label, key_fields=key_fields, service_id=service_id, persist_on_init=persist_on_init)
+
+        # Hook model_post_init to auto-merge if requested
+        orig_post = getattr(NewCls, "model_post_init", None)
+        def model_post_init(self, __ctx):
+            if orig_post: orig_post(self, __ctx)
+            if NewCls.__graph__.persist_on_init:
+                self.merge()
+        NewCls.model_post_init = model_post_init
+
+        return NewCls
+    return _decorator
+
+# --- Auto-merge traversal ------------------------------------------
+
+def graph_automerge_inputs(payload: Any, *, service_id: Optional[str]) -> Any:
+    """
+    Walks a Pydantic input model instance; for any GraphObject (or list of them), MERGE into remote graph.
+    Returns a deep-copied payload (non-destructive) with the same structure.
+    """
+    def _visit(x: Any):
+        if isinstance(x, GraphObject):
+            # Ensure service alignment
+            if service_id and x.__graph__.service_id != service_id:
+                raise RuntimeError(f"Graph service mismatch: decorator={service_id}, obj={x.__graph__.service_id}")
+            x.merge()
+            return x
+        if isinstance(x, list):
+            return [_visit(i) for i in x]
+        if isinstance(x, dict):
+            return {k: _visit(v) for k, v in x.items()}
+        return x
+
+    if hasattr(payload, "model_dump"):
+        dumped = payload.model_dump()
+        _visit(payload)  # merges side effect
+        return payload  # keep Pydantic instance for handler
+    if isinstance(payload, dict):
+        _visit(payload)
+        return payload
+    return payload
+
+What this gives you
+
+    A single decorator @graph.object(label=..., key=..., service_id=...) turns any Pydantic class into a remote, persistent graph entity.
+
+    If you pass persist_on_init=True, constructing the object MERGEs immediately.
+
+    Uniform methods: .merge() and .relate_to(...).
+
+    graph_automerge_inputs(...) lets @tools.endpoint auto‑persist GraphObjects that appear in the input payload.
+
+E) Putting it together
+1) A snippet tool that runs Cypher
+
+    toolkits/graph_snippets.py
+
+from pydantic import BaseModel, Field
+from tools_decorator import endpoint
+from tooling_models import SnippetSpec, SnippetLanguage
+
+class CypherSnippetIn(BaseModel):
+    params: dict = Field(default_factory=dict)
+    strategy: str = "default"
+
+class CypherSnippetOut(BaseModel):
+    columns: list[str]
+    rows: list[dict]
+    stats: dict | None = None
+    strategy: str
+
+@endpoint(
+    name="cypher_snippet",
+    description="Run a fixed Cypher snippet against the bound graph service.",
+    toolkit="graph",
+    tags=["neo4j","cypher","snippet"],
+    input_model=CypherSnippetIn,
+    output_model=CypherSnippetOut,
+    snippet=SnippetSpec(
+        language=SnippetLanguage.cypher,
+        source=("RETURN 1 AS ok"),  # replace with your reusable snippet
+        note="Uses graph client bound via bound_service_id"
+    ),
+    bound_service_id="graph-svc"  # where the SnippetRunner pulls its GraphClient from
+)
+def _cypher_placeholder():
+    # No callable needed; this function just carries metadata for discovery
+    ...
+
+(At runtime, your executor detects SnippetToolAction and calls SnippetRunner.run(...) with service_id='graph-svc'.)
+2) Ad‑hoc callable endpoint that auto‑MERGEs GraphObjects from input
+
+    toolkits/people_tools.py
+
+from pydantic import BaseModel, Field
+from tools_decorator import endpoint
+from graph_runtime import object as graph_object
+
+@graph_object(label="Person", key="name", service_id="graph-svc", persist_on_init=False)
+class Person(BaseModel):
+    name: str
+    born: int | None = None
+
+class CreateLinkIn(BaseModel):
+    a: Person
+    b: Person
+    since: int | None = None
+
+class CreateLinkOut(BaseModel):
+    rel: dict
+
+@endpoint(
+    description="Create a KNOWS relationship; auto-merges Person nodes from input.",
+    toolkit="graph",
+    tags=["neo4j","adhoc","people"],
+    graph_automerge=True,
+    graph_service_id="graph-svc",
+)
+async def create_knows(payload: CreateLinkIn) -> CreateLinkOut:
+    """
+    Because graph_automerge=True, payload.a / payload.b are MERGE'd before this runs.
+    """
+    res = payload.a.relate_to(payload.b, "KNOWS", props={"since": payload.since} if payload.since else {})
+    return CreateLinkOut(rel=res)
+
+3) A Python snippet tool (non‑graph) with typed I/O
+
+    toolkits/utils_snippets.py
+
+from pydantic import BaseModel
+from tools_decorator import endpoint
+from tooling_models import SnippetSpec, SnippetLanguage
+
+class SumIn(BaseModel):
+    values: list[float]
+
+class SumOut(BaseModel):
+    total: float
+
+@endpoint(
+    name="sum_snippet",
+    description="Compute sum(values) via a Python snippet (ABI: main(dict)->dict).",
+    toolkit="utils", tags=["snippet","python"],
+    input_model=SumIn, output_model=SumOut,
+    snippet=SnippetSpec(
+        language=SnippetLanguage.python,
+        entrypoint="main",
+        source="""
+def main(input):
+    vals = input.get('values', [])
+    return {'total': float(sum(vals))}
+"""
+    ),
+)
+def _sum_placeholder():
+    ...
+
+F) Executing actions uniformly
+
+Add an executor that understands all three action kinds and optionally performs graph auto‑merge when @tools.endpoint asked for it (metadata is on __tool_meta__).
+
+    executor.py
+
+from typing import Any, Dict
+from tooling_models import SnippetToolAction, AdhocToolAction, HttpToolAction, ToolAction
+from snippet_runner import SnippetRunner
+from graph_runtime import get_graph_client
+import httpx, importlib
+
+def execute(action: ToolAction, args: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(action, SnippetToolAction):
+        runner = SnippetRunner(graph_client_factory=lambda sid: get_graph_client(sid))
+        return runner.run(action.snippet, args, service_id=action.bound_service_id)
+
+    if isinstance(action, HttpToolAction):
+        url = meta.get("service_url") or meta.get("base_url")
+        if not url: raise RuntimeError("No base URL for HTTP tool.")
+        with httpx.Client(timeout=meta.get("timeouts_ms", 15000)/1000.0) as c:
+            method = action.method.value
+            r = c.request(method, url.rstrip("/") + action.path, json=args)
+            r.raise_for_status()
+            return r.json()
+
+    if isinstance(action, AdhocToolAction):
+        mod = importlib.import_module(action.python_module)
+        fn = getattr(mod, action.python_name)
+        out = fn(args) if not inspect.iscoroutinefunction(fn) else asyncio.run(fn(args))
+        if hasattr(out, "model_dump"): return out.model_dump()
+        return out if isinstance(out, dict) else {"result": out}
+
+    raise ValueError("Unknown action type")
+
+(In your real orchestrator, you’ll validate args/out against the Pydantic I/O models and attach ToolCall/ToolResult.)
+G) FastAPI well‑known export still works
+
+Your existing discovery.py / service_app.py can remain. They’ll now include SnippetToolActions in the service descriptor and in the OpenAI‑style tool list.
+H) Why the decorator‑based remote graph objects help
+
+    Zero friction: @graph.object(...) transforms plain Pydantic models into live graph entities with .merge() and .relate_to(...).
+
+    Auto‑merge from @tools.endpoint(graph_automerge=True, …) means your handler receives already‑persisted objects, keeping business logic clean.
+
+    Multi‑hop retrieval stays the same: your planner can compose snippet tools, HTTP tools, and these object‑aware adhoc tools seamlessly.
+
+    Future‑proof: when you add containerization, SnippetToolAction just flips to a container runner without touching the registry/endpoint layer.
+
+I) Tiny demo flow
+
+1) Register GraphClient at service boot:
+
+from graph_runtime import register_graph_client
+register_graph_client("graph-svc", base_url="http://graph-svc.internal", api_key=None)
+
+2) Planner picks people.create_knows (adhoc with graph_automerge) → executor calls it with:
+
+{
+  "a": {"name": "Amelia", "born": 1991},
+  "b": {"name": "Roger Waters"},
+  "since": 2020
+}
+
+3) The decorator auto‑MERGE’s a and b before your function runs, then your handler just calls:
+
+payload.a.relate_to(payload.b, "KNOWS", {"since": payload.since})
+
+4) Result is a typed CreateLinkOut.
+J) Optional niceties (you can add later)
+
+    GraphRef[T]: a lightweight reference that resolves/hydrates on first access; great for big payloads.
+
+    Typed relations via @graph.rel(type="KNOWS", direction="out") decorators that generate helper methods.
+
+    Input‑model field annotations (e.g., Field(..., json_schema_extra={"graph_key": ["name"]})) so graph_automerge_inputs knows what to MERGE without full objects.
+
+    Policy hooks: pre‑/post‑MERGE validators, tenancy, and audit fields attached at decorator time.
+
+    Container runners: switch SnippetRunner to OCI; mount ephemeral code; lock down seccomp/cgroups; support per‑snippet deps.
+
+This gives you ad‑hoc snippets across languages, clean registration via @tools.endpoint, and first‑class graph objects you can instantiate with a decorator—no ceremony, interoperable with your tool registry and multi‑hop planner.
+You said:
+Yep but also make the @graph.object parameters hyper sophisticated with ability to define embedding models and relationships model and structured + calculated fields. We're building an advanced memory object model in the overlay
+ChatGPT said:
+Request for GPT-5 Pro
+Reasoned for 2m 23s
+
+Alright, let’s super‑charge @graph.object so it can define embeddings, relationship models, and structured + calculated fields for an advanced memory overlay. Below is a drop‑in extension that layers on top of your existing tool/graph runtime from earlier.
+
+I’ll give you:
+
+    Spec classes (Embeddings, Relations, Fields, Policies)
+
+    A rich @graph.object(...) decorator that wires those specs into GraphObject
+
+    Life‑cycle hooks (create/update) to compute embeddings, calculated fields, and to auto‑wire relationships
+
+    Client surface updates for vector search/auto‑linking
+
+    Examples for a memory object with salience, token count, similarity edges, and mentions
+
+Everything is pure‑Python (Pydantic v2). You can stub/embed your providers and swap later for containerized runners.
+0) TL;DR shape
+
+@graph.object(
+    label="MemoryItem",
+    key=["id"],
+    service_id="graph-svc",
+    persist_on_init=False,
+
+    embeddings=[ ... multiple spaces ... ],
+    relations=[ ... typed rels, similarity autolinks, mentions ... ],
+    fields=[ ... structured + calculated fields ... ],
+    policies=MemoryPolicies(...),
+)
+class MemoryItem(BaseModel):
+    id: str
+    text: str
+    title: str | None = None
+    entities: list[str] = []
+    created_ts: float | None = None
+    updated_ts: float | None = None
+
+When you call obj.merge() (or when graph_automerge=True on a tool), the decorator will:
+
+    Compute calculated fields (e.g., tokens, salience)
+
+    Compute embeddings (one or more vector spaces)
+
+    MERGE the node with props and store vectors
+
+    Enforce relationship model (e.g., BELONGS_TO, MENTIONS, SIMILAR autolinks)
+
+    Apply policies (TTL, versioning tags, redaction flags, etc.)
+
+1) Overlay Spec: embeddings, relations, fields, policies
+
+    graph_overlay_specs.py
+
+from __future__ import annotations
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Union
+from pydantic import BaseModel, Field
+from enum import Enum
+
+# ========= Embeddings =========
+
+class SimilarityFn(str, Enum):
+    cosine = "cosine"
+    dot = "dot"
+    euclidean = "euclidean"
+
+class EmbedWhen(str, Enum):
+    create = "create"
+    update = "update"
+
+class EmbeddingSource(BaseModel):
+    """
+    Where to pull text from to embed.
+    Either:
+      - field: str                     (single field name)
+      - fields: list[str]              (concatenate)
+      - fn: Callable[[Any], str]       (custom compute)
+    """
+    field: Optional[str] = None
+    fields: Optional[List[str]] = None
+    # NOTE: callables can't be serialized to JSON; OK for in-process config.
+    fn: Optional[Callable[[Any], str]] = None
+    sep: str = "\n"
+
+    def extract(self, obj: Any) -> str:
+        if self.fn:
+            return self.fn(obj)
+        if self.field:
+            return getattr(obj, self.field, "") or ""
+        if self.fields:
+            parts = [str(getattr(obj, f, "") or "") for f in self.fields]
+            return self.sep.join([p for p in parts if p])
+        return ""
+
+class EmbeddingSpec(BaseModel):
+    """
+    Defines a named embedding space for an object.
+    """
+    name: str
+    provider: str  # e.g. "openai"|"text-embeddings-local"|"fastembed"
+    model: str     # e.g. "text-embedding-3-large"
+    dim: int
+    similarity: SimilarityFn = SimilarityFn.cosine
+    source: EmbeddingSource
+    when: List[EmbedWhen] = Field(default_factory=lambda: [EmbedWhen.create, EmbedWhen.update])
+    store_property: str | None = None   # property name to store vector; else driver-side vector column
+    index_name: str | None = None       # vector index identifier in graph
+    autolink: Optional["AutoLinkSimilar"] = None
+
+class AutoLinkSimilar(BaseModel):
+    """
+    Autogenerate :SIMILAR edges using this embedding space.
+    """
+    k: int = 20
+    threshold: float = 0.78
+    weight: float = 2.5
+    # optional scope filtering
+    label_scope: Optional[str] = None   # restrict to same label or a specific label
+    rel_type: str = "SIMILAR"
+    bidirectional: bool = True
+
+EmbeddingSpec.model_rebuild()
+
+# ========= Relations =========
+
+class Direction(str, Enum):
+    OUT = "out"
+    IN = "in"
+    BOTH = "both"
+
+class Cardinality(str, Enum):
+    ONE_TO_ONE = "1-1"
+    ONE_TO_MANY = "1-N"
+    MANY_TO_ONE = "N-1"
+    MANY_TO_MANY = "N-N"
+
+class EdgeSchema(BaseModel):
+    """
+    Optional schema hints for edge properties.
+    This is metadata only (validation can be enforced app-side).
+    """
+    props: Dict[str, Any] = Field(default_factory=dict)
+
+class RelationSpec(BaseModel):
+    """
+    Declarative relation wiring.
+    - static endpoint: to_label + to_key mapping (dict of field → prop)
+    - dynamic endpoint: from object field(s) that contain GraphObjects or scalars (resolved to nodes)
+    """
+    name: str                  # rel type e.g. "BELONGS_TO", "MENTIONS"
+    direction: Direction = Direction.OUT
+    cardinality: Cardinality = Cardinality.MANY_TO_MANY
+    to_label: Optional[str] = None
+    to_key: Optional[List[str]] = None
+    props: Dict[str, Any] = Field(default_factory=dict)
+    schema: Optional[EdgeSchema] = None
+
+    # Dynamic sources (one of these can be set)
+    from_field: Optional[str] = None        # field that yields GraphObject(s) or scalars
+    resolve_to_label: Optional[str] = None  # if scalars, create/merge nodes of this label
+    resolve_key: Optional[List[str]] = None # fields used as key on resolved nodes
+
+    # Hooks (optional)
+    on_create: Optional[Callable[[Any, Any], None]] = None  # (self, graph_client)
+    on_update: Optional[Callable[[Any, Any], None]] = None
+
+# ========= Structured + Calculated Fields =========
+
+class FieldIndexKind(str, Enum):
+    none = "none"
+    btree = "btree"
+    fulltext = "fulltext"
+
+class PiiTreatment(str, Enum):
+    none = "none"
+    mask = "mask"
+    hash = "hash"
+    redact = "redact"
+
+class FieldSpec(BaseModel):
+    name: str
+    index: FieldIndexKind = FieldIndexKind.none
+    unique: bool = False
+    searchable: bool = False
+    pii: PiiTreatment = PiiTreatment.none
+    encrypt_at_rest: bool = False
+    ttl_seconds: Optional[int] = None      # per-field TTL (rare, but allowed)
+    store: bool = True                     # if False ⇒ virtual only
+
+class CalcWhen(str, Enum):
+    create = "create"
+    update = "update"
+
+class CalculatedFieldSpec(BaseModel):
+    """
+    A calculated property on the node.
+    - fn must return a scalar/JSON-serializable value
+    """
+    name: str
+    fn: Callable[[Any], Any]
+    when: List[CalcWhen] = Field(default_factory=lambda: [CalcWhen.create, CalcWhen.update])
+    store: bool = True
+
+# ========= Policies (overlay memory) =========
+
+class RetentionPolicy(str, Enum):
+    keep = "keep"
+    archive = "archive"
+    ttl = "ttl"
+
+class MemoryPolicies(BaseModel):
+    retention: RetentionPolicy = RetentionPolicy.keep
+    ttl_seconds: Optional[int] = None
+    versioned: bool = True                 # attach version and history edges
+    redact_on_export: bool = False
+    # recency/frequency/salience knobs
+    salience_alpha: float = 0.6
+    salience_beta: float = 0.3
+    salience_gamma: float = 0.1
+
+2) Embedder registry + GraphClient upgrades
+
+    graph_overlay_runtime.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Tuple
+from pydantic import BaseModel
+import httpx, math, time
+
+# ----- Embedding providers registry -----
+_EMBED_PROVIDERS: Dict[str, Any] = {}
+
+def register_embedder(provider: str, fn):
+    """
+    Register a callable (text: str, model: str, dim: int) -> list[float]
+    You can also register callable(texts: list[str], model, dim) -> list[list[float]]
+    """
+    _EMBED_PROVIDERS[provider] = fn
+
+def get_embedder(provider: str):
+    if provider not in _EMBED_PROVIDERS:
+        raise RuntimeError(f"No embedder registered for provider='{provider}'")
+    return _EMBED_PROVIDERS[provider]
+
+# ----- Graph client extensions -----
+
+class GraphClient:
+    def __init__(self, base_url: str, api_key: Optional[str] = None, timeout: float = 20.0):
+        self.base_url = base_url.rstrip("/")
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.timeout = timeout
+
+    # Basic upsert
+    def merge_node(self, label: str, key: Dict[str, Any], props: Dict[str, Any] = None, vectors: Dict[str, List[float]] = None) -> Dict[str, Any]:
+        body = {"label": label, "key": key, "props": props or {}, "vectors": vectors or {}}
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/nodes/merge", json=body)
+            r.raise_for_status()
+            return r.json()
+
+    def merge_rel(self, out_label: str, out_key: Dict[str, Any], rel_type: str,
+                  in_label: str, in_key: Dict[str, Any], props: Dict[str, Any] = None) -> Dict[str, Any]:
+        body = {"out": {"label": out_label, "key": out_key},
+                "rel": {"type": rel_type, "props": props or {}},
+                "in":  {"label": in_label,  "key": in_key}}
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/rels/merge", json=body)
+            r.raise_for_status()
+            return r.json()
+
+    # Vector search for autolinks
+    def vector_search(self, label: str, space: str, vector: List[float], k: int, threshold: float,
+                      similarity: str = "cosine") -> List[Dict[str, Any]]:
+        body = {
+            "label": label, "space": space, "vector": vector,
+            "k": k, "threshold": threshold, "similarity": similarity
+        }
+        with httpx.Client(timeout=self.timeout, headers=self.headers) as c:
+            r = c.post(f"{self.base_url}/vectors/search", json=body)
+            r.raise_for_status()
+            return r.json().get("results", [])
+
+# Central registry (reuse your existing one if present)
+_GRAPH_CLIENTS: Dict[str, GraphClient] = {}
+def register_graph_client(service_id: str, base_url: str, api_key: Optional[str] = None):
+    _GRAPH_CLIENTS[service_id] = GraphClient(base_url, api_key=api_key)
+
+def get_graph_client(service_id: str) -> GraphClient:
+    if service_id not in _GRAPH_CLIENTS:
+        raise RuntimeError(f"No GraphClient registered for service_id={service_id}")
+    return _GRAPH_CLIENTS[service_id]
+
+    The server side of /nodes/merge should accept vectors (a dict of {space_name: vector}) and store them either as vector properties or behind an index; /vectors/search should query the appropriate vector index.
+
+3) Advanced @graph.object: embeddings, relations, fields, policies
+
+    graph_overlay.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Type, Union
+from pydantic import BaseModel
+from dataclasses import dataclass
+from graph_overlay_specs import (
+    EmbeddingSpec, RelationSpec, FieldSpec, CalculatedFieldSpec, MemoryPolicies,
+    AutoLinkSimilar, EmbedWhen, CalcWhen, Direction
+)
+from graph_overlay_runtime import get_graph_client, get_embedder
+
+@dataclass
+class OverlayMeta:
+    label: str
+    key_fields: List[str]
+    service_id: str
+    persist_on_init: bool
+    embeddings: List[EmbeddingSpec]
+    relations: List[RelationSpec]
+    fields: List[FieldSpec]
+    calc_fields: List[CalculatedFieldSpec]
+    policies: MemoryPolicies
+
+class GraphObject(BaseModel):
+    __overlay__: OverlayMeta
+
+    # Identity/props helpers
+    def _identity(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self.__overlay__.key_fields}
+
+    def _all_props(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self.model_fields}
+
+    # ------- Calculated fields -------
+    def _apply_calculated(self, when: CalcWhen):
+        for cf in self.__overlay__.calc_fields:
+            if when in cf.when:
+                val = cf.fn(self)
+                if cf.store:
+                    setattr(self, cf.name, val)
+
+    # ------- Embeddings -------
+    def _compute_embeddings(self, when: EmbedWhen) -> Dict[str, List[float]]:
+        vectors: Dict[str, List[float]] = {}
+        for es in self.__overlay__.embeddings:
+            if when not in es.when:
+                continue
+            text = es.source.extract(self) or ""
+            if not text.strip():
+                continue
+            embedder = get_embedder(es.provider)
+            vec = embedder(text, model=es.model, dim=es.dim)  # must return list[float]
+            if not isinstance(vec, list) or len(vec) != es.dim:
+                raise ValueError(f"Embedder returned invalid vector for space '{es.name}'")
+            vectors[es.name] = vec
+        return vectors
+
+    # ------- Relations -------
+    def _materialize_relations(self, gc, vectors: Dict[str, List[float]] | None = None):
+        """
+        Build declared relations (MENTIONS, BELONGS_TO, etc.) and autolink SIMILAR if configured.
+        """
+        # 1) Declarative relations
+        for rel in self.__overlay__.relations:
+            # Hooks first (allow custom side-effects)
+            if hasattr(rel, "on_create") and callable(rel.on_create):
+                try:
+                    rel.on_create(self, gc)
+                except Exception:
+                    pass
+
+            # Dynamic from_field
+            if rel.from_field:
+                src_val = getattr(self, rel.from_field, None)
+                if src_val is None:
+                    continue
+
+                items = src_val if isinstance(src_val, list) else [src_val]
+                for item in items:
+                    # Case A: item is another GraphObject -> relate directly
+                    if hasattr(item, "__overlay__"):
+                        out_label, out_key = self.__overlay__.label, self._identity()
+                        in_label, in_key = item.__overlay__.label, item._identity()
+                        if rel.direction == Direction.OUT:
+                            gc.merge_rel(out_label, out_key, rel.name, in_label, in_key, rel.props)
+                        elif rel.direction == Direction.IN:
+                            gc.merge_rel(in_label, in_key, rel.name, out_label, out_key, rel.props)
+                        else:  # BOTH
+                            gc.merge_rel(out_label, out_key, rel.name, in_label, in_key, rel.props)
+                            gc.merge_rel(in_label, in_key, rel.name, out_label, out_key, rel.props)
+                        continue
+
+                    # Case B: scalar -> resolve to node using resolve_* hints
+                    if rel.resolve_to_label and rel.resolve_key:
+                        in_label = rel.resolve_to_label
+                        # scalar maps to the first key field
+                        in_key = {rel.resolve_key[0]: item}
+                        out_label, out_key = self.__overlay__.label, self._identity()
+                        if rel.direction == Direction.OUT:
+                            gc.merge_rel(out_label, out_key, rel.name, in_label, in_key, rel.props)
+                        elif rel.direction == Direction.IN:
+                            gc.merge_rel(in_label, in_key, rel.name, out_label, out_key, rel.props)
+                        else:
+                            gc.merge_rel(out_label, out_key, rel.name, in_label, in_key, rel.props)
+                            gc.merge_rel(in_label, in_key, rel.name, out_label, out_key, rel.props)
+
+            # Static endpoint if provided (e.g., BELONGS_TO Conversation)
+            elif rel.to_label and rel.to_key:
+                out_label, out_key = self.__overlay__.label, self._identity()
+                in_label, in_key = rel.to_label, {k: getattr(self, k) for k in rel.to_key}
+                gc.merge_rel(out_label, out_key, rel.name, in_label, in_key, rel.props)
+
+        # 2) Auto link SIMILAR if vectors provided
+        for es in self.__overlay__.embeddings:
+            if not es.autolink:
+                continue
+            if not vectors or es.name not in vectors:
+                continue
+            al = es.autolink
+            search_label = al.label_scope or self.__overlay__.label
+            hits = gc.vector_search(
+                label=search_label,
+                space=es.name,
+                vector=vectors[es.name],
+                k=al.k,
+                threshold=al.threshold,
+                similarity=es.similarity.value if hasattr(es.similarity, "value") else str(es.similarity),
+            )
+            me_label, me_key = self.__overlay__.label, self._identity()
+            for h in hits:
+                if h.get("key") == me_key:  # skip self
+                    continue
+                other_label = h.get("label", search_label)
+                other_key = h.get("key", {})
+                gc.merge_rel(me_label, me_key, al.rel_type, other_label, other_key, {"weight": al.weight})
+                if al.bidirectional:
+                    gc.merge_rel(other_label, other_key, al.rel_type, me_label, me_key, {"weight": al.weight})
+
+    # ------- Persist -------
+    def merge(self, *, is_update: bool = False):
+        gc = get_graph_client(self.__overlay__.service_id)
+
+        # 1) calculated
+        self._apply_calculated(CalcWhen.update if is_update else CalcWhen.create)
+
+        # 2) embeddings
+        vectors = self._compute_embeddings(EmbedWhen.update if is_update else EmbedWhen.create)
+
+        # 3) filter/stage props (respect FieldSpec.store=False)
+        props = self._all_props()
+        if self.__overlay__.fields:
+            keep = {f.name for f in self.__overlay__.fields if f.store}
+            props = {k: v for k, v in props.items() if (not self.__overlay__.fields or k in keep or k in self.__overlay__.key_fields)}
+
+        # 4) merge node + vectors
+        gc.merge_node(self.__overlay__.label, self._identity(), props, vectors=vectors)
+
+        # 5) relations (including similarity autolinks + mentions)
+        self._materialize_relations(gc, vectors=vectors)
+
+def object(
+    *,
+    label: str,
+    key: Union[str, List[str]],
+    service_id: str,
+    persist_on_init: bool = False,
+
+    embeddings: Optional[List[EmbeddingSpec]] = None,
+    relations: Optional[List[RelationSpec]] = None,
+    fields: Optional[List[FieldSpec]] = None,
+    calc_fields: Optional[List[CalculatedFieldSpec]] = None,
+    policies: Optional[MemoryPolicies] = None,
+):
+    """
+    Upgrade a Pydantic model class to a graph-backed memory object with embeddings,
+    relationships, structured & calculated fields, and overlay policies.
+    """
+    def _decorator(cls: Type[BaseModel]):
+        key_fields = [key] if isinstance(key, str) else list(key)
+
+        name = f"{cls.__name__}Overlay"
+        NewCls = type(name, (GraphObject, cls), {})
+        NewCls.__overlay__ = OverlayMeta(
+            label=label,
+            key_fields=key_fields,
+            service_id=service_id,
+            persist_on_init=persist_on_init,
+            embeddings=embeddings or [],
+            relations=relations or [],
+            fields=fields or [],
+            calc_fields=calc_fields or [],
+            policies=policies or MemoryPolicies(),
+        )
+
+        # Auto-persist on construction if requested
+        orig_post = getattr(NewCls, "model_post_init", None)
+        def model_post_init(self, __ctx):
+            if orig_post: orig_post(self, __ctx)
+            if NewCls.__overlay__.persist_on_init:
+                self.merge(is_update=False)
+        NewCls.model_post_init = model_post_init
+        return NewCls
+    return _decorator
+
+4) Example: Advanced Memory Object
+4.1 Helpers for calculated fields
+
+# memory_calcs.py
+import math, time
+from typing import Any
+
+def calc_tokens(field: str):
+    def _fn(obj: Any) -> int:
+        txt = getattr(obj, field, "") or ""
+        # naive token count (swap with tokenizer later)
+        return len(txt.strip().split())
+    return _fn
+
+def calc_salience(score_field: str = "score",
+                  created_field: str = "created_ts",
+                  updated_field: str = "updated_ts",
+                  alpha: float = 0.6, beta: float = 0.3, gamma: float = 0.1,
+                  half_life_seconds: float = 7*24*3600.0):  # 7 days
+    """
+    Exponential recency decay + frequency proxy (updates) + explicit score.
+    """
+    def _fn(obj: Any) -> float:
+        now = time.time()
+        created = getattr(obj, created_field, None) or now
+        updated = getattr(obj, updated_field, None) or created
+        score = float(getattr(obj, score_field, 0.0) or 0.0)
+
+        age = max(0.0, now - created)
+        recency = math.exp(-math.log(2.0) * age / half_life_seconds)
+
+        # frequency proxy = number of updates if available
+        freq = 1.0 + max(0.0, (updated - created)) / (24*3600.0)  # 1 + days since create
+
+        s = alpha*recency + beta*math.tanh(freq/10.0) + gamma*math.tanh(score/10.0)
+        return float(round(s, 6))
+    return _fn
+
+4.2 Register a quick local embedder (stub)
+
+# demo_embedder.py
+from graph_overlay_runtime import register_embedder
+import hashlib, struct, random
+
+def fake_embedder(text: str, model: str, dim: int):
+    # DON'T use in prod. Deterministic pseudo-vector for demo.
+    h = hashlib.sha256((model + "::" + text).encode()).digest()
+    rnd = random.Random(h)
+    return [rnd.uniform(-1, 1) for _ in range(dim)]
+
+register_embedder("local-demo", fake_embedder)
+
+4.3 Define the overlay Memory object
+
+# memory_objects.py
+from pydantic import BaseModel, Field
+from graph_overlay import object as graph_object
+from graph_overlay_specs import *
+from memory_calcs import calc_tokens, calc_salience
+
+@graph_object(
+    label="MemoryItem",
+    key=["id"],
+    service_id="graph-svc",
+    persist_on_init=False,
+
+    # Embedding spaces (content + title)
+    embeddings=[
+        EmbeddingSpec(
+            name="content",
+            provider="local-demo",
+            model="text-embedding-demo",
+            dim=256,
+            similarity=SimilarityFn.cosine,
+            source=EmbeddingSource(fields=["title", "text"], sep="\n\n"),
+            autolink=AutoLinkSimilar(k=25, threshold=0.80, weight=2.2, label_scope="MemoryItem", rel_type="SIMILAR", bidirectional=True),
+        ),
+        EmbeddingSpec(
+            name="title",
+            provider="local-demo",
+            model="text-embedding-demo",
+            dim=128,
+            similarity=SimilarityFn.cosine,
+            source=EmbeddingSource(field="title"),
+        ),
+    ],
+
+    # Relations: belongs to conversation, mentions entities, authored by user
+    relations=[
+        RelationSpec(
+            name="BELONGS_TO",
+            direction=Direction.OUT,
+            to_label="Conversation",
+            to_key=["conversation_id"],  # expects self.conversation_id
+            props={"since": "created_ts"},
+        ),
+        RelationSpec(
+            name="MENTIONS",
+            direction=Direction.OUT,
+            from_field="entities",           # list[str]
+            resolve_to_label="Entity",
+            resolve_key=["name"],            # scalar -> {name:<scalar>}
+            props={}
+        ),
+        RelationSpec(
+            name="AUTHORED_BY",
+            direction=Direction.OUT,
+            to_label="Identity",
+            to_key=["author_id"],            # expects self.author_id
+        ),
+    ],
+
+    # Structured + calculated fields
+    fields=[
+        FieldSpec(name="id", index=FieldIndexKind.btree, unique=True),
+        FieldSpec(name="title", index=FieldIndexKind.fulltext, searchable=True),
+        FieldSpec(name="text", index=FieldIndexKind.fulltext, searchable=True, pii=PiiTreatment.none),
+        FieldSpec(name="entities", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="tokens", index=FieldIndexKind.none, store=True),
+        FieldSpec(name="salience", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="conversation_id", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="author_id", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="created_ts", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="updated_ts", index=FieldIndexKind.btree, store=True),
+        FieldSpec(name="score", index=FieldIndexKind.none, store=True),
+    ],
+    calc_fields=[
+        CalculatedFieldSpec(name="tokens", fn=calc_tokens("text")),
+        CalculatedFieldSpec(
+            name="salience",
+            fn=calc_salience(
+                score_field="score",
+                created_field="created_ts",
+                updated_field="updated_ts",
+                alpha=0.65, beta=0.25, gamma=0.10,
+                half_life_seconds=5*24*3600
+            ),
+        ),
+    ],
+
+    # Overlay policies
+    policies=MemoryPolicies(
+        retention=RetentionPolicy.keep,
+        ttl_seconds=None,
+        versioned=True,
+        redact_on_export=False,
+        salience_alpha=0.65, salience_beta=0.25, salience_gamma=0.10
+    )
+)
+class MemoryItem(BaseModel):
+    id: str
+    title: str | None = None
+    text: str
+    entities: list[str] = Field(default_factory=list)
+    conversation_id: str | None = None
+    author_id: str | None = None
+    score: float | None = 0.0
+    tokens: int | None = None
+    salience: float | None = None
+    created_ts: float | None = None
+    updated_ts: float | None = None
+
+    Call MemoryItem(...).merge() and you’ll get: calculated fields → embeddings → node upsert → BELONGS_TO + AUTHORED_BY + MENTIONS edges → SIMILAR autolinks in the content space.
+
+5) Endpoint usage with graph_automerge=True
+
+Your FastAPI tool can now take a MemoryItem in its input model and rely on auto‑persist:
+
+# memory_tools.py
+from pydantic import BaseModel
+from tools_decorator import endpoint
+from memory_objects import MemoryItem
+
+class UpsertMemoryIn(BaseModel):
+    item: MemoryItem
+    mode: str = "upsert"  # or "update"
+
+class UpsertMemoryOut(BaseModel):
+    id: str
+    salience: float
+    tokens: int
+
+@endpoint(
+    description="Upsert a MemoryItem with embeddings, SIMILAR autolinks, and relations.",
+    toolkit="memory",
+    tags=["memory","graph","embeddings"],
+    graph_automerge=True,        # ⟵ will call .merge() on GraphObjects in input
+    graph_service_id="graph-svc"
+)
+async def upsert_memory(payload: UpsertMemoryIn) -> UpsertMemoryOut:
+    # graph_automerge ensures payload.item.merge() already happened
+    item = payload.item
+    return UpsertMemoryOut(id=item.id, salience=item.salience or 0.0, tokens=item.tokens or 0)
+
+6) Minimal server contract for vectors (backend stub)
+
+On the graph service side, you’ll need endpoints that align with the client we defined:
+
+    POST /nodes/merge body:
+
+{
+  "label": "MemoryItem",
+  "key": {"id": "m123"},
+  "props": { "title": "...", "text": "...", "tokens": 123, "salience": 0.71, ... },
+  "vectors": { "content": [ ... 256 floats ... ], "title": [ ... 128 floats ... ] }
+}
+
+POST /rels/merge body:
+
+{
+  "out": {"label": "MemoryItem", "key": {"id": "m123"}},
+  "rel": {"type": "MENTIONS", "props": {}},
+  "in":  {"label": "Entity", "key": {"name": "Neo4j"}}
+}
+
+POST /vectors/search body:
+
+{
+  "label": "MemoryItem",
+  "space": "content",
+  "vector": [ ... 256 floats ... ],
+  "k": 25,
+  "threshold": 0.8,
+  "similarity": "cosine"
+}
+
+Response:
+
+    { "results": [ { "label": "MemoryItem", "key": {"id": "m42"}, "score": 0.86 } ] }
+
+The implementation can map space to a vector index name and store vectors either in a per‑space vector property or an out‑of‑row vector index (Neo4j 5 vector index, Memgraph MAGE, PGVector, etc.). The auto‑linker just uses that search to create SIMILAR edges with weights.
+7) Notes on structured fields & policies
+
+    FieldSpec is metadata. Use it to:
+
+        Materialize indexes/constraints during a migration step (create UNIQUE on keys, FULLTEXT on title/text, etc.).
+
+        Mark PII for redaction on export.
+
+        Mark encryption if you layer KMS at the microservice boundary.
+
+    MemoryPolicies.versioned=True → on merge, you can:
+
+        copy old props to a :MemoryItemVersion node + (:MemoryItem)-[:HAS_VERSION]->(:MemoryItemVersion)
+
+        or stamp version number and create (:MemoryItem)-[:PREV]->(:MemoryItem) history chain.
+
+    ttl_seconds in MemoryPolicies (or FieldSpec.ttl_seconds) → schedule GC jobs to expire stale memories or specific fields.
+
+8) Quick smoke test (pseudo)
+
+from graph_overlay_runtime import register_graph_client
+from demo_embedder import *  # registers "local-demo"
+from memory_objects import MemoryItem
+
+register_graph_client("graph-svc", base_url="http://graph-svc.internal")
+
+m = MemoryItem(
+    id="m-001",
+    title="Roger + Amelia friendship",
+    text="Amelia knows Roger Waters. They collaborated on a music data pipeline.",
+    entities=["Amelia", "Roger Waters", "music", "pipeline"],
+    conversation_id="c-77",
+    author_id="arthur",
+    created_ts=1731739200.0
+)
+
+m.merge()  # calculated fields, embeddings, merge node, relations, SIMILAR autolinks
+
+9) Where this gets you (memory overlay semantics)
+
+    Semantic memory via multi‑space embeddings (content, title, etc.).
+
+    Episodic structure through BELONGS_TO Conversation, AUTHORED_BY, and temporal fields.
+
+    Entity memory (MENTIONS ⇒ :Entity nodes), enabling entity‑centric retrieval and cross‑conversation joins.
+
+    Similarity graph with controllable weighting (auto‑linked SIMILAR edges).
+
+    Salience baked in as a calculated field with recency/frequency decay, tunable by policy.
+
+    Everything is declarative in the decorator, so your tools can stay minimal and the overlay stays consistent.
+
+If you want, I can also add a tiny migration emitter that reads FieldSpec + EmbeddingSpec and produces Cypher (constraints + vector index DDL) for Neo4j 5.x.
+You said:
+This is a great approach. In the past I also explored a special BasedModel class (subclass of BaseModel) which would allow native ORM graph objects type stuff, exactly like what you're doing. The decorator should support the BaseModel class exactly like you're doing, and also we want to represent other kinds of "weird" output schema types in our graph model, things like awaitable stuff, for coroutines, futures, tasks, and asyncstreamables and all those advanced and compound and recursive and union types
+ChatGPT said:
+Request for GPT-5 Pro
+Reasoned for 2m 35s
+
+Amazing—this is exactly where your earlier BasedModel idea shines. Below is a drop‑in extension that:
+
+    Introduces BasedModel (a Pydantic subclass with graph‑ORM ergonomics) on top of the overlay you already have.
+
+    Adds a type system that can describe async and “weird” types (awaitables, futures, tasks, async streams, unions, recursive types, Annotated, etc.) and exports them into your tool schema with rich semantics.
+
+    Extends @tools.endpoint + discovery so return types like Awaitable[T], Coroutine[..., T], AsyncIterator[T], and discriminated unions/recursive types are represented and executable.
+
+    Extends the executor to actually run/await/stream these shapes and persist them as graph objects (:Job, :Stream, :Chunk) for the conversation graph/memory overlay.
+
+I’ve kept names consistent with what we built earlier so you can paste these in with minimal friction.
+0) High‑level: how it fits together
+
+    BasedModel ⇢ GraphObject with nicer API (save(), link(), unlink(), neighbors()), compatible with @graph.object(...).
+
+    Type descriptors ⇢ TypeSemantics that annotate output schema with:
+
+        kind: "immediate" | "awaitable" | "stream" | "job" | "union" | "recursive"
+
+        type_expr: pretty python typing string (e.g., AsyncIterator[ChunkOut])
+
+        item_schema for streams, result_schema for awaitables/jobs, oneOf + discriminator for unions.
+
+    Graph representation for async/streaming:
+
+        (:ToolCall)-[:SPAWNS]->(:Job) with status machine and final (:ToolResult).
+
+        (:ToolCall)-[:STREAMS]->(:Stream) with (:Chunk {seq, ts, data}).
+
+    Discovery exports output_semantics so your registry and planners know how to use/compose them.
+
+1) BasedModel: a graph‑ORM flavored base
+
+    based_model.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel
+from graph_overlay import GraphObject  # from your previous overlay
+from graph_overlay_runtime import get_graph_client
+
+class BasedModel(GraphObject):
+    """
+    A nicer façade over GraphObject with ORM-like ergonomics.
+    Works seamlessly with @graph.object(...) since GraphObject is the MRO base.
+    """
+
+    # Persistence
+    def save(self, *, update: bool = False):
+        return self.merge(is_update=update)
+
+    # Relations
+    def link(self, rel_type: str, other: "BasedModel", props: Optional[Dict[str, Any]] = None):
+        return self.relate_to(other, rel_type, props or {})
+
+    def unlink(self, rel_type: str, other: "BasedModel"):
+        gc = get_graph_client(self.__overlay__.service_id)
+        return gc.merge_rel(  # simple delete via merge+delete fallback on backend if supported
+            self.__overlay__.label, self._identity(), f"__UNLINK__:{rel_type}",
+            other.__overlay__.label, other._identity(), {}
+        )
+
+    # Traversals (thin convenience; you likely have richer server APIs)
+    def neighbors(self, rel_type: Optional[str] = None, direction: str = "OUT", limit: int = 50):
+        gc = get_graph_client(self.__overlay__.service_id)
+        # A generic traversal endpoint would be ideal; here’s a stub contract suggestion:
+        # POST /traverse {start: {label,key}, rel_type, direction, limit}
+        # return list of nodes as {label, key, props}
+        try:
+            return gc.traverse(
+                start={"label": self.__overlay__.label, "key": self._identity()},
+                rel_type=rel_type, direction=direction, limit=limit
+            )
+        except AttributeError:
+            return []  # backend not implemented yet
+
+    Note: GraphClient.traverse is optional. You can add it later.
+
+2) Async/advanced type semantics: describing “weird” outputs
+
+We’ll encode typing details alongside JSON Schema so planners and UIs can handle async, streams, unions, and recursion.
+2.1 Type descriptor models
+
+    async_type_spec.py
+
+from __future__ import annotations
+import inspect, asyncio, typing as t
+from typing import Any, Dict, Optional, List, get_origin, get_args
+from pydantic import BaseModel, TypeAdapter
+
+# ---- Public export put into actions as "output_semantics" ----
+class TypeSemantics(BaseModel):
+    kind: t.Literal["immediate","awaitable","stream","job","union","recursive"] = "immediate"
+    type_expr: str
+    # For awaitable/job
+    result_schema: Optional[Dict[str, Any]] = None
+    # For streams
+    item_schema: Optional[Dict[str, Any]] = None
+    transport: Optional[t.Literal["ndjson","sse","websocket","http-chunked"]] = None
+    # For unions
+    one_of: Optional[List[Dict[str, Any]]] = None
+    discriminator: Optional[str] = None
+    # For recursive (best-effort; refs by title)
+    refs: Optional[Dict[str, Dict[str, Any]]] = None
+    # Raw JSON schema for the top-level when it’s a plain type
+    json_schema: Optional[Dict[str, Any]] = None
+    # Python-specific typing details
+    x_typing: Optional[Dict[str, Any]] = None
+
+# ---- internal helpers ----
+ASYNC_STREAM_ORIGINS = {
+    t.AsyncIterator, t.AsyncIterable, t.AsyncGenerator
+}
+AWAITABLE_ORIGINS = {
+    t.Awaitable, t.Coroutine, asyncio.Future, asyncio.Task
+}
+
+def _type_expr(tp: Any) -> str:
+    try:
+        return str(tp).replace("typing.", "")
+    except Exception:
+        return repr(tp)
+
+def _json_schema(tp: Any) -> Optional[Dict[str, Any]]:
+    try:
+        return TypeAdapter(tp).json_schema()
+    except Exception:
+        return None
+
+def _is_union(tp: Any) -> bool:
+    return get_origin(tp) is t.Union or getattr(tp, "__origin__", None) is t.Union
+
+def _is_annotated(tp: Any) -> bool:
+    return get_origin(tp) is t.Annotated
+
+def _unwrap_annotated(tp: Any) -> Any:
+    return get_args(tp)[0] if _is_annotated(tp) else tp
+
+def describe_type(tp: Any) -> TypeSemantics:
+    """Produce a rich description of Python typing -> JSON Schema + async semantics."""
+    original = tp
+    tp = _unwrap_annotated(tp)
+    origin = get_origin(tp) or tp
+    args = get_args(tp)
+
+    # Streams
+    if origin in ASYNC_STREAM_ORIGINS:
+        item = args[0] if args else Any
+        return TypeSemantics(
+            kind="stream",
+            type_expr=_type_expr(original),
+            item_schema=_json_schema(item) or {"type": "object"},
+            transport="ndjson",
+            x_typing={"origin": str(origin), "args": [_type_expr(a) for a in args]},
+        )
+
+    # Awaitables (Coroutine[..., T], Awaitable[T], Future[T], Task[T])
+    if origin in AWAITABLE_ORIGINS:
+        result = args[-1] if args else Any
+        return TypeSemantics(
+            kind="awaitable",
+            type_expr=_type_expr(original),
+            result_schema=_json_schema(result) or {"type": "object"},
+            x_typing={"origin": str(origin), "args": [_type_expr(a) for a in args]},
+        )
+
+    # Union / Optional
+    if _is_union(tp):
+        options = []
+        for opt in get_args(tp):
+            options.append(_json_schema(opt) or {"type": "object"})
+        # Best-effort discriminator if any option is a Pydantic model with a 'type' field
+        return TypeSemantics(
+            kind="union",
+            type_expr=_type_expr(original),
+            one_of=options,
+            discriminator=None,
+            x_typing={"union": [_type_expr(o) for o in get_args(tp)]},
+        )
+
+    # Recursion: Pydantic handles $ref. If schema has $defs with self-refs, mark as recursive.
+    js = _json_schema(tp)
+    is_recursive = bool(js and ("$defs" in js or "definitions" in js))
+    if is_recursive:
+        refs = js.get("$defs") or js.get("definitions")
+        return TypeSemantics(
+            kind="recursive",
+            type_expr=_type_expr(original),
+            json_schema=js,
+            refs=refs,
+        )
+
+    # Plain immediate type
+    return TypeSemantics(
+        kind="immediate",
+        type_expr=_type_expr(original),
+        json_schema=js or {"type": "object"},
+    )
+
+3) Tool schema upgrades: capture advanced return semantics
+
+Extend your ToolSchema + actions to carry a semantics block.
+
+    tooling_models.py (add field to actions)
+
+from pydantic import BaseModel, Field
+from typing import Any, Dict, Optional
+# ... existing imports ...
+from async_type_spec import TypeSemantics
+
+class ToolSchema(BaseModel):
+    title: Optional[str] = None
+    content_type: str = "application/json"
+    json_schema: Dict[str, Any] = Field(default_factory=dict)
+    python_type: Optional[str] = None
+    # NEW: explicit typing/async descriptor
+    semantics: Optional[TypeSemantics] = None
+
+4) @tools.endpoint infers async/stream/union/recursive outputs
+
+    tools_decorator.py (key changes only; integrate describe_type when building output_schema)
+
+# ... previous imports ...
+from async_type_spec import describe_type
+
+def endpoint(...):  # signature unchanged from earlier extension
+    def _decorator(fn: Optional[Callable] = None):
+        # ... unchanged helpers ...
+        def _attach_action(_fn: Optional[Callable]):
+            # ... inference + input_schema creation as before ...
+            # OUTPUT schema + semantics
+            out_tp = None
+            if _fn:
+                hints = get_type_hints(_fn, include_extras=True)
+                out_tp = hints.get("return")
+
+            out_schema = None
+            semantics = None
+            if output_model is not None:
+                js = output_model.model_json_schema()
+                out_schema = ToolSchema(
+                    title=js.get("title"),
+                    json_schema=js,
+                    python_type=f"{output_model.__module__}.{output_model.__name__}",
+                )
+            elif out_tp is not None:
+                # derive schema from typing
+                js = None
+                try: js = TypeAdapter(out_tp).json_schema()
+                except Exception: js = {"type": "object"}
+                semantics = describe_type(out_tp)
+                out_schema = ToolSchema(title="Return", json_schema=js, python_type=str(out_tp), semantics=semantics)
+            # else: no return type annotation and no output_model → leave None
+
+            # attach semantics also when output_model exists but return type is async/stream wrapper
+            if out_schema and semantics is None and out_tp is not None:
+                sem = describe_type(out_tp)
+                if sem.kind != "immediate":
+                    out_schema.semantics = sem
+
+            # ... build action (Snippet/HTTP/Adhoc) as before; assign output_schema=out_schema ...
+            # ... and attach meta as before ...
+
+5) Discovery export: keep semantics
+
+discovery.to_dict() already dumps models; ToolSchema.semantics will flow into /.well-known/tools. For an OpenAI-style export, you can include a x-semantic extension alongside parameters.
+6) Executor that awaits, streams, and persists to graph
+
+We’ll add an execution layer that:
+
+    awaits Awaitable[T]/Coroutine[..., T]/Future[T]/Task[T]
+
+    streams AsyncIterator[T] into graph chunks and optionally returns a StreamRef
+
+    immediate returns are unchanged
+
+    Optionally promotes long‑running awaitables to jobs (if you want non-blocking semantics) by returning a JobRef
+
+    graph_job_stream.py
+
+from __future__ import annotations
+import asyncio, time
+from typing import Any, Dict, Optional, AsyncIterator, Union, List
+from pydantic import BaseModel
+from graph_overlay_runtime import get_graph_client
+
+class JobRef(BaseModel):
+    job_id: str
+    status: str
+    status_endpoint: Optional[str] = None
+    stream_endpoint: Optional[str] = None
+    result_schema: Optional[Dict[str, Any]] = None
+
+class StreamRef(BaseModel):
+    stream_id: str
+    transport: str = "ndjson"
+    item_schema: Optional[Dict[str, Any]] = None
+
+class GraphRunRecorder:
+    """
+    Persist jobs/streams to the graph service. Minimal contract; backend can be MERGE-based.
+    """
+    def __init__(self, service_id: str):
+        self.service_id = service_id
+        self.gc = get_graph_client(service_id)
+
+    # Jobs
+    def job_start(self, tool_call: Dict[str, Any], meta: Dict[str, Any]) -> JobRef:
+        job_id = tool_call.get("id")
+        props = {"status": "running", "ts": time.time(), "tool": tool_call.get("tool_name")}
+        self.gc.merge_node("Job", {"id": job_id}, props)
+        self.gc.merge_rel("ToolCall", {"id": tool_call["id"]}, "SPAWNS", "Job", {"id": job_id}, {})
+        return JobRef(job_id=job_id, status="running")
+
+    def job_finish(self, job_id: str, ok: bool, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None):
+        props = {"status": "done" if ok else "error", "ended_ts": time.time()}
+        self.gc.merge_node("Job", {"id": job_id}, props)
+        if result is not None:
+            # attach a ToolResult node and link
+            self.gc.merge_node("ToolResult", {"id": job_id}, {"status": "ok", "output": result})
+            self.gc.merge_rel("Job", {"id": job_id}, "YIELDS", "ToolResult", {"id": job_id}, {})
+        if error:
+            self.gc.merge_node("ToolResult", {"id": job_id}, {"status": "error", "error": error})
+            self.gc.merge_rel("Job", {"id": job_id}, "YIELDS", "ToolResult", {"id": job_id}, {})
+
+    # Streams
+    def stream_start(self, tool_call: Dict[str, Any], item_schema: Optional[Dict[str, Any]] = None, transport: str = "ndjson") -> StreamRef:
+        sid = tool_call.get("id") + ":stream"
+        self.gc.merge_node("Stream", {"id": sid}, {"transport": transport})
+        self.gc.merge_rel("ToolCall", {"id": tool_call["id"]}, "STREAMS", "Stream", {"id": sid}, {})
+        return StreamRef(stream_id=sid, transport=transport, item_schema=item_schema)
+
+    def stream_append(self, stream_id: str, seq: int, data: Dict[str, Any]):
+        # Represent each chunk as a Block or Chunk node
+        self.gc.merge_node("Chunk", {"id": f"{stream_id}:{seq}"}, {"seq": seq, "ts": time.time(), "data": data})
+        self.gc.merge_rel("Stream", {"id": stream_id}, "HAS_CHUNK", "Chunk", {"id": f"{stream_id}:{seq}"}, {})
+
+    executor_async.py
+
+from __future__ import annotations
+import inspect, asyncio
+from typing import Any, Dict, AsyncIterator, get_origin, get_args
+from tooling_models import ToolAction, SnippetToolAction, AdhocToolAction, HttpToolAction
+from async_type_spec import describe_type
+from graph_job_stream import GraphRunRecorder
+# ... reuse your previous SnippetRunner/http executor imports ...
+
+async def _maybe_await(x: Any) -> Any:
+    if inspect.isawaitable(x):
+        return await x
+    return x
+
+async def _maybe_stream(x: Any) -> AsyncIterator[Any] | None:
+    # AsyncIterator/AsyncGenerator
+    origin = get_origin(type(x)) or type(x)
+    if inspect.isasyncgen(x) or origin.__name__ in ("async_generator",):
+        return x
+    # Best-effort duck-typing: has __aiter__
+    if hasattr(x, "__aiter__"):
+        return x
+    return None
+
+async def execute_async(action: ToolAction, args: Dict[str, Any], meta: Dict[str, Any], tool_call_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Executes a tool action with async/stream semantics and persists Job/Stream to graph.
+    Returns a payload appropriate for your gateway (immediate result / JobRef / StreamRef).
+    """
+    recorder = GraphRunRecorder(service_id=meta.get("graph_service_id") or meta.get("service_id") or meta.get("service"))
+    # 1) Run the underlying action using your existing machinery
+    # (We re-use your earlier executor; here assume we have a sync 'execute' you can call.)
+    from executor import execute as execute_sync  # your previous sync executor
+    result = execute_sync(action, args, meta)
+
+    # 2) If the result is a coroutine/future/task → await
+    if inspect.isawaitable(result):
+        job = recorder.job_start(tool_call_ctx, meta)
+        try:
+            value = await result
+            recorder.job_finish(job.job_id, ok=True, result=value if isinstance(value, dict) else {"result": value})
+            return {"job": job.model_dump(), "result": value}
+        except Exception as e:
+            recorder.job_finish(job.job_id, ok=False, error=str(e))
+            raise
+
+    # 3) If the result is an async stream → stream + persist chunks, return StreamRef
+    stream = await _maybe_stream(result)
+    if stream is not None:
+        sem = describe_type(meta.get("return_type")) if meta.get("return_type") else None
+        item_schema = sem.item_schema if sem and sem.item_schema else None
+        sref = recorder.stream_start(tool_call_ctx, item_schema=item_schema, transport="ndjson")
+        seq = 0
+        async for item in stream:
+            data = item.model_dump() if hasattr(item, "model_dump") else item
+            recorder.stream_append(sref.stream_id, seq, data)
+            seq += 1
+        return {"stream": sref.model_dump(), "chunks": seq}
+
+    # 4) Immediate result
+    return {"result": result}
+
+    The gateway can decide: return the immediate result, or if you prefer non‑blocking, always return JobRef and let clients poll/subscribe.
+
+7) Representing unions and recursive types cleanly
+7.1 Discriminated Union example
+
+from pydantic import BaseModel, Field
+from typing import Literal, Union
+
+class TextEvent(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+class TokenEvent(BaseModel):
+    type: Literal["token"] = "token"
+    token: str
+    logprob: float | None = None
+
+StreamEvent = Union[TextEvent, TokenEvent]
+
+Pydantic will emit a oneOf with a discriminator field (type), which our describe_type carries inside TypeSemantics. Streams of these events become AsyncIterator[StreamEvent].
+7.2 Recursive type example
+
+from typing import Dict, List, Union, Optional, ForwardRef
+from pydantic import BaseModel
+
+JSONNode = Union[str, int, float, bool, None, List["JSONNode"], Dict[str, "JSONNode"]]
+# forward refs are resolved by Pydantic at runtime when used in model fields
+class DocTree(BaseModel):
+    id: str
+    root: JSONNode
+
+When used in an endpoint return type, our describe_type marks kind="recursive" and includes $defs via json_schema.
+8) Exposing advanced types in @tools.endpoint
+8.1 Streamed endpoint
+
+# token_stream_tools.py
+from typing import AsyncIterator, Union, Literal
+from pydantic import BaseModel
+from tools_decorator import endpoint
+
+class TextIn(BaseModel):
+    text: str
+
+class TextEvent(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+class TokenEvent(BaseModel):
+    type: Literal["token"] = "token"
+    token: str
+    logprob: float | None = None
+
+StreamEvent = Union[TextEvent, TokenEvent]
+
+@endpoint(
+    description="Stream tokenization events from text.",
+    toolkit="nlp",
+    tags=["stream","async","events"],
+)
+async def tokenize_stream(payload: TextIn) -> AsyncIterator[StreamEvent]:
+    async def gen():
+        yield TextEvent(text="starting")
+        for tok in payload.text.split():
+            yield TokenEvent(token=tok)
+        yield TextEvent(text="done")
+    return gen()
+
+Discovery for this action will include:
+
+"output_schema": {
+  "title": "Return",
+  "json_schema": { "...fallback schema..." },
+  "semantics": {
+    "kind": "stream",
+    "type_expr": "AsyncIterator[Union[TextEvent, TokenEvent]]",
+    "item_schema": { "oneOf": [ ... ], "discriminator": { "propertyName": "type" } },
+    "transport": "ndjson"
+  }
+}
+
+8.2 Awaitable endpoint
+
+# async_job_tools.py
+import asyncio
+from pydantic import BaseModel
+from tools_decorator import endpoint
+
+class LongIn(BaseModel):
+    n: int
+
+class LongOut(BaseModel):
+    result: int
+
+@endpoint(
+    description="Compute something slow (awaitable).",
+    toolkit="math",
+    tags=["awaitable"],
+)
+async def slow_square(payload: LongIn) -> "asyncio.Future[LongOut]":  # type hint: Future[LongOut]
+    loop = asyncio.get_running_loop()
+    return loop.create_task(_bg_square(payload.n))
+
+async def _bg_square(n: int):
+    await asyncio.sleep(0.5)
+    return LongOut(result=n*n)
+
+The executor will detect Future[...], start a Job, await it, and persist a ToolResult.
+8.3 Union/recursive return
+
+from typing import Union, List, Dict
+from tools_decorator import endpoint
+
+JSONNode = Union[str, int, float, bool, None, List["JSONNode"], Dict[str, "JSONNode"]]
+
+@endpoint(description="Return a recursive JSON-like node.", toolkit="utils")
+async def sample_json_node() -> JSONNode:
+    return {"a": 1, "b": [True, None, {"c": "ok"}]}
+
+9) Tool schema examples (snippets)
+
+For a stream:
+
+{
+  "name": "tokenize_stream",
+  "actions": [{
+    "type": "adhoc",
+    "name": "tokenize_stream",
+    "output_schema": {
+      "title": "Return",
+      "json_schema": {"type": "object"},
+      "semantics": {
+        "kind": "stream",
+        "type_expr": "AsyncIterator[Union[TextEvent, TokenEvent]]",
+        "item_schema": {"oneOf": [ /* ... */ ]},
+        "transport": "ndjson",
+        "x_typing": { "origin": "collections.abc.AsyncIterator", "args": ["typing.Union[TextEvent, TokenEvent]"] }
+      }
+    }
+  }]
+}
+
+For an awaitable:
+
+{
+  "name": "slow_square",
+  "actions": [{
+    "type": "adhoc",
+    "output_schema": {
+      "semantics": {
+        "kind": "awaitable",
+        "type_expr": "asyncio.Future[LongOut]",
+        "result_schema": { "$ref": "#/$defs/LongOut" }
+      }
+    }
+  }]
+}
+
+10) Graph mapping (jobs/streams)
+
+Add these DDLs to your graph service (Neo4j/Memgraph style):
+
+CREATE CONSTRAINT job_id IF NOT EXISTS FOR (j:Job) REQUIRE j.id IS UNIQUE;
+CREATE CONSTRAINT stream_id IF NOT EXISTS FOR (s:Stream) REQUIRE s.id IS UNIQUE;
+CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE;
+
+Relationships you’ll see:
+
+(:ToolCall)-[:SPAWNS]->(:Job)-[:YIELDS]->(:ToolResult)
+(:ToolCall)-[:STREAMS]->(:Stream)-[:HAS_CHUNK]->(:Chunk)
+
+Each Chunk can optionally also carry an embedding (for semantic replay/search) via your existing overlay machinery.
+11) Bonus: Annotated stream hints (optional but handy)
+
+If you want to control transports per endpoint, you can use typing.Annotated:
+
+from typing import Annotated, AsyncIterator
+from async_type_spec import TypeSemantics  # or define a simple marker
+
+class StreamHint:  # trivial marker
+    def __init__(self, transport: str = "sse"): self.transport = transport
+
+@endpoint(...)
+async def stream_sse() -> Annotated[AsyncIterator[TextEvent], StreamHint("sse")]:
+    ...
+
+Extend describe_type() to read Annotated metadata and set transport="sse".
+12) How this answers your asks
+
+    Decorator supports BaseModel classes directly (unchanged) and now BasedModel gives a friendly ORM surface.
+
+    Weird/async types are first‑class: Awaitable, Future, Task, Coroutine, AsyncIterator/AsyncGenerator, discriminated unions, recursive types, Annotated hints—all captured in TypeSemantics plus canonical JSON Schema.
+
+    Execution + Graph overlay: awaitables ↔ jobs; async streams ↔ streams/chunks; all persisted and cross‑referenced with calls/results so your conversation graph and memory overlay can do “graph closeness” retrieval over partials, jobs in‑flight, and stream history.
+
+If you want, I can also hand you a tiny migration emitter that reads ToolSchema.semantics + FieldSpec and outputs Neo4j DDL (constraints + full‑text + vector indexes) to keep the overlay and graph in sync.
+You said:
+Imagine for a web search tool we want to define additional layer ops like extracting and enqueueing URLs for a separate caching/check if seen check. How can we allow additional declarative assistive utility type sidecar mechanisms like that
+ChatGPT said:
+Request for GPT-5 Pro
+Reasoned for 2m 28s
+
+Totally—this is where a declarative sidecar layer shines. You keep your primary tool contract clean, then hang “assistive utilities” (extract URLs, dedupe, enqueue, warm caches, write graph facts, etc.) off the action via metadata. Below is a drop‑in pattern that adds:
+
+    AssistSpec / AssistOp: declarative ops bound to a tool/action, with triggers (before, after, on_error, on_chunk), selectors (JSON‑path‑ish), transforms (canonicalize, filter), and sinks (enqueue, graph write, cache prefetch, metrics).
+
+    SeenStore + Queue sinks (HTTP stub included; others pluggable).
+
+    AssistEngine: runs sidecars safely around execution, never mutating the main response.
+
+    @tools.endpoint(..., assist=[...]): attach sidecars inline.
+
+    A concrete web.search sidecar that extracts → canonicalizes → dedupes → enqueues new URLs and optionally warms cache + writes graph facts.
+
+You can wire this into the executor you already have without touching your Pydantic I/O contracts.
+1) Sidecar spec (Pydantic)
+
+    assist_spec.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Literal, Callable
+from pydantic import BaseModel, Field
+import re
+import hashlib
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+
+TriggerEvent = Literal["before_call", "after_call", "on_error", "on_chunk", "finally"]
+
+class TriggerSpec(BaseModel):
+    event: TriggerEvent
+    sample_rate: float = 1.0                   # 0..1 sampling
+    predicate: Optional[str] = None            # mini-expr, see AssistEngine._predicate_ok
+
+# ── Selection ─────────────────────────────────────────────────────────────────
+
+class SelectorSpec(BaseModel):
+    """
+    JSON-ish path selector. Minimal subset: "$.a.b[*].c" | "results.*.url"
+    """
+    path: str
+
+# ── Transforms ────────────────────────────────────────────────────────────────
+
+class CanonicalizeURL(BaseModel):
+    drop_fragments: bool = True
+    strip_query_params: List[str] = Field(default_factory=lambda: ["utm_", "gclid"])
+    sort_query: bool = True
+    force_lower_host: bool = True
+    drop_default_ports: bool = True
+
+    def __call__(self, url: str) -> str:
+        try:
+            u = urlparse(url)
+            scheme = u.scheme
+            netloc = u.hostname.lower() if (self.force_lower_host and u.hostname) else (u.hostname or "")
+            if u.port and not (self.drop_default_ports and ((scheme == "http" and u.port == 80) or (scheme == "https" and u.port == 443))):
+                netloc = f"{netloc}:{u.port}"
+            path = u.path or "/"
+            # query
+            pairs = parse_qsl(u.query, keep_blank_values=False)
+            filtered = [(k, v) for k, v in pairs if not any(k.startswith(prefix) for prefix in self.strip_query_params)]
+            if self.sort_query:
+                filtered.sort()
+            query = urlencode(filtered)
+            fragment = "" if self.drop_fragments else u.fragment
+            return urlunparse((scheme, netloc, path, "", query, fragment))
+        except Exception:
+            return url
+
+class FilterByDomain(BaseModel):
+    allowlist: List[str] = Field(default_factory=list)   # supports "*.example.com"
+    denylist: List[str] = Field(default_factory=list)
+
+    def _match(self, host: str, pattern: str) -> bool:
+        if pattern.startswith("*."):
+            return host == pattern[2:] or host.endswith(pattern[1:])
+        return host == pattern
+
+    def __call__(self, url: str) -> bool:
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            return False
+        if self.denylist and any(self._match(host, p) for p in self.denylist):
+            return False
+        if self.allowlist:
+            return any(self._match(host, p) for p in self.allowlist)
+        return True
+
+class TransformChain(BaseModel):
+    canonicalize: Optional[CanonicalizeURL] = CanonicalizeURL()
+    domain_filter: Optional[FilterByDomain] = None
+    unique: bool = True
+
+    def run(self, urls: List[str]) -> List[str]:
+        out: List[str] = []
+        seen: set[str] = set()
+        for u in urls:
+            c = self.canonicalize(u) if self.canonicalize else u
+            if self.domain_filter and not self.domain_filter(c):
+                continue
+            if self.unique:
+                if c in seen:
+                    continue
+                seen.add(c)
+            out.append(c)
+        return out
+
+# ── Sinks / Side‑effects ─────────────────────────────────────────────────────
+
+class EnqueueSink(BaseModel):
+    """Enqueue to a queue/topic/bus. Transport pluggable; HTTP example included."""
+    type: Literal["http", "kafka", "sqs", "redis", "pubsub"] = "http"
+    endpoint: Optional[str] = None             # for HTTP
+    topic: Optional[str] = None                # for brokers
+    auth_header: Optional[str] = None
+    batch: int = 50
+
+class SeenStoreSpec(BaseModel):
+    """Membership test so we only emit new URLs."""
+    type: Literal["memory", "http", "redis", "kv"] = "memory"
+    namespace: str = "seen:urls"
+    ttl_seconds: int = 30 * 24 * 3600
+
+class GraphWriteSpec(BaseModel):
+    """Optional: write URL facts into your graph service."""
+    service_id: Optional[str] = None
+    create_url_nodes: bool = True
+    rel_type: str = "DISCOVERED"
+    url_label: str = "URL"
+    # map metadata fields you want to preserve
+    include_meta_keys: List[str] = Field(default_factory=lambda: ["query","source","conversation_id"])
+
+class PrefetchSpec(BaseModel):
+    """Optional: warm cache by issuing HEAD/GET."""
+    method: Literal["HEAD", "GET"] = "HEAD"
+    timeout_ms: int = 4000
+    max_concurrency: int = 16
+
+class MetricsSpec(BaseModel):
+    namespace: str = "tools.web"
+    counters: List[str] = Field(default_factory=lambda: ["urls.discovered","urls.new"])
+
+# ── The operation itself ─────────────────────────────────────────────────────
+
+class AssistOp(BaseModel):
+    name: str
+    trigger: TriggerSpec
+    selector: SelectorSpec
+    transforms: TransformChain = TransformChain()
+    enqueue: Optional[EnqueueSink] = None
+    seen_store: Optional[SeenStoreSpec] = SeenStoreSpec()
+    graph: Optional[GraphWriteSpec] = None
+    prefetch: Optional[PrefetchSpec] = None
+    metrics: Optional[MetricsSpec] = None
+    # arbitrary metadata to attach on enqueue/graph write
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AssistSpec(BaseModel):
+    id: str
+    description: Optional[str] = None
+    active: bool = True
+    ops: List[AssistOp] = Field(default_factory=list)
+    scope: Literal["action","tool","toolkit","service"] = "action"
+
+2) Minimal sidecar runtime
+
+    assist_engine.py
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Iterable
+from pydantic import BaseModel
+import time, json, re, itertools, httpx, asyncio
+from urllib.parse import urlparse
+from assist_spec import AssistSpec, AssistOp
+from graph_overlay_runtime import get_graph_client
+
+# ── tiny path getter ("$.results[*].url" and "results.*.url") ─────────────────
+def _get_all(root: Any, path: str) -> List[Any]:
+    # minimal: split by dots, support "$." prefix and "*" wildcard on lists/dicts
+    if path.startswith("$."): path = path[2:]
+    parts = [p for p in path.split(".") if p]
+    curr: List[Any] = [root]
+    for p in parts:
+        nxt: List[Any] = []
+        is_star = p in ("*", "[*]")
+        for obj in curr:
+            if isinstance(obj, dict):
+                if is_star:
+                    nxt.extend(obj.values())
+                elif p in obj:
+                    nxt.append(obj[p])
+            elif isinstance(obj, list):
+                if is_star or p in ("[*]", "*"):
+                    nxt.extend(obj)
+                else:
+                    try:
+                        i = int(p)
+                        if 0 <= i < len(obj):
+                            nxt.append(obj[i])
+                    except Exception:
+                        pass
+        curr = nxt
+    # flatten nested lists of scalars
+    out: List[Any] = []
+    for x in curr:
+        if isinstance(x, list): out.extend(x)
+        else: out.append(x)
+    return out
+
+# ── simple predicate ──────────────────────────────────────────────────────────
+def _predicate_ok(expr: Optional[str], ctx: Dict[str, Any]) -> bool:
+    if not expr: return True
+    # safe eval against a tiny context
+    SAFE = {"len": len, "any": any, "all": all}
+    try:
+        return bool(eval(expr, {"__builtins__": {}}, {**SAFE, **ctx}))
+    except Exception:
+        return False
+
+# ── Seen store (memory stub; swap with Redis/HTTP) ────────────────────────────
+class SeenStore:
+    def __init__(self): self._m = {}
+    @staticmethod
+    def _key(ns: str, url: str) -> str: return f"{ns}:{hashlib_sha(url)}"
+    def has(self, ns: str, url: str) -> bool: return self._key(ns,url) in self._m
+    def put(self, ns: str, url: str, ttl: int): self._m[self._key(ns,url)] = (time.time()+ttl)
+    def expire(self):
+        now=time.time()
+        for k,(till) in list(self._m.items()):
+            if till < now: del self._m[k]
+
+def hashlib_sha(s: str) -> str:
+    import hashlib; return hashlib.sha256(s.encode()).hexdigest()
+
+GLOBAL_SEEN = SeenStore()
+
+# ── HTTP enqueue sink (stub) ──────────────────────────────────────────────────
+async def _enqueue_http(endpoint: str, items: List[Dict[str, Any]], auth_header: Optional[str] = None):
+    if not endpoint or not items: return
+    headers = {"Content-Type": "application/json"}
+    if auth_header: headers["Authorization"] = auth_header
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        await c.post(endpoint, json={"items": items}, headers=headers)
+
+# ── Prefetch (best-effort) ────────────────────────────────────────────────────
+async def _prefetch(urls: List[str], method: str = "HEAD", timeout_ms: int = 4000, max_concurrency: int = 16):
+    if not urls: return
+    sem = asyncio.Semaphore(max_concurrency)
+    async def one(u: str):
+        async with sem:
+            try:
+                async with httpx.AsyncClient(timeout=timeout_ms/1000.0) as c:
+                    if method == "HEAD": await c.head(u)
+                    else: await c.get(u)
+            except Exception: pass
+    await asyncio.gather(*(one(u) for u in urls))
+
+# ── Graph write (URL facts) ───────────────────────────────────────────────────
+async def _graph_write(service_id: str, urls: List[str], meta: Dict[str, Any], url_label="URL", rel_type="DISCOVERED"):
+    if not urls or not service_id: return
+    gc = get_graph_client(service_id)
+    for u in urls:
+        key = {"url": u}
+        props = {k: v for k,v in meta.items() if v is not None}
+        gc.merge_node(url_label, key, props)
+        if "source" in props:
+            # Optional: link (:Source {id}) or (:Query {q})
+            pass
+        # You can enrich with domain:
+        host = urlparse(u).hostname or ""
+        gc.merge_node("Domain", {"name": host}, {})
+        gc.merge_rel(url_label, key, "HOSTED_ON", "Domain", {"name": host}, {})
+        # If you have a current Query/context node id:
+        if "query_node_id" in props:
+            gc.merge_rel("Query", {"id": props["query_node_id"]}, rel_type, url_label, key, {"ts": time.time()})
+
+# ── AssistEngine ──────────────────────────────────────────────────────────────
+class AssistEngine:
+    def __init__(self, spec: AssistSpec):
+        self.spec = spec
+
+    def _extract_urls(self, payload: Any, sel: str) -> List[str]:
+        vals = _get_all(payload, sel)
+        flat: List[str] = []
+        for v in vals:
+            if isinstance(v, str): flat.append(v)
+            elif isinstance(v, dict):
+                # if dict has 'url' field
+                if "url" in v and isinstance(v["url"], str):
+                    flat.append(v["url"])
+        return flat
+
+    async def run(self, *, event: str, payload: Any, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        event: "before_call" | "after_call" | "on_error" | "on_chunk" | "finally"
+        payload: args (before), result (after), chunk (on_chunk)
+        context: {tool_name, action_name, service_id, conversation_id, query, ...}
+        """
+        if not self.spec.active: return {}
+        results: Dict[str, Any] = {}
+        for op in self.spec.ops:
+            if op.trigger.event != event: continue
+            if op.trigger.sample_rate < 1.0:
+                import random
+                if random.random() > op.trigger.sample_rate:
+                    continue
+            if not _predicate_ok(op.trigger.predicate, {"payload": payload, "ctx": context}):
+                continue
+
+            # 1) select
+            urls = self._extract_urls(payload, op.selector.path)
+            if not urls: continue
+
+            # 2) transform
+            urls = op.transforms.run(urls)
+
+            # 3) seen/dedupe
+            new_urls: List[str] = []
+            if op.seen_store:
+                ns = op.seen_store.namespace
+                for u in urls:
+                    if not GLOBAL_SEEN.has(ns, u):
+                        new_urls.append(u)
+                        GLOBAL_SEEN.put(ns, u, op.seen_store.ttl_seconds)
+            else:
+                new_urls = urls
+
+            meta = {
+                "ts": time.time(),
+                "source": f"{context.get('tool_name')}.{context.get('action_name')}",
+                **(op.meta or {}),
+                **{k: context.get(k) for k in ("query","conversation_id","user_id")}
+            }
+
+            # 4) enqueue
+            if op.enqueue and new_urls:
+                if op.enqueue.type == "http" and op.enqueue.endpoint:
+                    batch = op.enqueue.batch or 50
+                    chunks = [new_urls[i:i+batch] for i in range(0, len(new_urls), batch)]
+                    for ch in chunks:
+                        await _enqueue_http(op.enqueue.endpoint, [{"url": u, **meta} for u in ch], auth_header=op.enqueue.auth_header)
+                # other transports (kafka/sqs/redis) can be plugged here
+
+            # 5) prefetch
+            if op.prefetch and new_urls:
+                await _prefetch(new_urls, method=op.prefetch.method, timeout_ms=op.prefetch.timeout_ms, max_concurrency=op.prefetch.max_concurrency)
+
+            # 6) graph writes
+            if op.graph and (urls or new_urls):
+                try:
+                    await _graph_write(op.graph.service_id, new_urls, meta, url_label=op.graph.url_label, rel_type=op.graph.rel_type)
+                except Exception:
+                    pass
+
+            # 7) metrics (placeholder; wire to Prometheus or your metrics bus)
+            if op.metrics:
+                results.setdefault("metrics", []).append({
+                    "namespace": op.metrics.namespace,
+                    "urls_discovered": len(urls),
+                    "urls_new": len(new_urls),
+                })
+
+            # collect per-op outcome
+            results.setdefault("ops", {})[op.name] = {"discovered": len(urls), "new": len(new_urls)}
+        return results
+
+3) Wire sidecars into your tool action
+
+    Extend your action model to carry assist: Optional[AssistSpec].
+
+    Extend the executor to call AssistEngine.run(...) around the primary call.
+
+    tooling_models.py (add field)
+
+from typing import Optional
+from pydantic import BaseModel, Field
+from assist_spec import AssistSpec
+
+class BaseToolAction(BaseModel):
+    type: ToolActionType
+    name: str
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    input_schema: Optional["ToolSchema"] = None
+    output_schema: Optional["ToolSchema"] = None
+    assist: Optional[AssistSpec] = None  # ⟵ NEW
+
+    tools_decorator.py (accept assist=...)
+
+def endpoint(..., assist: Optional["AssistSpec"] = None, ...):
+    ...
+    def _attach_action(_fn: Optional[Callable]):
+        ...
+        # after you build 'action' (Adhoc/HTTP/Snippet), attach:
+        action.assist = assist
+        ...
+
+    executor.py (wrap calls with sidecars)
+
+from assist_engine import AssistEngine
+
+def execute(action: ToolAction, args: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    ctx = {
+        "tool_name": meta.get("tool_name") or "",
+        "action_name": action.name,
+        "service_id": meta.get("service_id") or meta.get("graph_service_id"),
+        **meta,
+    }
+    # before_call
+    if getattr(action, "assist", None):
+        ae = AssistEngine(action.assist)
+        # fire and forget; sidecars must never block primary call outcome
+        try:
+            asyncio.run(ae.run(event="before_call", payload=args, context=ctx))
+        except Exception: pass
+
+    # primary call (existing logic)
+    out = _execute_core(action, args, meta)  # your existing logic
+
+    # after_call
+    if getattr(action, "assist", None):
+        ae = AssistEngine(action.assist)
+        try:
+            asyncio.run(ae.run(event="after_call", payload=out, context=ctx))
+        except Exception: pass
+
+    return out
+
+(For streaming actions, call ae.run(event="on_chunk", payload=chunk, ...) per chunk.)
+4) A concrete web.search with URL sidecar
+
+    web_search_tools.py
+
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from tools_decorator import endpoint
+from tooling_models import HttpMethod
+from assist_spec import AssistSpec, AssistOp, TriggerSpec, SelectorSpec, TransformChain, CanonicalizeURL, FilterByDomain, EnqueueSink, SeenStoreSpec, GraphWriteSpec, PrefetchSpec, MetricsSpec
+
+# I/O models
+class WebSearchIn(BaseModel):
+    query: str
+    top_k: int = 10
+    lang: Optional[str] = None
+    region: Optional[str] = None
+
+class SearchHit(BaseModel):
+    title: str
+    url: str
+    snippet: Optional[str] = None
+
+class WebSearchOut(BaseModel):
+    results: List[SearchHit]
+    total_estimated: Optional[int] = None
+    engine: str = "duckduckgo"
+
+# Sidecar: extract URLs and enqueue unseen ones for cache/prefetch/graph
+URL_ASSIST = AssistSpec(
+    id="url-extract-enqueue",
+    description="Extract result URLs, canonicalize, dedupe (seen), enqueue to cache fetcher, warm cache, write URL facts to graph.",
+    ops=[
+        AssistOp(
+            name="urls_after_search",
+            trigger=TriggerSpec(event="after_call", predicate="len(payload.get('results', [])) > 0"),
+            selector=SelectorSpec(path="$.results[*].url"),
+            transforms=TransformChain(
+                canonicalize=CanonicalizeURL(),
+                domain_filter=FilterByDomain(allowlist=[], denylist=[]),
+                unique=True
+            ),
+            seen_store=SeenStoreSpec(namespace="seen:urls", ttl_seconds=30*24*3600),
+            enqueue=EnqueueSink(type="http", endpoint="http://cache-svc.internal/enqueue", batch=100),
+            prefetch=PrefetchSpec(method="HEAD", timeout_ms=3000, max_concurrency=32),
+            graph=GraphWriteSpec(service_id="graph-svc", url_label="URL", rel_type="DISCOVERED"),
+            metrics=MetricsSpec(namespace="web.search"),
+            meta={"stage": "discovery"}
+        )
+    ]
+)
+
+# Bind to HTTP action (your existing gateway path)
+@endpoint(
+    name="search",
+    description="Web search via provider X; returns a list of hits.",
+    toolkit="web",
+    method=HttpMethod.POST,
+    path="/web/search",
+    input_model=WebSearchIn,
+    output_model=WebSearchOut,
+    tags=["web","search"],
+    assist=URL_ASSIST
+)
+async def web_search(_: WebSearchIn) -> WebSearchOut:
+    # NOTE: This is a wrapper for your real HTTP route or provider call.
+    # Here we just stub a response so the sidecar can run.
+    return WebSearchOut(results=[
+        SearchHit(title="Neo4j", url="https://neo4j.com/docs/?utm_source=foo#intro"),
+        SearchHit(title="Graph Theory", url="http://example.org:80/graph?b=2&a=1#top")
+    ], total_estimated=2, engine="stub")
+
+What this sidecar does when web.search runs:
+
+    After the call, select $.results[*].url.
+
+    Canonicalize (drop fragments, sort query, lowercase host, drop default ports).
+
+    Filter domains if configured.
+
+    Seen check: new URLs only (namespace seen:urls, TTL 30 days).
+
+    Enqueue new URLs to POST http://cache-svc.internal/enqueue in batches of 100 with metadata.
+
+    Prefetch via HEAD to warm caches.
+
+    Write URL facts to the graph service ((:URL {url})-[:HOSTED_ON]->(:Domain), optionally :Query/Conversation links).
+
+    Emit simple metrics (counts) to your aggregator (stubbed).
+
+5) Optional: Graph overlay for URLs (first‑class)
+
+If you want the graph writes more structured, mint a URL overlay:
+
+# url_objects.py
+from pydantic import BaseModel
+from graph_overlay import object as graph_object
+from graph_overlay_specs import FieldSpec, FieldIndexKind
+
+@graph_object(
+    label="URL",
+    key=["url"],
+    service_id="graph-svc",
+    fields=[
+        FieldSpec(name="url", index=FieldIndexKind.btree, unique=True),
+        FieldSpec(name="first_seen_ts", index=FieldIndexKind.btree),
+        FieldSpec(name="last_seen_ts", index=FieldIndexKind.btree),
+        FieldSpec(name="source", index=FieldIndexKind.btree),
+    ],
+)
+class URLNode(BaseModel):
+    url: str
+    first_seen_ts: float | None = None
+    last_seen_ts: float | None = None
+    source: str | None = None
+
+Then tweak _graph_write to instantiate URLNode(url=u, first_seen_ts=..., source=...) and call .merge().
+6) Why this works well for your stack
+
+    Declarative: the sidecar logic is data‑driven (AssistSpec), versionable, and can be toggled per action/tool/toolkit/service.
+
+    Non‑intrusive: AssistEngine runs outside the main success path; failures never break the user‑visible result.
+
+    Composable: chain transforms, plug different sinks (HTTP/Kafka/SQS), and reuse selectors across actions.
+
+    Graph‑aware: optional write‑through to your graph overlay so retrieval can reason over URL nodes, domains, and provenance.
+
+    Stream‑ready: the same engine can fire on on_chunk for streaming search providers (paginate, incremental SERP).
+
+    Idempotent: SeenStore + canonicalization keeps enqueue clean and bounded.
+
+7) Production knobs you’ll likely add
+
+    Policy: allow/deny sinks per environment; redact PII in sidecar metadata.
+
+    Backpressure: max total sidecar concurrency per action; circuit‑breaker when queue is throttled.
+
+    Telem: emit traces with correlation_id (you already have it on ToolExecutionContext).
+
+    Selectors: add JMESPath/JSONPath proper; current selector is a tiny subset to stay dependency‑free.
+
+    Bloom/HLL: replace memory seen store with Redis Bloom or a KV service for cross‑process dedupe.
+
+    Retries: exponential backoff for enqueue/prefetch; dead‑letter queues.
+
+    Per‑op metrics: timings, errors, sampled payloads.
+
+If you want, I can also add a compact DSL for selectors/transforms (JMESPath + regex pipes) and generate assist specs from a YAML file so ops can ship sidecars without code changes.

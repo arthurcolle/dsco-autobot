@@ -25,6 +25,10 @@ v2 Servers (built on NativeMCPBase):
   * Circuit breaker pattern
   * Result caching
   * Standardized capabilities
+
+Media/Document Servers:
+- distributed_video_qa (4005): Video ingestion, Q&A, search, transcripts
+- distributed_document_qa (4006): PDF ingestion, Q&A, semantic search, tables/figures
 """
 
 # Base infrastructure
@@ -42,17 +46,30 @@ from .base import (
     euclidean_distance,
 )
 
-# Original servers (v1)
-from .distributed_search_mcp import DistributedSearchMCP
-from .distributed_research_mcp import DistributedResearchMCP
-from .distributed_publish_mcp import DistributedPublishMCP
-from .distributed_memory_mcp import DistributedMemoryMCP
+# Sibling MCP servers are imported DEFENSIVELY: a missing optional dependency in
+# one server must NOT break importing another. Each bundle deploys with only its
+# own deps (e.g. distributed-unit must not require publish's substack_client).
+import logging as _logging
+_lg = _logging.getLogger(__name__)
+def _opt(modpath, *names):
+    try:
+        m = __import__(f"{__name__}.{modpath}", fromlist=list(names))
+        for n in names:
+            if hasattr(m, n):
+                globals()[n] = getattr(m, n)
+    except Exception as e:
+        _lg.debug("native: skipped optional import %s (%s)", modpath, e)
 
-# v2 servers (built on NativeMCPBase)
-from .distributed_search_mcp.server_v2 import DistributedSearchMCPv2
-from .distributed_research_mcp.server_v2 import DistributedResearchMCPv2
-from .distributed_publish_mcp.server_v2 import DistributedPublishMCPv2
-from .distributed_memory_mcp.server_v2 import DistributedMemoryMCPv2
+_opt("distributed_search_mcp", "DistributedSearchMCP")
+_opt("distributed_research_mcp", "DistributedResearchMCP")
+_opt("distributed_publish_mcp", "DistributedPublishMCP")
+_opt("distributed_memory_mcp", "DistributedMemoryMCP")
+_opt("distributed_search_mcp.server_v2", "DistributedSearchMCPv2")
+_opt("distributed_research_mcp.server_v2", "DistributedResearchMCPv2")
+_opt("distributed_publish_mcp.server_v2", "DistributedPublishMCPv2")
+_opt("distributed_memory_mcp.server_v2", "DistributedMemoryMCPv2")
+_opt("distributed_video_qa", "DistributedVideoQAMCP")
+_opt("distributed_document_qa", "DistributedDocumentQAMCP")
 
 __all__ = [
     # Base infrastructure
@@ -77,4 +94,7 @@ __all__ = [
     "DistributedResearchMCPv2",
     "DistributedPublishMCPv2",
     "DistributedMemoryMCPv2",
+    # media/document servers
+    "DistributedVideoQAMCP",
+    "DistributedDocumentQAMCP",
 ]

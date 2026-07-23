@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import time
 import uuid
 from collections import OrderedDict
@@ -63,6 +64,16 @@ except ImportError:
     SEMANTIC_BELIEFS_AVAILABLE = False
     SemanticBeliefStore = None  # type: ignore
 
+# In-process resilient embedding service (Jina -> local hash fallback)
+try:
+    from tool_management.embeddings.openrouter_embeddings import (
+        get_resilient_embedding_service,
+    )
+    LOCAL_EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    LOCAL_EMBEDDINGS_AVAILABLE = False
+    get_resilient_embedding_service = None  # type: ignore
+
 # Output guard for enforcing size limits and URL capture
 try:
     from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
@@ -87,6 +98,26 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _json_dump(value: Any) -> Optional[str]:
+    """Serialize a value for sqlite storage."""
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return json.dumps(str(value))
+
+
+def _json_load(text: Optional[str]) -> Any:
+    """Deserialize a value stored by _json_dump."""
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return text
 
 
 # =============================================================================
@@ -140,6 +171,8 @@ class Episode:
     emotional_valence: float = 0.0  # -1 to 1
     importance: float = 0.5
     embedding: Optional[List[float]] = None
+    embedder: Optional[str] = None  # tag of the embedder that produced `embedding`
+    session_id: Optional[str] = None  # None = global scope
 
 
 @dataclass
@@ -155,6 +188,7 @@ class Belief:
     valid_until: Optional[float] = None
     evidence: List[str] = field(default_factory=list)
     contradicts: List[str] = field(default_factory=list)
+    session_id: Optional[str] = None  # None = global scope
 
 
 @dataclass
@@ -170,6 +204,8 @@ class Skill:
     failure_count: int = 0
     avg_execution_time: float = 0.0
     last_used: Optional[float] = None
+    tags: List[str] = field(default_factory=list)
+    session_id: Optional[str] = None  # None = global scope
 
 
 # =============================================================================
@@ -281,11 +317,119 @@ class EpisodicMemory:
     Stores episodes as they occur, allows temporal and similarity-based retrieval.
     """
 
-    def __init__(self, max_episodes: int = 10000):
+    def __init__(self, max_episodes: int = 10000, db_path: Optional[Path] = None):
         self.max_episodes = max_episodes
+        self.db_path = Path(db_path) if db_path else None
         self._episodes: List[Episode] = []
         self._by_type: Dict[str, List[str]] = {}  # event_type -> episode_ids
         self._by_participant: Dict[str, List[str]] = {}  # participant -> episode_ids
+        if self.db_path:
+            self._init_db()
+            self._load()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
+    def _init_db(self):
+        conn = self._connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS episodes (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL,
+                context TEXT,
+                participants TEXT,
+                location TEXT,
+                outcome TEXT,
+                emotional_valence REAL,
+                importance REAL,
+                embedding TEXT,
+                embedder TEXT,
+                session_id TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_type ON episodes(event_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_time ON episodes(timestamp)")
+        conn.commit()
+        conn.close()
+
+    def _load(self):
+        """Hydrate in-memory state from the persisted store on boot."""
+        conn = self._connect()
+        rows = conn.execute("""
+            SELECT id, event_type, content, timestamp, context, participants,
+                   location, outcome, emotional_valence, importance,
+                   embedding, embedder, session_id
+            FROM episodes ORDER BY timestamp ASC
+        """).fetchall()
+        conn.close()
+
+        for row in rows:
+            episode = Episode(
+                id=row[0],
+                event_type=row[1],
+                content=_json_load(row[2]),
+                timestamp=row[3] or 0.0,
+                context=_json_load(row[4]) or {},
+                participants=_json_load(row[5]) or [],
+                location=row[6],
+                outcome=row[7],
+                emotional_valence=row[8] or 0.0,
+                importance=row[9] if row[9] is not None else 0.5,
+                embedding=_json_load(row[10]),
+                embedder=row[11],
+                session_id=row[12],
+            )
+            self._episodes.append(episode)
+            self._index(episode)
+
+        if rows:
+            logger.info(f"EpisodicMemory: loaded {len(rows)} episodes from {self.db_path}")
+
+    def _persist(self, episode: Episode):
+        if not self.db_path:
+            return
+        try:
+            conn = self._connect()
+            conn.execute("""
+                INSERT OR REPLACE INTO episodes
+                (id, event_type, content, timestamp, context, participants,
+                 location, outcome, emotional_valence, importance,
+                 embedding, embedder, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                episode.id, episode.event_type, _json_dump(episode.content),
+                episode.timestamp, _json_dump(episode.context),
+                _json_dump(episode.participants), episode.location,
+                episode.outcome, episode.emotional_valence, episode.importance,
+                _json_dump(episode.embedding) if episode.embedding is not None else None,
+                episode.embedder, episode.session_id,
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to persist episode {episode.id}: {e}")
+
+    def _delete_persisted(self, episode_id: str):
+        if not self.db_path:
+            return
+        try:
+            conn = self._connect()
+            conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to delete persisted episode {episode_id}: {e}")
+
+    def _index(self, episode: Episode):
+        if episode.event_type not in self._by_type:
+            self._by_type[episode.event_type] = []
+        self._by_type[episode.event_type].append(episode.id)
+        for p in episode.participants:
+            if p not in self._by_participant:
+                self._by_participant[p] = []
+            self._by_participant[p].append(episode.id)
 
     def record(
         self,
@@ -297,6 +441,7 @@ class EpisodicMemory:
         outcome: str = None,
         emotional_valence: float = 0.0,
         importance: float = 0.5,
+        session_id: str = None,
     ) -> str:
         """Record a new episode."""
         episode_id = str(uuid.uuid4())[:12]
@@ -312,20 +457,12 @@ class EpisodicMemory:
             outcome=outcome,
             emotional_valence=emotional_valence,
             importance=importance,
+            session_id=session_id,
         )
 
         self._episodes.append(episode)
-
-        # Index by type
-        if event_type not in self._by_type:
-            self._by_type[event_type] = []
-        self._by_type[event_type].append(episode_id)
-
-        # Index by participant
-        for p in episode.participants:
-            if p not in self._by_participant:
-                self._by_participant[p] = []
-            self._by_participant[p].append(episode_id)
+        self._index(episode)
+        self._persist(episode)
 
         # Prune if over limit
         while len(self._episodes) > self.max_episodes:
@@ -333,15 +470,23 @@ class EpisodicMemory:
 
         return episode_id
 
+    @staticmethod
+    def _in_session(episode: Episode, session_id: Optional[str]) -> bool:
+        """session_id=None means global scope: match everything."""
+        return session_id is None or episode.session_id == session_id
+
     def recall_by_time(
         self,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
         limit: int = 50,
+        session_id: Optional[str] = None,
     ) -> List[Episode]:
         """Recall episodes within a time range."""
         results = []
         for ep in reversed(self._episodes):  # Most recent first
+            if not self._in_session(ep, session_id):
+                continue
             if start_time and ep.timestamp < start_time:
                 continue
             if end_time and ep.timestamp > end_time:
@@ -351,22 +496,28 @@ class EpisodicMemory:
                 break
         return results
 
-    def recall_by_type(self, event_type: str, limit: int = 50) -> List[Episode]:
+    def recall_by_type(self, event_type: str, limit: int = 50, session_id: Optional[str] = None) -> List[Episode]:
         """Recall episodes of a specific type."""
         episode_ids = self._by_type.get(event_type, [])
-        return [self._get_by_id(eid) for eid in episode_ids[-limit:] if self._get_by_id(eid)]
+        episodes = [self._get_by_id(eid) for eid in episode_ids if self._get_by_id(eid)]
+        episodes = [ep for ep in episodes if self._in_session(ep, session_id)]
+        return episodes[-limit:]
 
-    def recall_by_participant(self, participant: str, limit: int = 50) -> List[Episode]:
+    def recall_by_participant(self, participant: str, limit: int = 50, session_id: Optional[str] = None) -> List[Episode]:
         """Recall episodes involving a participant."""
         episode_ids = self._by_participant.get(participant, [])
-        return [self._get_by_id(eid) for eid in episode_ids[-limit:] if self._get_by_id(eid)]
+        episodes = [self._get_by_id(eid) for eid in episode_ids if self._get_by_id(eid)]
+        episodes = [ep for ep in episodes if self._in_session(ep, session_id)]
+        return episodes[-limit:]
 
-    def recall_by_similarity_text(self, query: str, limit: int = 10) -> List[Episode]:
+    def recall_by_similarity_text(self, query: str, limit: int = 10, session_id: Optional[str] = None) -> List[Episode]:
         """Fallback text-based similarity search (no embeddings)."""
         query_lower = query.lower()
         scored = []
 
         for ep in self._episodes:
+            if not self._in_session(ep, session_id):
+                continue
             content_str = str(ep.content).lower()
             # Simple scoring: word overlap
             query_words = set(query_lower.split())
@@ -384,12 +535,23 @@ class EpisodicMemory:
         query_embedding: List[float],
         limit: int = 10,
         min_similarity: float = 0.3,
+        embedder: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> List[Tuple[Episode, float]]:
-        """Recall episodes by embedding similarity."""
+        """
+        Recall episodes by embedding similarity.
+
+        When `embedder` is given, only episodes whose stored vector came from
+        that embedder are compared (never mix vector spaces).
+        """
         scored = []
 
         for ep in self._episodes:
+            if not self._in_session(ep, session_id):
+                continue
             if ep.embedding:
+                if embedder is not None and ep.embedder != embedder:
+                    continue
                 sim = cosine_similarity(query_embedding, ep.embedding)
                 if sim >= min_similarity:
                     # Weight by importance
@@ -399,15 +561,44 @@ class EpisodicMemory:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [(ep, score) for score, ep in scored[:limit]]
 
-    def get_episodes_without_embeddings(self, limit: int = 100) -> List[Episode]:
-        """Get episodes that don't have embeddings yet."""
-        return [ep for ep in self._episodes if ep.embedding is None][:limit]
+    def get_episodes_without_embeddings(self, limit: int = 100, embedder: Optional[str] = None) -> List[Episode]:
+        """
+        Get episodes needing (re-)embedding: no vector yet, or a vector from
+        a different embedder than the active one.
+        """
+        return [
+            ep for ep in self._episodes
+            if ep.embedding is None or (embedder is not None and ep.embedder != embedder)
+        ][:limit]
 
-    def set_embedding(self, episode_id: str, embedding: List[float]):
-        """Set embedding for an episode."""
+    def set_embedding(self, episode_id: str, embedding: List[float], embedder: Optional[str] = None):
+        """Set embedding for an episode (persisted)."""
         ep = self._get_by_id(episode_id)
         if ep:
             ep.embedding = embedding
+            ep.embedder = embedder
+            self._persist(ep)
+
+    def delete(self, episode_id: str) -> bool:
+        """Delete an episode from memory and the persisted store."""
+        ep = self._get_by_id(episode_id)
+        if not ep:
+            return False
+        self._episodes.remove(ep)
+        self._unindex(ep)
+        self._delete_persisted(episode_id)
+        return True
+
+    def _unindex(self, episode: Episode):
+        if episode.event_type in self._by_type:
+            self._by_type[episode.event_type] = [
+                eid for eid in self._by_type[episode.event_type] if eid != episode.id
+            ]
+        for p in episode.participants:
+            if p in self._by_participant:
+                self._by_participant[p] = [
+                    eid for eid in self._by_participant[p] if eid != episode.id
+                ]
 
     def _get_by_id(self, episode_id: str) -> Optional[Episode]:
         """Get episode by ID."""
@@ -426,17 +617,8 @@ class EpisodicMemory:
         to_remove = min(oldest, key=lambda x: x.importance)
 
         self._episodes.remove(to_remove)
-
-        # Clean up indices
-        if to_remove.event_type in self._by_type:
-            self._by_type[to_remove.event_type] = [
-                eid for eid in self._by_type[to_remove.event_type] if eid != to_remove.id
-            ]
-        for p in to_remove.participants:
-            if p in self._by_participant:
-                self._by_participant[p] = [
-                    eid for eid in self._by_participant[p] if eid != to_remove.id
-                ]
+        self._unindex(to_remove)
+        self._delete_persisted(to_remove.id)
 
     def stats(self) -> Dict[str, Any]:
         return {
@@ -444,6 +626,8 @@ class EpisodicMemory:
             "max_episodes": self.max_episodes,
             "event_types": len(self._by_type),
             "unique_participants": len(self._by_participant),
+            "persistent": self.db_path is not None,
+            "db_path": str(self.db_path) if self.db_path else None,
         }
 
 
@@ -453,11 +637,97 @@ class SemanticMemory:
     Stores subject-predicate-object triples with confidence and provenance.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[Path] = None):
         self._beliefs: Dict[str, Belief] = {}
         self._by_subject: Dict[str, List[str]] = {}
         self._by_predicate: Dict[str, List[str]] = {}
         self._by_object: Dict[str, List[str]] = {}
+        self.db_path = Path(db_path) if db_path else None
+        if self.db_path:
+            self._init_db()
+            self._load()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
+    def _init_db(self):
+        conn = self._connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS beliefs (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                source TEXT,
+                valid_from REAL,
+                valid_until REAL,
+                evidence TEXT,
+                contradicts TEXT,
+                session_id TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_beliefs_subject ON beliefs(subject)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_beliefs_object ON beliefs(object)")
+        conn.commit()
+        conn.close()
+
+    def _load(self):
+        """Hydrate in-memory belief graph from the persisted store on boot."""
+        conn = self._connect()
+        rows = conn.execute("""
+            SELECT id, subject, predicate, object, confidence, source,
+                   valid_from, valid_until, evidence, contradicts, session_id
+            FROM beliefs
+        """).fetchall()
+        conn.close()
+
+        for row in rows:
+            belief = Belief(
+                id=row[0], subject=row[1], predicate=row[2], object=row[3],
+                confidence=row[4] if row[4] is not None else 1.0,
+                source=row[5], valid_from=row[6], valid_until=row[7],
+                evidence=_json_load(row[8]) or [],
+                contradicts=_json_load(row[9]) or [],
+                session_id=row[10],
+            )
+            self._beliefs[belief.id] = belief
+            self._index(belief)
+
+        if rows:
+            logger.info(f"SemanticMemory: loaded {len(rows)} beliefs from {self.db_path}")
+
+    def _persist(self, belief: Belief):
+        if not self.db_path:
+            return
+        try:
+            conn = self._connect()
+            conn.execute("""
+                INSERT OR REPLACE INTO beliefs
+                (id, subject, predicate, object, confidence, source,
+                 valid_from, valid_until, evidence, contradicts, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                belief.id, belief.subject, belief.predicate, belief.object,
+                belief.confidence, belief.source, belief.valid_from,
+                belief.valid_until, _json_dump(belief.evidence),
+                _json_dump(belief.contradicts), belief.session_id,
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to persist belief {belief.id}: {e}")
+
+    def _index(self, belief: Belief):
+        for idx, key in [
+            (self._by_subject, belief.subject),
+            (self._by_predicate, belief.predicate),
+            (self._by_object, belief.object),
+        ]:
+            if key not in idx:
+                idx[key] = []
+            if belief.id not in idx[key]:
+                idx[key].append(belief.id)
 
     def store(
         self,
@@ -467,6 +737,7 @@ class SemanticMemory:
         confidence: float = 1.0,
         source: str = None,
         evidence: List[str] = None,
+        session_id: str = None,
     ) -> str:
         """Store or update a belief."""
         # Create deterministic ID from triple
@@ -480,6 +751,7 @@ class SemanticMemory:
             existing.confidence = (existing.confidence + confidence) / 2
             if source and source not in (existing.evidence or []):
                 existing.evidence.append(source)
+            self._persist(existing)
             return belief_id
 
         belief = Belief(
@@ -491,15 +763,12 @@ class SemanticMemory:
             source=source,
             valid_from=time.time(),
             evidence=evidence or ([source] if source else []),
+            session_id=session_id,
         )
 
         self._beliefs[belief_id] = belief
-
-        # Index
-        for idx, key in [(self._by_subject, subject), (self._by_predicate, predicate), (self._by_object, obj)]:
-            if key not in idx:
-                idx[key] = []
-            idx[key].append(belief_id)
+        self._index(belief)
+        self._persist(belief)
 
         return belief_id
 
@@ -509,8 +778,9 @@ class SemanticMemory:
         predicate: str = None,
         obj: str = None,
         min_confidence: float = 0.0,
+        session_id: str = None,
     ) -> List[Belief]:
-        """Query beliefs matching the pattern."""
+        """Query beliefs matching the pattern (session_id=None = global scope)."""
         # Find candidate belief IDs
         candidates = None
 
@@ -536,6 +806,8 @@ class SemanticMemory:
             if belief.confidence < min_confidence:
                 continue
             if belief.valid_until and belief.valid_until < now:
+                continue
+            if session_id is not None and belief.session_id != session_id:
                 continue
             results.append(belief)
 
@@ -575,6 +847,7 @@ class SemanticMemory:
             self._beliefs[belief_id].valid_until = time.time()
             if reason:
                 self._beliefs[belief_id].contradicts.append(reason)
+            self._persist(self._beliefs[belief_id])
 
     def stats(self) -> Dict[str, Any]:
         now = time.time()
@@ -586,6 +859,8 @@ class SemanticMemory:
             "unique_predicates": len(self._by_predicate),
             "unique_objects": len(self._by_object),
             "avg_confidence": sum(b.confidence for b in valid_beliefs) / max(1, len(valid_beliefs)),
+            "persistent": self.db_path is not None,
+            "db_path": str(self.db_path) if self.db_path else None,
         }
 
 
@@ -595,9 +870,96 @@ class ProceduralMemory:
     Skills are learned from successful executions and can be applied in similar contexts.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[Path] = None):
         self._skills: Dict[str, Skill] = {}
         self._by_tag: Dict[str, List[str]] = {}
+        self.db_path = Path(db_path) if db_path else None
+        if self.db_path:
+            self._init_db()
+            self._load()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
+    def _init_db(self):
+        conn = self._connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                pattern TEXT,
+                preconditions TEXT,
+                postconditions TEXT,
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                avg_execution_time REAL DEFAULT 0.0,
+                last_used REAL,
+                tags TEXT,
+                session_id TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _load(self):
+        """Hydrate in-memory skills from the persisted store on boot."""
+        conn = self._connect()
+        rows = conn.execute("""
+            SELECT id, name, description, pattern, preconditions, postconditions,
+                   success_count, failure_count, avg_execution_time, last_used,
+                   tags, session_id
+            FROM skills
+        """).fetchall()
+        conn.close()
+
+        for row in rows:
+            skill = Skill(
+                id=row[0], name=row[1], description=row[2] or "",
+                pattern=_json_load(row[3]) or {},
+                preconditions=_json_load(row[4]) or [],
+                postconditions=_json_load(row[5]) or [],
+                success_count=row[6] or 0,
+                failure_count=row[7] or 0,
+                avg_execution_time=row[8] or 0.0,
+                last_used=row[9],
+                tags=_json_load(row[10]) or [],
+                session_id=row[11],
+            )
+            self._skills[skill.id] = skill
+            self._index_tags(skill)
+
+        if rows:
+            logger.info(f"ProceduralMemory: loaded {len(rows)} skills from {self.db_path}")
+
+    def _persist(self, skill: Skill):
+        if not self.db_path:
+            return
+        try:
+            conn = self._connect()
+            conn.execute("""
+                INSERT OR REPLACE INTO skills
+                (id, name, description, pattern, preconditions, postconditions,
+                 success_count, failure_count, avg_execution_time, last_used,
+                 tags, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                skill.id, skill.name, skill.description, _json_dump(skill.pattern),
+                _json_dump(skill.preconditions), _json_dump(skill.postconditions),
+                skill.success_count, skill.failure_count, skill.avg_execution_time,
+                skill.last_used, _json_dump(skill.tags), skill.session_id,
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to persist skill {skill.id}: {e}")
+
+    def _index_tags(self, skill: Skill):
+        for tag in skill.tags:
+            if tag not in self._by_tag:
+                self._by_tag[tag] = []
+            if skill.id not in self._by_tag[tag]:
+                self._by_tag[tag].append(skill.id)
 
     def learn(
         self,
@@ -607,9 +969,13 @@ class ProceduralMemory:
         preconditions: List[str] = None,
         postconditions: List[str] = None,
         tags: List[str] = None,
+        session_id: str = None,
     ) -> str:
         """Learn a new skill or update existing."""
         skill_id = hashlib.sha256(name.encode()).hexdigest()[:12]
+
+        # Preserve execution history when re-learning an existing skill
+        existing = self._skills.get(skill_id)
 
         skill = Skill(
             id=skill_id,
@@ -618,18 +984,37 @@ class ProceduralMemory:
             pattern=pattern,
             preconditions=preconditions or [],
             postconditions=postconditions or [],
+            success_count=existing.success_count if existing else 0,
+            failure_count=existing.failure_count if existing else 0,
+            avg_execution_time=existing.avg_execution_time if existing else 0.0,
+            last_used=existing.last_used if existing else None,
+            tags=tags or (existing.tags if existing else []),
+            session_id=session_id if session_id is not None else (existing.session_id if existing else None),
         )
 
         self._skills[skill_id] = skill
-
-        # Index by tags
-        for tag in (tags or []):
-            if tag not in self._by_tag:
-                self._by_tag[tag] = []
-            if skill_id not in self._by_tag[tag]:
-                self._by_tag[tag].append(skill_id)
+        self._index_tags(skill)
+        self._persist(skill)
 
         return skill_id
+
+    def delete(self, skill_id: str) -> bool:
+        """Delete a skill from memory and the persisted store."""
+        skill = self._skills.pop(skill_id, None)
+        if skill is None:
+            return False
+        for tag in skill.tags:
+            if tag in self._by_tag:
+                self._by_tag[tag] = [sid for sid in self._by_tag[tag] if sid != skill_id]
+        if self.db_path:
+            try:
+                conn = self._connect()
+                conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Failed to delete persisted skill {skill_id}: {e}")
+        return True
 
     def get(self, skill_id: str) -> Optional[Skill]:
         """Get a skill by ID."""
@@ -681,6 +1066,8 @@ class ProceduralMemory:
             (skill.avg_execution_time * (total - 1) + execution_time) / total
         )
 
+        self._persist(skill)
+
     def stats(self) -> Dict[str, Any]:
         skills = list(self._skills.values())
         return {
@@ -689,6 +1076,8 @@ class ProceduralMemory:
             "avg_success_rate": sum(
                 s.success_count / max(1, s.success_count + s.failure_count) for s in skills
             ) / max(1, len(skills)),
+            "persistent": self.db_path is not None,
+            "db_path": str(self.db_path) if self.db_path else None,
         }
 
 
@@ -795,6 +1184,10 @@ class DistributedMemoryMCP:
                         "type": "number",
                         "description": "Importance (0-1)",
                         "default": 0.5
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session scope. Omit for global scope (recallable from any session)."
                     }
                 },
                 "required": ["event_type", "content"]
@@ -830,6 +1223,10 @@ class DistributedMemoryMCP:
                         "type": "integer",
                         "description": "Maximum episodes to return",
                         "default": 20
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session filter. Omit for global scope (recall across all sessions)."
                     }
                 }
             }
@@ -860,6 +1257,10 @@ class DistributedMemoryMCP:
                     "source": {
                         "type": "string",
                         "description": "Source of the belief"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session scope. Omit for global scope (queryable from any session)."
                     }
                 },
                 "required": ["subject", "predicate", "object"]
@@ -892,6 +1293,10 @@ class DistributedMemoryMCP:
                         "type": "boolean",
                         "description": "Enable inference for transitive relationships",
                         "default": False
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session filter. Omit for global scope (query across all sessions)."
                     }
                 }
             }
@@ -928,6 +1333,10 @@ class DistributedMemoryMCP:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Tags for categorization"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session scope. Omit for global scope (usable from any session)."
                     }
                 },
                 "required": ["name", "description", "pattern"]
@@ -1047,6 +1456,10 @@ class DistributedMemoryMCP:
                         "type": "integer",
                         "description": "Max results per tier",
                         "default": 5
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session filter. Omit for global scope (search across all sessions)."
                     }
                 },
                 "required": ["query"]
@@ -1084,6 +1497,10 @@ class DistributedMemoryMCP:
                         "type": "number",
                         "description": "Minimum cosine similarity threshold (0-1)",
                         "default": 0.3
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session filter. Omit for global scope (search across all sessions)."
                     }
                 },
                 "required": ["query"]
@@ -1139,6 +1556,55 @@ class DistributedMemoryMCP:
                 },
                 "required": ["entity"]
             }
+        },
+        {
+            "name": "integration_feedback",
+            "description": (
+                "Submit feedback about your experience using a tool on this integration "
+                "server (correctness, schema clarity, missing capabilities, errors, etc). "
+                "Call this after using a tool if something was confusing, broken, or "
+                "worked great — it helps us improve the API for AI agents."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Which tool this feedback concerns (use 'general' for service-wide feedback)",
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["success", "partial", "failure"],
+                        "description": "How the tool call(s) being reported on went",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "correctness", "schema_clarity", "performance", "error_handling",
+                            "documentation", "missing_capability", "rate_limit", "auth", "other",
+                        ],
+                        "default": "other",
+                    },
+                    "rating": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "1 (poor) to 5 (excellent)",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Free-text feedback: what happened, what was confusing, what would help",
+                    },
+                    "suggested_fix": {"type": "string"},
+                    "context": {
+                        "type": "object",
+                        "description": "Optional supporting context, e.g. the arguments used or error text received",
+                    },
+                    "session_id": {"type": "string"},
+                    "trace_id": {"type": "string"},
+                },
+                "required": ["message"],
+            }
         }
     ]
 
@@ -1147,24 +1613,49 @@ class DistributedMemoryMCP:
         self.data_dir = Path(data_dir) if data_dir else Path("data/memory")
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize memory stores
+        # Shared sqlite file for episodic/semantic/procedural persistence.
+        # Working memory stays ephemeral by design.
+        memory_db = self.data_dir / "memory.db"
+
+        # Initialize memory stores (hydrated from disk on boot)
         self.working = WorkingMemory(capacity=100)
-        self.episodic = EpisodicMemory(max_episodes=10000)
-        self.semantic = SemanticMemory()  # In-memory for backward compat
-        self.procedural = ProceduralMemory()
+        self.episodic = EpisodicMemory(max_episodes=10000, db_path=memory_db)
+        self.semantic = SemanticMemory(db_path=memory_db)
+        self.procedural = ProceduralMemory(db_path=memory_db)
+
+        # In-process resilient embedding service (Jina -> local-hash fallback)
+        self._embedder = None
+        if LOCAL_EMBEDDINGS_AVAILABLE:
+            try:
+                self._embedder = get_resilient_embedding_service()
+                logger.info(f"Embedding service ready (active: {self._active_embedder_name()})")
+            except Exception as e:
+                logger.warning(f"Failed to initialize embedding service: {e}")
 
         # Semantic belief store with embeddings (persistent)
         self._semantic_belief_store: Optional[SemanticBeliefStore] = None
         if SEMANTIC_BELIEFS_AVAILABLE:
             try:
-                self._semantic_belief_store = get_belief_store()
+                # Prefer the explicit DATA_DIR (Modal volume) when set so
+                # existing deployed DBs keep working; otherwise keep the
+                # belief DB alongside the rest of MEMORY_DATA_DIR.
+                explicit_data_dir = os.getenv("DATA_DIR")
+                belief_db = (
+                    Path(explicit_data_dir) / "belief_embeddings.db"
+                    if explicit_data_dir
+                    else self.data_dir / "belief_embeddings.db"
+                )
+                self._semantic_belief_store = SemanticBeliefStore(
+                    db_path=str(belief_db),
+                    embedding_service=self._embedder,
+                )
                 logger.info("SemanticBeliefStore initialized with persistence and embeddings")
             except Exception as e:
                 logger.warning(f"Failed to initialize SemanticBeliefStore: {e}")
 
-        # Internal MCP client for cross-MCP calls (embeddings, etc.)
+        # Internal MCP client for cross-MCP calls (skill execution, etc.)
         self._mcp_client: Optional[InternalMCPClient] = None
-        self._embeddings_available = False
+        self._embeddings_available = self._embedder is not None
 
         # FastAPI app
         self.app = self._create_app()
@@ -1180,51 +1671,81 @@ class DistributedMemoryMCP:
             await self._check_embedding_availability()
         return self._mcp_client
 
+    def _active_embedder_name(self) -> Optional[str]:
+        """Tag of the embedder currently in use ('jina' or 'local-hash-v1')."""
+        if self._embedder is None:
+            return None
+        return getattr(
+            self._embedder, "active_name",
+            getattr(self._embedder, "name", "unknown"),
+        )
+
     async def _check_embedding_availability(self):
-        """Check if embedding service is available."""
-        if self._mcp_client:
-            endpoints = await self._mcp_client.find_by_capability("embed")
-            self._embeddings_available = len(endpoints) > 0
-            if self._embeddings_available:
-                logger.info("Embeddings available via Search MCP")
-            else:
-                logger.warning("Embeddings not available, falling back to text similarity")
+        """Embeddings are provided in-process by the resilient embedding service."""
+        self._embeddings_available = self._embedder is not None
+        if not self._embeddings_available:
+            logger.warning("Embeddings not available, falling back to text similarity")
 
     async def _get_embedding(self, text: str) -> Optional[List[float]]:
-        """Get embedding for text using Search MCP."""
-        if not self._embeddings_available:
-            return None
-
-        client = await self._ensure_mcp_client()
-        return await client.get_embedding(text)
+        """Get embedding for text via the resilient in-process service."""
+        embeddings = await self._get_embeddings_batch([text])
+        return embeddings[0] if embeddings else None
 
     async def _get_embeddings_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """Get embeddings for multiple texts."""
-        if not self._embeddings_available:
+        """Get embeddings for multiple texts via the resilient in-process service."""
+        if self._embedder is None or not texts:
             return [None] * len(texts)
 
-        client = await self._ensure_mcp_client()
-        return await client.get_embeddings_batch(texts)
+        try:
+            vectors, _tag = await self._embedder.embed_tagged(texts)
+        except Exception as e:
+            logger.warning(f"Embedding failed: {e}")
+            return [None] * len(texts)
+
+        results: List[Optional[List[float]]] = []
+        for vec in vectors:
+            if vec is None or len(vec) == 0:
+                results.append(None)
+            else:
+                results.append([float(x) for x in vec])
+        return results
 
     async def _ensure_episode_embeddings(self, limit: int = 50):
-        """Background task to compute embeddings for episodes without them."""
-        if not self._embeddings_available:
+        """
+        Compute embeddings for episodes that have none, or whose stored vector
+        came from a different embedder than the active one (re-embed on demand).
+        """
+        if self._embedder is None:
             return
 
-        episodes = self.episodic.get_episodes_without_embeddings(limit=limit)
-        if not episodes:
-            return
+        # Two passes: if the primary embedder falls back mid-call, the active
+        # tag changes and previously-current vectors become stale; the second
+        # pass re-embeds them so this call self-heals.
+        for _ in range(2):
+            active = self._active_embedder_name()
+            episodes = self.episodic.get_episodes_without_embeddings(limit=limit, embedder=active)
+            if not episodes:
+                return
 
-        # Get texts to embed
-        texts = [str(ep.content) for ep in episodes]
-        embeddings = await self._get_embeddings_batch(texts)
+            # Get texts to embed
+            texts = [str(ep.content) for ep in episodes]
+            try:
+                vectors, tag = await self._embedder.embed_tagged(texts)
+            except Exception as e:
+                logger.warning(f"Episode embedding failed: {e}")
+                return
 
-        # Update episodes with embeddings
-        for ep, embedding in zip(episodes, embeddings):
-            if embedding:
-                self.episodic.set_embedding(ep.id, embedding)
+            # Update episodes with embeddings (tagged with the producing embedder)
+            computed = 0
+            for ep, vec in zip(episodes, vectors):
+                if vec is not None and len(vec) > 0:
+                    self.episodic.set_embedding(ep.id, [float(x) for x in vec], embedder=tag)
+                    computed += 1
 
-        logger.debug(f"Computed embeddings for {sum(1 for e in embeddings if e)} episodes")
+            logger.debug(f"Computed embeddings for {computed} episodes (embedder={tag})")
+
+            if tag == active:
+                return
 
     def _create_app(self) -> FastAPI:
         app = FastAPI(
@@ -1414,6 +1935,7 @@ class DistributedMemoryMCP:
             "_connectivity_test": self._tool_connectivity_test,
             "semantic_search_beliefs": self._tool_semantic_search_beliefs,
             "find_related_beliefs": self._tool_find_related_beliefs,
+            "integration_feedback": self._tool_integration_feedback,
         }
 
         handler = handlers.get(tool_name)
@@ -1496,13 +2018,15 @@ class DistributedMemoryMCP:
         # Search episodic memory with embeddings if available
         if include_episodic:
             episodes = []
-            await self._ensure_mcp_client()
 
             if self._embeddings_available:
+                await self._ensure_episode_embeddings(limit=100)
                 query_embedding = await self._get_embedding(query)
                 if query_embedding:
-                    await self._ensure_episode_embeddings(limit=100)
-                    ep_results = self.episodic.recall_by_embedding(query_embedding, limit=limit)
+                    ep_results = self.episodic.recall_by_embedding(
+                        query_embedding, limit=limit,
+                        embedder=self._active_embedder_name(),
+                    )
                     episodes = [ep for ep, _ in ep_results]
                     used_embeddings = True
 
@@ -1570,6 +2094,7 @@ class DistributedMemoryMCP:
             participants=args.get("participants"),
             outcome=args.get("outcome"),
             importance=args.get("importance", 0.5),
+            session_id=args.get("session_id"),
         )
 
         return {
@@ -1579,6 +2104,8 @@ class DistributedMemoryMCP:
                     "recorded": True,
                     "episode_id": episode_id,
                     "event_type": args["event_type"],
+                    "session_id": args.get("session_id"),
+                    "persistent": self.episodic.db_path is not None,
                     "total_episodes": len(self.episodic._episodes)
                 }, indent=2)
             }]
@@ -1587,6 +2114,7 @@ class DistributedMemoryMCP:
     async def _tool_recall_episodes(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Recall episodes from episodic memory."""
         limit = args.get("limit", 20)
+        session_id = args.get("session_id")  # None = global scope
         episodes = []
         similarity_scores = {}
         used_embeddings = False
@@ -1595,15 +2123,15 @@ class DistributedMemoryMCP:
             query = args["query"]
 
             # Try embedding-based similarity first
-            await self._ensure_mcp_client()
             if self._embeddings_available:
+                # Ensure episodes have embeddings from the active embedder
+                await self._ensure_episode_embeddings(limit=100)
                 query_embedding = await self._get_embedding(query)
                 if query_embedding:
-                    # Also ensure episodes have embeddings
-                    await self._ensure_episode_embeddings(limit=100)
-
                     results = self.episodic.recall_by_embedding(
-                        query_embedding, limit=limit, min_similarity=0.3
+                        query_embedding, limit=limit, min_similarity=0.3,
+                        embedder=self._active_embedder_name(),
+                        session_id=session_id,
                     )
                     episodes = [ep for ep, score in results]
                     similarity_scores = {ep.id: score for ep, score in results}
@@ -1611,17 +2139,18 @@ class DistributedMemoryMCP:
 
             # Fallback to text similarity
             if not episodes:
-                episodes = self.episodic.recall_by_similarity_text(query, limit=limit)
+                episodes = self.episodic.recall_by_similarity_text(query, limit=limit, session_id=session_id)
 
         elif args.get("event_type"):
-            episodes = self.episodic.recall_by_type(args["event_type"], limit=limit)
+            episodes = self.episodic.recall_by_type(args["event_type"], limit=limit, session_id=session_id)
         elif args.get("participant"):
-            episodes = self.episodic.recall_by_participant(args["participant"], limit=limit)
+            episodes = self.episodic.recall_by_participant(args["participant"], limit=limit, session_id=session_id)
         else:
             episodes = self.episodic.recall_by_time(
                 start_time=args.get("start_time"),
                 end_time=args.get("end_time"),
                 limit=limit,
+                session_id=session_id,
             )
 
         return {
@@ -1655,6 +2184,7 @@ class DistributedMemoryMCP:
             obj=args["object"],
             confidence=args.get("confidence", 1.0),
             source=args.get("source"),
+            session_id=args.get("session_id"),
         )
 
         # Also store in persistent semantic belief store with embeddings
@@ -1707,6 +2237,7 @@ class DistributedMemoryMCP:
             predicate=args.get("predicate"),
             obj=args.get("object"),
             min_confidence=args.get("min_confidence", 0.0),
+            session_id=args.get("session_id"),
         )
 
         return {
@@ -1869,6 +2400,7 @@ class DistributedMemoryMCP:
             preconditions=args.get("preconditions"),
             postconditions=args.get("postconditions"),
             tags=args.get("tags"),
+            session_id=args.get("session_id"),
         )
 
         return {
@@ -1878,6 +2410,7 @@ class DistributedMemoryMCP:
                     "learned": True,
                     "skill_id": skill_id,
                     "name": args["name"],
+                    "persistent": self.procedural.db_path is not None,
                     "total_skills": len(self.procedural._skills)
                 }, indent=2)
             }]
@@ -2058,15 +2591,13 @@ class DistributedMemoryMCP:
         elif tier == "episodic":
             if item_ids:
                 for ep_id in item_ids:
-                    ep = self.episodic._get_by_id(ep_id)
-                    if ep:
-                        self.episodic._episodes.remove(ep)
+                    if self.episodic.delete(ep_id):
                         forgotten += 1
             elif cutoff_time:
                 to_remove = [ep for ep in self.episodic._episodes if ep.timestamp < cutoff_time]
                 for ep in to_remove:
-                    self.episodic._episodes.remove(ep)
-                    forgotten += 1
+                    if self.episodic.delete(ep.id):
+                        forgotten += 1
 
         elif tier == "semantic":
             if item_ids:
@@ -2078,8 +2609,7 @@ class DistributedMemoryMCP:
         elif tier == "procedural":
             if item_ids:
                 for skill_id in item_ids:
-                    if skill_id in self.procedural._skills:
-                        del self.procedural._skills[skill_id]
+                    if self.procedural.delete(skill_id):
                         forgotten += 1
 
         return {
@@ -2097,6 +2627,7 @@ class DistributedMemoryMCP:
         query = args["query"]
         tiers = args.get("tiers", ["working", "episodic", "semantic", "procedural"])
         limit = args.get("limit_per_tier", 5)
+        session_id = args.get("session_id")  # None = global scope
 
         results = {}
 
@@ -2117,16 +2648,20 @@ class DistributedMemoryMCP:
             episodes = []
             ep_scores = {}
             # Try embeddings first
-            await self._ensure_mcp_client()
             if self._embeddings_available:
+                await self._ensure_episode_embeddings(limit=100)
                 query_embedding = await self._get_embedding(query)
                 if query_embedding:
-                    ep_results = self.episodic.recall_by_embedding(query_embedding, limit=limit)
+                    ep_results = self.episodic.recall_by_embedding(
+                        query_embedding, limit=limit,
+                        embedder=self._active_embedder_name(),
+                        session_id=session_id,
+                    )
                     episodes = [ep for ep, _ in ep_results]
                     ep_scores = {ep.id: score for ep, score in ep_results}
 
             if not episodes:
-                episodes = self.episodic.recall_by_similarity_text(query, limit=limit)
+                episodes = self.episodic.recall_by_similarity_text(query, limit=limit, session_id=session_id)
 
             results["episodic"] = [
                 {
@@ -2142,8 +2677,8 @@ class DistributedMemoryMCP:
             # Search by subject and object
             beliefs = []
             for word in query.split()[:3]:  # Limit to first 3 words
-                beliefs.extend(self.semantic.query(subject=word)[:limit])
-                beliefs.extend(self.semantic.query(obj=word)[:limit])
+                beliefs.extend(self.semantic.query(subject=word, session_id=session_id)[:limit])
+                beliefs.extend(self.semantic.query(obj=word, session_id=session_id)[:limit])
             seen = set()
             unique_beliefs = []
             for b in beliefs:
@@ -2189,8 +2724,7 @@ class DistributedMemoryMCP:
         tiers = args.get("tiers", ["episodic", "working"])
         limit = args.get("limit", 10)
         min_similarity = args.get("min_similarity", 0.3)
-
-        await self._ensure_mcp_client()
+        session_id = args.get("session_id")  # None = global scope
 
         if not self._embeddings_available:
             return {
@@ -2198,14 +2732,16 @@ class DistributedMemoryMCP:
                     "type": "text",
                     "text": json.dumps({
                         "error": "Embeddings not available",
-                        "message": "Search MCP is not running or embed capability not found. Falling back to text search.",
+                        "message": "No embedding service could be initialized. Falling back to text search.",
                         "fallback_available": True,
                     }, indent=2)
                 }],
                 "isError": True,
             }
 
-        # Get query embedding
+        # Ensure episodes carry vectors from the active embedder, then embed query
+        if "episodic" in tiers:
+            await self._ensure_episode_embeddings(limit=200)
         query_embedding = await self._get_embedding(query)
         if not query_embedding:
             return {
@@ -2222,14 +2758,16 @@ class DistributedMemoryMCP:
         results = {
             "query": query,
             "embeddings_used": True,
+            "embedder": self._active_embedder_name(),
             "results": {},
         }
 
         # Search episodic memory
         if "episodic" in tiers:
-            await self._ensure_episode_embeddings(limit=200)
             ep_results = self.episodic.recall_by_embedding(
-                query_embedding, limit=limit, min_similarity=min_similarity
+                query_embedding, limit=limit, min_similarity=min_similarity,
+                embedder=self._active_embedder_name(),
+                session_id=session_id,
             )
             results["results"]["episodic"] = [
                 {
@@ -2288,7 +2826,15 @@ class DistributedMemoryMCP:
             "procedural": self.procedural.stats(),
             "embeddings": {
                 "available": self._embeddings_available,
-                "source": "distributed-search-mcp" if self._embeddings_available else None,
+                "source": self._active_embedder_name(),
+                "active_embedder": self._active_embedder_name(),
+            },
+            "persistence": {
+                "data_dir": str(self.data_dir),
+                "episodic": self.episodic.db_path is not None,
+                "semantic": self.semantic.db_path is not None,
+                "procedural": self.procedural.db_path is not None,
+                "working": False,  # ephemeral by design
             },
         }
 
@@ -2335,16 +2881,84 @@ class DistributedMemoryMCP:
                     },
                     "cross_mcp": {
                         "embeddings_available": self._embeddings_available,
-                        "embedding_source": "distributed-search-mcp" if self._embeddings_available else None,
+                        "active_embedder": self._active_embedder_name(),
+                        "embedding_source": self._active_embedder_name(),
                         "client_initialized": self._mcp_client is not None,
+                    },
+                    "persistence": {
+                        "data_dir": str(self.data_dir),
+                        "episodic_persisted": self.episodic.db_path is not None,
+                        "semantic_persisted": self.semantic.db_path is not None,
+                        "procedural_persisted": self.procedural.db_path is not None,
+                        "working_persisted": False,  # ephemeral by design
                     },
                     "semantic_belief_store": {
                         "available": self._semantic_belief_store is not None,
                         "persistent": self._semantic_belief_store is not None,
+                        "active_embedder": (
+                            self._semantic_belief_store._active_embedder_tag()
+                            if self._semantic_belief_store else None
+                        ),
                     }
                 }, indent=2)
             }]
         }
+
+    async def _tool_integration_feedback(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward agent feedback about this server's tools to the central registry."""
+        message = args.get("message")
+        if not message:
+            return {
+                "content": [{"type": "text", "text": "message is required"}],
+                "isError": True,
+            }
+
+        payload = {
+            "backend_id": self.SERVICE_ID,
+            "message": message,
+            "tool_name": args.get("tool_name"),
+            "outcome": args.get("outcome"),
+            "category": args.get("category") or "other",
+            "rating": args.get("rating"),
+            "suggested_fix": args.get("suggested_fix"),
+            "context": args.get("context"),
+            "session_id": args.get("session_id"),
+            "trace_id": args.get("trace_id"),
+        }
+
+        import httpx
+
+        registry_url = os.getenv("REGISTRY_URL", "https://tools.distributed.systems")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{registry_url}/api/v1/integration-feedback",
+                    json=payload,
+                    timeout=10.0,
+                )
+            if response.status_code == 200:
+                return {"content": [{"type": "text", "text": json.dumps(response.json())}]}
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            fallback_path = self.data_dir / "feedback_fallback.jsonl"
+            try:
+                fallback_path.parent.mkdir(parents=True, exist_ok=True)
+                record = dict(payload)
+                record["recorded_at"] = datetime.now(timezone.utc).isoformat()
+                record["registry_error"] = str(e)
+                with open(fallback_path, "a") as f:
+                    f.write(json.dumps(record, default=str) + "\n")
+            except Exception as write_err:
+                logger.warning(f"Failed to write feedback fallback: {write_err}")
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "status": "recorded_locally",
+                        "warning": f"registry unreachable ({e}); saved to {fallback_path}",
+                    }),
+                }]
+            }
 
     def run(self):
         """Run the server."""
@@ -2377,7 +2991,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Distributed Memory MCP Server")
-    parser.add_argument("--port", type=int, default=int(os.getenv("MEMORY_MCP_PORT", "4004")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", os.getenv("MEMORY_MCP_PORT", "4004"))))
     parser.add_argument("--data-dir", type=str, default=os.getenv("MEMORY_DATA_DIR", "data/memory"))
     args = parser.parse_args()
 

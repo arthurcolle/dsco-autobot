@@ -1,0 +1,426 @@
+[
+  {
+    "name": "TIME_SERIES_INTRADAY",
+    "description": "Get intraday (1min, 5min, 15min, 30min, 60min) time series data for a stock symbol. Returns open, high, low, close, volume."
+  },
+  {
+    "name": "TIME_SERIES_DAILY",
+    "description": "Get daily time series data (open, high, low, close, volume) for a stock symbol, covering 20+ years of historical data."
+  },
+  {
+    "name": "TIME_SERIES_DAILY_ADJUSTED",
+    "description": "Get daily adjusted time series data including splits and dividends for a stock symbol."
+  },
+  {
+    "name": "TIME_SERIES_WEEKLY",
+    "description": "Get weekly time series data (open, high, low, close, volume) for a stock symbol."
+  },
+  {
+    "name": "TIME_SERIES_WEEKLY_ADJUSTED",
+    "description": "Get weekly adjusted time series data including splits and dividends."
+  },
+  {
+    "name": "TIME_SERIES_MONTHLY",
+    "description": "Get monthly time series data (open, high, low, close, volume) for a stock symbol."
+  },
+  {
+    "name": "TIME_SERIES_MONTHLY_ADJUSTED",
+    "description": "Get monthly adjusted time series data including splits and dividends."
+  },
+  {
+    "name": "GLOBAL_QUOTE",
+    "description": "Get the latest price and volume data for a stock symbol. Returns price, change, change percent, volume."
+  },
+  {
+    "name": "SMA",
+    "description": "Simple Moving Average (SMA) technical indicator for a stock symbol. Smooths price data over a specified period."
+  },
+  {
+    "name": "EMA",
+    "description": "Exponential Moving Average (EMA) technical indicator. Gives more weight to recent prices than SMA."
+  },
+  {
+    "name": "WMA",
+    "description": "Weighted Moving Average (WMA) technical indicator for a stock symbol."
+  },
+  {
+    "name": "DEMA",
+    "description": "Double Exponential Moving Average (DEMA) technical indicator for a stock symbol."
+  },
+  {
+    "name": "TEMA",
+    "description": "Triple Exponential Moving Average (TEMA) technical indicator."
+  },
+  {
+    "name": "TRIMA",
+    "description": "Triangular Moving Average (TRIMA) technical indicator."
+  },
+  {
+    "name": "KAMA",
+    "description": "Kaufman Adaptive Moving Average (KAMA) technical indicator."
+  },
+  {
+    "name": "MAMA",
+    "description": "MESA Adaptive Moving Average (MAMA) technical indicator."
+  },
+  {
+    "name": "VWAP",
+    "description": "Volume Weighted Average Price (VWAP) for intraday data. Key institutional trading benchmark."
+  },
+  {
+    "name": "T3",
+    "description": "Triple Exponential Moving Average T3 technical indicator."
+  },
+  {
+    "name": "MACD",
+    "description": "Moving Average Convergence/Divergence (MACD). Trend-following momentum indicator showing relationship between two moving averages."
+  },
+  {
+    "name": "MACDEXT",
+    "description": "MACD with controllable moving average types for signal and MACD lines."
+  },
+  {
+    "name": "STOCH",
+    "description": "Stochastic Oscillator (STOCH). Momentum indicator comparing closing price to price range over a period."
+  },
+  {
+    "name": "STOCHF",
+    "description": "Stochastic Fast (STOCHF) technical indicator."
+  },
+  {
+    "name": "RSI",
+    "description": "Relative Strength Index (RSI). Momentum oscillator measuring speed and magnitude of price movements. Overbought above 70, oversold below 30."
+  },
+  {
+    "name": "STOCHRSI",
+    "description": "Stochastic RSI (STOCHRSI). Applies stochastic formula to RSI values."
+  },
+  {
+    "name": "WILLR",
+    "description": "Williams %R technical indicator. Momentum indicator measuring overbought/oversold levels."
+  },
+  {
+    "name": "ADX",
+    "description": "Average Directional Movement Index (ADX). Measures trend strength regardless of direction."
+  },
+  {
+    "name": "ADXR",
+    "description": "Average Directional Movement Index Rating (ADXR). Smoothed version of ADX."
+  },
+  {
+    "name": "APO",
+    "description": "Absolute Price Oscillator (APO). Difference between two moving averages."
+  },
+  {
+    "name": "PPO",
+    "description": "Percentage Price Oscillator (PPO). Percentage difference between two moving averages."
+  },
+  {
+    "name": "MOM",
+    "description": "Momentum (MOM) technical indicator. Rate of change of price over a period."
+  },
+  {
+    "name": "BOP",
+    "description": "Balance of Power (BOP). Measures the strength of buyers vs sellers."
+  },
+  {
+    "name": "CCI",
+    "description": "Commodity Channel Index (CCI). Identifies cyclical trends and overbought/oversold conditions."
+  },
+  {
+    "name": "CMO",
+    "description": "Chande Momentum Oscillator (CMO). Momentum indicator based on difference of up and down days."
+  },
+  {
+    "name": "ROC",
+    "description": "Rate of Change (ROC). Percentage change in price over a specified period."
+  },
+  {
+    "name": "ROCR",
+    "description": "Rate of Change Ratio (ROCR). Price ratio over a specified period."
+  },
+  {
+    "name": "AROON",
+    "description": "Aroon indicator. Identifies trends and likelihood of trend reversal."
+  },
+  {
+    "name": "AROONOSC",
+    "description": "Aroon Oscillator. Difference between Aroon Up and Aroon Down."
+  },
+  {
+    "name": "MFI",
+    "description": "Money Flow Index (MFI). Volume-weighted RSI, measures buying and selling pressure."
+  },
+  {
+    "name": "TRIX",
+    "description": "Triple Smooth EMA (TRIX). Rate of change of triple-smoothed moving average."
+  },
+  {
+    "name": "ULTOSC",
+    "description": "Ultimate Oscillator. Combines short, medium, and long-term price momentum."
+  },
+  {
+    "name": "DX",
+    "description": "Directional Movement Index (DX). Measures strength of price movement direction."
+  },
+  {
+    "name": "MINUS_DI",
+    "description": "Minus Directional Indicator (-DI). Measures downward price movement."
+  },
+  {
+    "name": "PLUS_DI",
+    "description": "Plus Directional Indicator (+DI). Measures upward price movement."
+  },
+  {
+    "name": "MINUS_DM",
+    "description": "Minus Directional Movement (-DM). Raw downward price movement."
+  },
+  {
+    "name": "PLUS_DM",
+    "description": "Plus Directional Movement (+DM). Raw upward price movement."
+  },
+  {
+    "name": "BBANDS",
+    "description": "Bollinger Bands (BBANDS). Volatility bands placed above and below a moving average. Useful for identifying overbought/oversold conditions."
+  },
+  {
+    "name": "MIDPOINT",
+    "description": "Midpoint value over a period. Average of highest and lowest prices."
+  },
+  {
+    "name": "MIDPRICE",
+    "description": "Midpoint Price over a period. Average of high and low prices."
+  },
+  {
+    "name": "SAR",
+    "description": "Parabolic SAR (Stop and Reverse). Trailing stop-loss indicator for trend following."
+  },
+  {
+    "name": "TRANGE",
+    "description": "True Range. Measures volatility as the greatest of current high-low, abs(high-prev close), abs(low-prev close)."
+  },
+  {
+    "name": "ATR",
+    "description": "Average True Range (ATR). Volatility indicator showing average price range over a period."
+  },
+  {
+    "name": "NATR",
+    "description": "Normalized Average True Range (NATR). ATR as a percentage of closing price."
+  },
+  {
+    "name": "AD",
+    "description": "Chaikin A/D Line. Volume-based indicator measuring cumulative money flow."
+  },
+  {
+    "name": "ADOSC",
+    "description": "Chaikin A/D Oscillator. Difference between fast and slow Chaikin A/D Line EMAs."
+  },
+  {
+    "name": "OBV",
+    "description": "On Balance Volume (OBV). Cumulative volume indicator that relates volume to price change direction."
+  },
+  {
+    "name": "HT_TRENDLINE",
+    "description": "Hilbert Transform - Instantaneous Trendline. Extracts the dominant cycle from price data."
+  },
+  {
+    "name": "HT_SINE",
+    "description": "Hilbert Transform - SineWave. Identifies market cycles and turning points."
+  },
+  {
+    "name": "HT_TRENDMODE",
+    "description": "Hilbert Transform - Trend vs Cycle Mode. Binary indicator of whether market is trending or cycling."
+  },
+  {
+    "name": "HT_DCPERIOD",
+    "description": "Hilbert Transform - Dominant Cycle Period. Period of the dominant price cycle."
+  },
+  {
+    "name": "HT_DCPHASE",
+    "description": "Hilbert Transform - Dominant Cycle Phase. Phase of the dominant price cycle."
+  },
+  {
+    "name": "HT_PHASOR",
+    "description": "Hilbert Transform - Phasor Components. In-phase and quadrature components of price cycle."
+  },
+  {
+    "name": "OVERVIEW",
+    "description": "Company overview including market cap, PE ratio, EPS, dividend yield, 52-week range, sector, industry, and description."
+  },
+  {
+    "name": "INCOME_STATEMENT",
+    "description": "Annual and quarterly income statements. Revenue, gross profit, operating income, net income, EBITDA."
+  },
+  {
+    "name": "BALANCE_SHEET",
+    "description": "Annual and quarterly balance sheets. Total assets, liabilities, equity, cash, debt."
+  },
+  {
+    "name": "CASH_FLOW",
+    "description": "Annual and quarterly cash flow statements. Operating, investing, and financing cash flows."
+  },
+  {
+    "name": "EARNINGS",
+    "description": "Annual and quarterly earnings data including EPS, estimated EPS, surprise, and surprise percentage."
+  },
+  {
+    "name": "LISTING_STATUS",
+    "description": "List of active and delisted stocks, ETFs, and mutual funds with IPO dates and exchange info."
+  },
+  {
+    "name": "EARNINGS_CALENDAR",
+    "description": "Upcoming earnings announcements for the next 3 months with estimated EPS."
+  },
+  {
+    "name": "IPO_CALENDAR",
+    "description": "Upcoming and recent IPOs with pricing, share count, and exchange information."
+  },
+  {
+    "name": "INSIDER_TRANSACTIONS",
+    "description": "Insider trading transactions including buys, sells, and option exercises by company officers."
+  },
+  {
+    "name": "CURRENCY_EXCHANGE_RATE",
+    "description": "Real-time exchange rate for a currency pair (e.g. USD/EUR, GBP/JPY)."
+  },
+  {
+    "name": "FX_INTRADAY",
+    "description": "Intraday forex time series data for a currency pair at 1, 5, 15, 30, or 60 minute intervals."
+  },
+  {
+    "name": "FX_DAILY",
+    "description": "Daily forex time series data for a currency pair."
+  },
+  {
+    "name": "FX_WEEKLY",
+    "description": "Weekly forex time series data for a currency pair."
+  },
+  {
+    "name": "FX_MONTHLY",
+    "description": "Monthly forex time series data for a currency pair."
+  },
+  {
+    "name": "CRYPTO_EXCHANGE_RATE",
+    "description": "Real-time exchange rate for a cryptocurrency pair (e.g. BTC/USD, ETH/EUR)."
+  },
+  {
+    "name": "DIGITAL_CURRENCY_DAILY",
+    "description": "Daily cryptocurrency time series data in both crypto and fiat currency."
+  },
+  {
+    "name": "DIGITAL_CURRENCY_WEEKLY",
+    "description": "Weekly cryptocurrency time series data."
+  },
+  {
+    "name": "DIGITAL_CURRENCY_MONTHLY",
+    "description": "Monthly cryptocurrency time series data."
+  },
+  {
+    "name": "WTI",
+    "description": "West Texas Intermediate (WTI) crude oil prices. Daily, weekly, or monthly intervals."
+  },
+  {
+    "name": "BRENT",
+    "description": "Brent crude oil prices. Daily, weekly, or monthly intervals."
+  },
+  {
+    "name": "NATURAL_GAS",
+    "description": "Henry Hub natural gas spot prices."
+  },
+  {
+    "name": "COPPER",
+    "description": "Global copper prices per metric ton."
+  },
+  {
+    "name": "ALUMINUM",
+    "description": "Global aluminum prices per metric ton."
+  },
+  {
+    "name": "WHEAT",
+    "description": "Global wheat prices per metric ton."
+  },
+  {
+    "name": "CORN",
+    "description": "Global corn prices per metric ton."
+  },
+  {
+    "name": "COTTON",
+    "description": "Global cotton prices."
+  },
+  {
+    "name": "SUGAR",
+    "description": "Global sugar prices."
+  },
+  {
+    "name": "COFFEE",
+    "description": "Global coffee prices."
+  },
+  {
+    "name": "ALL_COMMODITIES",
+    "description": "Global commodity price index across all major categories."
+  },
+  {
+    "name": "REAL_GDP",
+    "description": "US Real Gross Domestic Product (GDP). Quarterly or annual data."
+  },
+  {
+    "name": "REAL_GDP_PER_CAPITA",
+    "description": "US Real GDP per capita. Annual data."
+  },
+  {
+    "name": "TREASURY_YIELD",
+    "description": "US Treasury bond yields for 2yr, 5yr, 7yr, 10yr, and 30yr maturities."
+  },
+  {
+    "name": "FEDERAL_FUNDS_RATE",
+    "description": "Federal Funds effective interest rate set by the Federal Reserve."
+  },
+  {
+    "name": "CPI",
+    "description": "Consumer Price Index (CPI). Key inflation indicator measuring change in consumer prices."
+  },
+  {
+    "name": "INFLATION",
+    "description": "Annual inflation rate derived from CPI data."
+  },
+  {
+    "name": "RETAIL_SALES",
+    "description": "US monthly retail sales data. Key economic indicator of consumer spending."
+  },
+  {
+    "name": "DURABLES",
+    "description": "US durable goods orders. Leading indicator of manufacturing activity."
+  },
+  {
+    "name": "UNEMPLOYMENT",
+    "description": "US unemployment rate. Monthly labor market indicator."
+  },
+  {
+    "name": "NONFARM_PAYROLL",
+    "description": "US nonfarm payroll employment data. Key monthly jobs report."
+  },
+  {
+    "name": "NEWS_SENTIMENT",
+    "description": "Market news and sentiment data for stocks, topics, and sectors. AI-powered sentiment scoring."
+  },
+  {
+    "name": "TOP_GAINERS_LOSERS",
+    "description": "Top gaining, losing, and most actively traded stocks in the US market today."
+  },
+  {
+    "name": "MARKET_STATUS",
+    "description": "Current trading status of major global stock exchanges."
+  },
+  {
+    "name": "REALTIME_OPTIONS",
+    "description": "Real-time and historical options chain data for a stock. Includes calls, puts, Greeks, IV."
+  },
+  {
+    "name": "FIXED_INCOME_TREASURY",
+    "description": "US Treasury rates across multiple maturities. Daily or weekly yield curve data."
+  },
+  {
+    "name": "FIXED_INCOME_CORPORATE",
+    "description": "Corporate bond yields by credit rating (AAA, AA, A, BBB). Investment grade and high yield spreads."
+  }
+]

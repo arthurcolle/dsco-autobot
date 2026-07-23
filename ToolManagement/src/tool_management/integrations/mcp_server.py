@@ -23,6 +23,51 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+def _get_tool_store():
+    """Lazy import to avoid circular dependency."""
+    from tool_management.persistence import get_tool_store
+    return get_tool_store()
+
+
+def _get_advanced_index():
+    """Lazy import to avoid circular dependency."""
+    from tool_management.embeddings.advanced_tool_index import get_advanced_index
+    return get_advanced_index()
+
+
+_reindex_scheduled = False
+
+
+def _maybe_schedule_reindex() -> bool:
+    """
+    Kick off a one-shot background rebuild of the semantic tool index.
+
+    Deployments run with ENABLE_BG_TASKS=0, so the index is never built at
+    startup; the first search that finds it empty triggers the build instead.
+    Returns True if a rebuild was scheduled (now or earlier this process).
+    """
+    global _reindex_scheduled
+    if _reindex_scheduled:
+        return True
+    _reindex_scheduled = True
+
+    async def _run():
+        try:
+            from tool_management.api.advanced_search_routes import reindex_all
+            result = await reindex_all()
+            logger.info(f"Lazy semantic reindex complete: {result}")
+        except Exception as e:
+            logger.warning(f"Lazy semantic reindex failed: {e}")
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+        return True
+    except RuntimeError:
+        _reindex_scheduled = False
+        return False
+
+
 # Output guard for enforcing size limits and URL capture
 try:
     from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
@@ -35,28 +80,72 @@ except ImportError:
 # In Modal, we use the public URL; locally, we use localhost
 _default_url = "https://tools.distributed.systems" if os.getenv("MODAL_ENVIRONMENT") or os.getenv("DATA_DIR") == "/data" else "http://localhost:2016"
 API_BASE_URL = os.getenv("API_BASE_URL", _default_url)
+INTERNAL_API_BEARER_TOKEN = os.getenv("INTERNAL_API_BEARER_TOKEN") or os.getenv("DEFAULT_BEARER_TOKEN", "")
 
 # Shared HTTP client for connection pooling
 _http_client: Optional[httpx.AsyncClient] = None
+_http_client_lock = asyncio.Lock()
+
+# In-process ASGI client — bypasses network + auth for internal loopback calls
+_asgi_client: Optional[httpx.AsyncClient] = None
+_asgi_client_lock = asyncio.Lock()
 
 
-def get_http_client() -> httpx.AsyncClient:
-    """Get or create shared HTTP client with connection pooling."""
+async def get_http_client() -> httpx.AsyncClient:
+    """
+    Get shared HTTP client that routes internal API calls through ASGI transport
+    (in-process, no network, no auth required) and external calls through normal HTTP.
+
+    This eliminates the self-referencing loopback timeout problem on Modal where the
+    MCP server's meta-tools call back to its own FastAPI endpoints.
+    """
+    global _asgi_client
+    async with _asgi_client_lock:
+        if _asgi_client is None or _asgi_client.is_closed:
+            try:
+                from tool_management.app import app as _app
+                transport = httpx.ASGITransport(app=_app)
+                asgi_headers = {"User-Agent": "tool-management-mcp/1.0-asgi"}
+                if INTERNAL_API_BEARER_TOKEN:
+                    asgi_headers["Authorization"] = f"Bearer {INTERNAL_API_BEARER_TOKEN}"
+                _asgi_client = httpx.AsyncClient(
+                    transport=transport,
+                    base_url=API_BASE_URL,
+                    timeout=httpx.Timeout(120.0, connect=15.0),
+                    headers=asgi_headers,
+                )
+                logger.info("Using ASGI transport for internal API calls (zero-latency loopback)")
+            except Exception as e:
+                logger.warning(f"ASGI transport unavailable ({e}), falling back to HTTP client")
+                return await _get_external_http_client()
+        return _asgi_client
+
+
+async def _get_external_http_client() -> httpx.AsyncClient:
+    """Fallback: external HTTP client with auth headers for when ASGI is unavailable."""
     global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(None, connect=15.0),  # No read/write timeout
-            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
-        )
-    return _http_client
+    async with _http_client_lock:
+        if _http_client is None or _http_client.is_closed:
+            default_headers = {"User-Agent": "tool-management-mcp/1.0"}
+            if INTERNAL_API_BEARER_TOKEN:
+                default_headers["Authorization"] = f"Bearer {INTERNAL_API_BEARER_TOKEN}"
+            _http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=15.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+                headers=default_headers,
+            )
+        return _http_client
 
 
 async def close_http_client():
-    """Close the shared HTTP client."""
-    global _http_client
+    """Close the shared HTTP clients."""
+    global _http_client, _asgi_client
     if _http_client and not _http_client.is_closed:
         await _http_client.aclose()
         _http_client = None
+    if _asgi_client and not _asgi_client.is_closed:
+        await _asgi_client.aclose()
+        _asgi_client = None
 
 # MCP Protocol Constants
 LATEST_PROTOCOL_VERSION = "2024-11-05"
@@ -1046,7 +1135,7 @@ class MCPServer:
         if cursor:
             try:
                 start = int(cursor)
-            except:
+            except (ValueError, TypeError):
                 start = 0
 
         end = min(start + page_size, len(meta_tools))
@@ -1069,113 +1158,92 @@ class MCPServer:
 
         # Route meta-tools to appropriate endpoints
         if tool_name == "search_tools":
-            # Semantic search via multi-faceted embeddings (Jina v3)
+            # Semantic search — direct in-process call (no HTTP loopback)
             try:
-                client = get_http_client()
                 query = tool_args.get("query", "")
                 limit = tool_args.get("limit", 10)
                 min_score = tool_args.get("min_score", 0.3)
-                response = await client.post(
-                    f"{API_BASE_URL}/api/v1/discover/search",
-                    json={"query": query, "limit": limit},
-                    timeout=15.0
-                )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    tools = data.get("results", [])
-                    # Filter by min_score
-                    if min_score and min_score > 0:
-                        tools = [t for t in tools if t.get("score", 0) >= min_score]
-
-                    # Enrich with compact signatures via batch-get
-                    tool_names = [t.get("name") for t in tools if t.get("name")]
-                    if tool_names:
-                        try:
-                            sig_resp = await client.post(
-                                f"{API_BASE_URL}/api/v1/tools/batch-get",
-                                json={"names": tool_names, "compact": True},
-                                timeout=10.0
-                            )
-                            if sig_resp.status_code == 200:
-                                sig_data = sig_resp.json()
-                                sig_map = {s["name"]: s.get("signature", "") for s in sig_data.get("tools", [])}
-                                for t in tools:
-                                    t["signature"] = sig_map.get(t.get("name"), "")
-                        except Exception:
-                            pass  # signatures are optional enrichment
-
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "tools": tools,
-                                    "count": len(tools),
-                                    "query": query,
-                                    "search_type": "semantic_embedding",
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    # Fallback: keyword search against DuckDB tools list (paginated)
-                    fallback = await client.get(
-                        f"{API_BASE_URL}/api/v1/tools/",
-                        params={"limit": 500, "offset": 0},
-                        timeout=10.0
+                # Try advanced index first (in-process, no HTTP)
+                tools = []
+                search_type = "semantic_embedding"
+                semantic_error = None
+                index = None
+                try:
+                    index = _get_advanced_index()
+                    tools = await index.search(
+                        query=query,
+                        limit=limit,
+                        backend_filter=None,
+                        intent_weight=0.3,
+                        usage_weight=0.2,
                     )
-                    if fallback.status_code == 200:
-                        fb_data = fallback.json()
-                        all_tools = fb_data.get("tools", [])
-                        if query:
-                            q = query.lower()
-                            words = q.split()
-                            scored = []
-                            for t in all_tools:
-                                text = f"{t.get('name','')} {t.get('description','')}".lower()
-                                score = sum(1 for w in words if w in text)
-                                if score > 0:
-                                    scored.append({**t, "score": round(score / len(words), 2)})
-                            scored.sort(key=lambda x: x["score"], reverse=True)
-                            all_tools = scored[:limit]
-                        else:
-                            all_tools = all_tools[:limit]
-                        return {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json_module.dumps({
-                                        "tools": all_tools,
-                                        "count": len(all_tools),
-                                        "total": fb_data.get("total", len(all_tools)),
-                                        "query": query,
-                                        "search_type": "keyword_fallback",
-                                    }, indent=2)
-                                }
-                            ],
-                            "isError": False
+                except Exception as idx_err:
+                    semantic_error = str(idx_err) or repr(idx_err)
+                    logger.warning(f"Advanced index search failed, falling back to keyword: {idx_err}")
+
+                # Empty index (bg tasks disabled in deploy) — build it lazily
+                if not tools and semantic_error is None and index is not None:
+                    try:
+                        stats = await index.get_stats()
+                        if not stats.get("total_tools"):
+                            if _maybe_schedule_reindex():
+                                semantic_error = "index empty — background rebuild scheduled"
+                    except Exception:
+                        pass
+
+                # Fallback: keyword search against DuckDB
+                if not tools:
+                    search_type = "keyword_fallback"
+                    try:
+                        store = _get_tool_store()
+                        rows, total = store.query_tools(search=query, limit=limit * 3, offset=0)
+                        if not rows and len(query.split()) > 1:
+                            # ALL-words matched nothing; retry matching ANY word
+                            rows, total = store.query_tools(
+                                search=query, limit=limit * 3, offset=0, match_any=True
+                            )
+                        q = query.lower()
+                        words = q.split()
+                        scored = []
+                        for t in rows:
+                            text = f"{t.get('name','')} {t.get('description','')}".lower()
+                            score = sum(1 for w in words if w in text)
+                            if score > 0:
+                                scored.append({**t, "score": round(score / len(words), 2)})
+                        scored.sort(key=lambda x: x["score"], reverse=True)
+                        tools = scored[:limit]
+                    except Exception as kw_err:
+                        logger.warning(f"Keyword fallback also failed: {kw_err}")
+
+                # Filter by min_score
+                if min_score and min_score > 0:
+                    tools = [t for t in tools if t.get("score", 0) >= min_score]
+
+                payload = {
+                    "tools": tools,
+                    "count": len(tools),
+                    "query": query,
+                    "search_type": search_type,
+                }
+                if semantic_error:
+                    payload["semantic_unavailable_reason"] = semantic_error
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(payload, indent=2, default=str)
                         }
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"Tool search failed with status {response.status_code}",
-                                    "details": response.text[:200]
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"search_tools failed: {str(e)}"
+                                "error": f"search_tools failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1183,41 +1251,58 @@ class MCPServer:
                 }
 
         elif tool_name == "get_tool":
-            # Get specific tool details from DuckDB store via direct lookup
+            # Get specific tool details — direct DuckDB call (no HTTP loopback)
             try:
                 target_name = tool_args.get("name") or tool_args.get("tool_name")
-                client = get_http_client()
+                store = _get_tool_store()
+                tool_data = store.get_tool_by_name(target_name)
 
-                # Fetch full tool data
-                response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/{target_name}",
-                    timeout=10.0
-                )
-
-                if response.status_code == 200:
-                    tool_data = response.json()
-                    # Enrich with compact signature
-                    try:
-                        schema_resp = await client.get(
-                            f"{API_BASE_URL}/api/v1/tools/schema/{target_name}",
-                            timeout=5.0
-                        )
-                        if schema_resp.status_code == 200:
-                            schema_data = schema_resp.json()
-                            tool_data["signature"] = schema_data.get("signature")
-                            tool_data["parameters_summary"] = schema_data.get("parameters")
-                    except Exception:
-                        pass  # signature is optional enrichment
+                if tool_data:
+                    result = {
+                        "tool_id": tool_data.tool_id,
+                        "name": tool_data.name,
+                        "backend_id": tool_data.backend_id,
+                        "backend_url": tool_data.backend_url,
+                        "description": tool_data.description,
+                        "input_schema": tool_data.input_schema,
+                        "output_schema": tool_data.output_schema,
+                        "tags": tool_data.tags,
+                        "category": tool_data.category,
+                        "signature": f"{tool_data.name}({', '.join((tool_data.input_schema or {}).get('required', []))})",
+                    }
                     return {
                         "content": [
                             {
                                 "type": "text",
-                                "text": json_module.dumps(tool_data, indent=2)
+                                "text": json_module.dumps(result, indent=2)
                             }
                         ],
                         "isError": False
                     }
                 else:
+                    # Try lookup by tool_id pattern (backend:name)
+                    tool_data = store.get_tool(target_name)
+                    if tool_data:
+                        result = {
+                            "tool_id": tool_data.tool_id,
+                            "name": tool_data.name,
+                            "backend_id": tool_data.backend_id,
+                            "backend_url": tool_data.backend_url,
+                            "description": tool_data.description,
+                            "input_schema": tool_data.input_schema,
+                            "output_schema": tool_data.output_schema,
+                            "tags": tool_data.tags,
+                            "category": tool_data.category,
+                        }
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json_module.dumps(result, indent=2)
+                                }
+                            ],
+                            "isError": False
+                        }
                     return {
                         "content": [
                             {
@@ -1236,7 +1321,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"get_tool failed: {str(e)}"
+                                "error": f"get_tool failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1270,7 +1355,7 @@ class MCPServer:
                 if stream_requested or execution_mode == "stream":
                     effective_mode = "job"
 
-                client = get_http_client()
+                client = await get_http_client()
                 exec_response = await client.post(
                     f"{API_BASE_URL}/api/v1/execute",
                     json={
@@ -1363,7 +1448,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"execute_tool failed: {str(e)}"
+                                "error": f"execute_tool failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1373,7 +1458,7 @@ class MCPServer:
         elif tool_name == "batch_execute":
             # Execute multiple tools in one request; results are returned in input order.
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.post(
                     f"{API_BASE_URL}/api/v1/execute/batch",
                     json={
@@ -1426,7 +1511,7 @@ class MCPServer:
                             "text": json_module.dumps({
                                 "error": {
                                     "code": "BATCH_EXECUTE_FAILED",
-                                    "message": f"batch_execute failed: {str(e)}",
+                                    "message": f"batch_execute failed: {str(e) or repr(e)}",
                                     "category": "transient",
                                     "retryable": True,
                                 }
@@ -1439,7 +1524,7 @@ class MCPServer:
         elif tool_name == "compose_workflow":
             # Execute workflow composition — no timeout
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.post(
                     f"{API_BASE_URL}/api/v1/compose/compose-simple",
                     json={
@@ -1481,7 +1566,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"compose_workflow failed: {str(e)}"
+                                "error": f"compose_workflow failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1489,59 +1574,40 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tool_categories":
-            # List backends and their tools from DuckDB store
+            # List backends and their tools — direct DuckDB call (no HTTP loopback)
             try:
-                client = get_http_client()
-                response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/backends",
-                    timeout=10.0
-                )
-
-                if response.status_code == 200:
-                    backends = response.json()
-                    categories = {}
-                    for b in backends:
-                        bid = b.get("backend_id", "unknown")
-                        categories[bid] = {
-                            "name": b.get("name"),
-                            "tool_count": b.get("tool_count", 0),
-                            "healthy": b.get("is_healthy", False),
-                            "url": b.get("url"),
+                store = _get_tool_store()
+                backends = store.list_backends()
+                categories = {}
+                for b in backends:
+                    bid = b.get("backend_id", "unknown")
+                    categories[bid] = {
+                        "name": b.get("name"),
+                        "tool_count": b.get("tool_count", 0),
+                        "healthy": b.get("is_healthy", False),
+                        "url": b.get("url"),
+                    }
+                result = {
+                    "backends": categories,
+                    "total_backends": len(backends),
+                    "total_tools": sum(b.get("tool_count", 0) for b in backends),
+                }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(result, indent=2)
                         }
-                    result = {
-                        "backends": categories,
-                        "total_backends": len(backends),
-                        "total_tools": sum(b.get("tool_count", 0) for b in backends),
-                    }
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(result, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"Failed to list categories with status {response.status_code}",
-                                    "details": response.text
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"list_tool_categories failed: {str(e)}"
+                                "error": f"list_tool_categories failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1549,12 +1615,12 @@ class MCPServer:
                 }
 
         elif tool_name == "get_registry_stats":
-            # Get registry statistics from DuckDB store
+            # Get registry statistics via ASGI transport (avoids DuckDB handle conflicts)
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/tools/stats/overview",
-                    timeout=5.0
+                    timeout=15.0
                 )
 
                 if response.status_code == 200:
@@ -1575,7 +1641,7 @@ class MCPServer:
                                 "type": "text",
                                 "text": json_module.dumps({
                                     "error": f"Failed to get stats with status {response.status_code}",
-                                    "details": response.text
+                                    "details": response.text[:200]
                                 }, indent=2)
                             }
                         ],
@@ -1587,7 +1653,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"get_registry_stats failed: {str(e)}"
+                                "error": f"get_registry_stats failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1595,54 +1661,42 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tools_paginated":
-            # List tools with pagination from DuckDB store
+            # List tools with pagination — direct DuckDB call (no HTTP loopback)
             try:
-                client = get_http_client()
+                store = _get_tool_store()
                 offset = tool_args.get("offset", 0)
                 limit = tool_args.get("limit", 20)
                 category = tool_args.get("category")
 
-                params = {"limit": limit, "offset": offset}
-                if category:
-                    params["category"] = category
-
-                response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/",
-                    params=params,
-                    timeout=10.0
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(result, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"Failed to list tools with status {response.status_code}",
-                                    "details": response.text
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                tools = store.list_tools(category=category, limit=limit, offset=offset)
+                total = store.count_tools(category=category)
+                result = {
+                    "tools": [
+                        {"tool_id": t.tool_id, "name": t.name, "backend": t.backend_id, "description": t.description}
+                        for t in tools
+                    ],
+                    "count": len(tools),
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
+                    "has_more": offset + len(tools) < total,
+                }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(result, indent=2)
+                        }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"list_tools_paginated failed: {str(e)}"
+                                "error": f"list_tools_paginated failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1650,63 +1704,40 @@ class MCPServer:
                 }
 
         elif tool_name == "list_tool_names":
-            # Get lightweight list of tool names from DuckDB store
+            # Get lightweight list of tool names — direct DuckDB call (no HTTP loopback)
             try:
-                client = get_http_client()
-                params = {"limit": 500, "offset": 0}
-                if tool_args.get("category"):
-                    params["category"] = tool_args["category"]
+                store = _get_tool_store()
+                category = tool_args.get("category")
+                tools = store.list_tools(category=category, limit=500, offset=0)
+                total = store.count_tools(category=category)
 
-                response = await client.get(
-                    f"{API_BASE_URL}/api/v1/tools/",
-                    params=params,
-                    timeout=10.0
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    tools = data.get("tools", [])
-                    total = data.get("total", len(tools))
-                    # Group by backend
-                    by_backend = {}
-                    for t in tools:
-                        bid = t.get("backend", "unknown")
-                        by_backend.setdefault(bid, []).append(t.get("name"))
-                    result = {
-                        "tool_names": [t.get("name") for t in tools],
-                        "count": len(tools),
-                        "total": total,
-                        "by_backend": by_backend,
-                    }
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(result, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"Failed to list tool names with status {response.status_code}",
-                                    "details": response.text
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                # Group by backend
+                by_backend = {}
+                for t in tools:
+                    bid = t.backend_id or "unknown"
+                    by_backend.setdefault(bid, []).append(t.name)
+                result = {
+                    "tool_names": [t.name for t in tools],
+                    "count": len(tools),
+                    "total": total,
+                    "by_backend": by_backend,
+                }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(result, indent=2)
+                        }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"list_tool_names failed: {str(e)}"
+                                "error": f"list_tool_names failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1714,48 +1745,57 @@ class MCPServer:
                 }
 
         elif tool_name == "batch_get_tools":
-            # Fetch multiple tools by name in one call
+            # Fetch multiple tools by name — direct DuckDB call (no HTTP loopback)
             try:
-                client = get_http_client()
+                store = _get_tool_store()
                 names = tool_args.get("names", [])
                 compact = tool_args.get("compact", True)
-                response = await client.post(
-                    f"{API_BASE_URL}/api/v1/tools/batch-get",
-                    json={"names": names, "compact": compact},
-                    timeout=15.0
-                )
 
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(result, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"batch_get_tools failed with status {response.status_code}",
-                                    "details": response.text[:200]
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                found_tools = []
+                for name in names:
+                    tool_data = store.get_tool_by_name(name)
+                    if tool_data:
+                        if compact:
+                            found_tools.append({
+                                "name": tool_data.name,
+                                "backend_id": tool_data.backend_id,
+                                "description": (tool_data.description or "")[:200],
+                                "signature": f"{tool_data.name}({', '.join((tool_data.input_schema or {}).get('required', []))})",
+                            })
+                        else:
+                            found_tools.append({
+                                "tool_id": tool_data.tool_id,
+                                "name": tool_data.name,
+                                "backend_id": tool_data.backend_id,
+                                "description": tool_data.description,
+                                "input_schema": tool_data.input_schema,
+                                "output_schema": tool_data.output_schema,
+                                "tags": tool_data.tags,
+                                "category": tool_data.category,
+                            })
+
+                result = {
+                    "tools": found_tools,
+                    "count": len(found_tools),
+                    "requested": len(names),
+                    "compact": compact,
+                }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(result, indent=2)
+                        }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"batch_get_tools failed: {str(e)}"
+                                "error": f"batch_get_tools failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1763,54 +1803,58 @@ class MCPServer:
                 }
 
         elif tool_name == "query_tools":
-            # Advanced query with text search, sorting, tag filtering
+            # Advanced query — direct DuckDB call (no HTTP loopback)
             try:
-                client = get_http_client()
-                params = {}
+                import asyncio as _asyncio
+                store = _get_tool_store()
+                kwargs = {}
                 for key in ("search", "backend_id", "category", "tags", "sort_by", "sort_order"):
                     if tool_args.get(key):
-                        params[key] = tool_args[key]
-                params["limit"] = tool_args.get("limit", 20)
-                params["offset"] = tool_args.get("offset", 0)
-                params["compact"] = True  # Always compact for MCP to save context
+                        kwargs[key] = tool_args[key]
+                kwargs["limit"] = tool_args.get("limit", 20)
+                kwargs["offset"] = tool_args.get("offset", 0)
 
-                response = await client.post(
-                    f"{API_BASE_URL}/api/v1/tools/query",
-                    params=params,
-                    timeout=15.0
-                )
+                rows, total = await _asyncio.to_thread(store.query_tools, **kwargs)
 
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps(result, indent=2)
-                            }
-                        ],
-                        "isError": False
-                    }
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json_module.dumps({
-                                    "error": f"query_tools failed with status {response.status_code}",
-                                    "details": response.text[:200]
-                                }, indent=2)
-                            }
-                        ],
-                        "isError": True
-                    }
+                # Compact format for MCP context savings
+                compact_tools = []
+                for row in rows:
+                    compact_tools.append({
+                        "tool_id": row.get("tool_id"),
+                        "name": row.get("name"),
+                        "backend_id": row.get("backend_id"),
+                        "description": row.get("description", "")[:200],
+                        "category": row.get("category"),
+                        "tags": row.get("tags", []),
+                        "call_count": row.get("call_count", 0),
+                    })
+
+                result = {
+                    "tools": compact_tools,
+                    "count": len(compact_tools),
+                    "total": total,
+                    "offset": kwargs["offset"],
+                    "limit": kwargs["limit"],
+                    "has_more": kwargs["offset"] + len(compact_tools) < total,
+                    "compact": True,
+                }
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(result, indent=2)
+                        }
+                    ],
+                    "isError": False
+                }
             except Exception as e:
+                err = str(e) or repr(e)
                 return {
                     "content": [
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"query_tools failed: {str(e)}"
+                                "error": f"query_tools failed: {err}"
                             }, indent=2)
                         }
                     ],
@@ -1820,7 +1864,7 @@ class MCPServer:
         elif tool_name == "submit_job":
             # Submit a long-running tool as a background job
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 target_tool = tool_args.get("tool_name") or tool_args.get("tool")
                 arguments = tool_args.get("arguments", {})
                 timeout = tool_args.get("timeout", 300)
@@ -1869,7 +1913,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"submit_job failed: {str(e)}"
+                                "error": f"submit_job failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1879,7 +1923,7 @@ class MCPServer:
         elif tool_name == "get_job_status":
             # Poll the status of a submitted job
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 job_id = tool_args.get("job_id")
                 if not job_id:
                     return {
@@ -1930,7 +1974,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"get_job_status failed: {str(e)}"
+                                "error": f"get_job_status failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1940,7 +1984,7 @@ class MCPServer:
         elif tool_name == "cancel_job":
             # Cancel a running job
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 job_id = tool_args.get("job_id")
                 if not job_id:
                     return {
@@ -1981,7 +2025,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"cancel_job failed: {str(e)}"
+                                "error": f"cancel_job failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -1991,7 +2035,7 @@ class MCPServer:
         elif tool_name == "get_usage_stats":
             # Durable execution analytics
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 hours = int(tool_args.get("hours", 24))
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/jobs/analytics",
@@ -2027,7 +2071,7 @@ class MCPServer:
                         {
                             "type": "text",
                             "text": json_module.dumps({
-                                "error": f"get_usage_stats failed: {str(e)}"
+                                "error": f"get_usage_stats failed: {str(e) or repr(e)}"
                             }, indent=2)
                         }
                     ],
@@ -2036,7 +2080,7 @@ class MCPServer:
 
         elif tool_name == "get_backend_health":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 hours = int(tool_args.get("hours", 24))
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/tools/stats/backends",
@@ -2058,14 +2102,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_backend_health failed: {str(e)}"
+                        "error": f"get_backend_health failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_analytics_overview":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/tools/analytics/overview",
                     params={
@@ -2090,14 +2134,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_analytics_overview failed: {str(e)}"
+                        "error": f"get_analytics_overview failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_tool_metrics":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 target_tool = tool_args.get("tool_name") or tool_args.get("tool")
                 if not target_tool:
                     return {
@@ -2125,14 +2169,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_tool_metrics failed: {str(e)}"
+                        "error": f"get_tool_metrics failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_tool_usage_timeseries":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 params = {
                     "hours": int(tool_args.get("hours", 24)),
                     "bucket_minutes": int(tool_args.get("bucket_minutes", 60)),
@@ -2160,14 +2204,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_tool_usage_timeseries failed: {str(e)}"
+                        "error": f"get_tool_usage_timeseries failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_tool_dependencies":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 params = {
                     "min_confidence": float(tool_args.get("min_confidence", 0.0)),
                     "limit": int(tool_args.get("limit", 200)),
@@ -2196,14 +2240,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_tool_dependencies failed: {str(e)}"
+                        "error": f"get_tool_dependencies failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "infer_tool_dependencies":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 persist_raw = tool_args.get("persist", True)
                 if isinstance(persist_raw, bool):
                     persist_flag = persist_raw
@@ -2234,14 +2278,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"infer_tool_dependencies failed: {str(e)}"
+                        "error": f"infer_tool_dependencies failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_execution_policy_decisions":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 params = {
                     "hours": int(tool_args.get("hours", 24)),
                     "limit": int(tool_args.get("limit", 200)),
@@ -2270,14 +2314,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_execution_policy_decisions failed: {str(e)}"
+                        "error": f"get_execution_policy_decisions failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_execution_policy_analytics":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/policy-decisions/analytics",
                     params={
@@ -2301,14 +2345,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_execution_policy_analytics failed: {str(e)}"
+                        "error": f"get_execution_policy_analytics failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "generate_execution_follow_ups":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 payload = {
                     "hours": int(tool_args.get("hours", 24)),
                     "limit": int(tool_args.get("limit", 50)),
@@ -2343,14 +2387,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"generate_execution_follow_ups failed: {str(e)}"
+                        "error": f"generate_execution_follow_ups failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "list_execution_follow_ups":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 params = {"limit": int(tool_args.get("limit", 200))}
                 for key in ("status", "priority", "action_type", "source_type", "trace_id", "session_id"):
                     value = tool_args.get(key)
@@ -2376,14 +2420,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"list_execution_follow_ups failed: {str(e)}"
+                        "error": f"list_execution_follow_ups failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_execution_follow_up_analytics":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/follow-ups/analytics",
                     params={
@@ -2407,7 +2451,7 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_execution_follow_up_analytics failed: {str(e)}"
+                        "error": f"get_execution_follow_up_analytics failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
@@ -2422,7 +2466,7 @@ class MCPServer:
                         }, indent=2)}],
                         "isError": True,
                     }
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.post(
                     f"{API_BASE_URL}/api/v1/follow-ups/{follow_up_id}/status",
                     json={
@@ -2446,14 +2490,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"update_execution_follow_up_status failed: {str(e)}"
+                        "error": f"update_execution_follow_up_status failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "recommend_tools":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 payload = {
                     "query": tool_args.get("query"),
                     "intent": tool_args.get("intent"),
@@ -2487,14 +2531,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"recommend_tools failed: {str(e)}"
+                        "error": f"recommend_tools failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "record_recommendation_feedback":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 payload = {
                     "recommendation_id": tool_args.get("recommendation_id"),
                     "context": tool_args.get("context", {}),
@@ -2528,14 +2572,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"record_recommendation_feedback failed: {str(e)}"
+                        "error": f"record_recommendation_feedback failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "get_recommendation_feedback_analytics":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.get(
                     f"{API_BASE_URL}/api/v1/tools/recommendations/analytics",
                     params={
@@ -2559,7 +2603,7 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"get_recommendation_feedback_analytics failed: {str(e)}"
+                        "error": f"get_recommendation_feedback_analytics failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
@@ -2572,7 +2616,7 @@ class MCPServer:
                         "content": [{"type": "text", "text": json_module.dumps({"error": "execution_id is required"})}],
                         "isError": True,
                     }
-                client = get_http_client()
+                client = await get_http_client()
                 response = await client.post(
                     f"{API_BASE_URL}/api/v1/compose/executions/{execution_id}/gates",
                     json={
@@ -2603,14 +2647,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"record_workflow_gate_decision failed: {str(e)}"
+                        "error": f"record_workflow_gate_decision failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "list_workflow_gate_decisions":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 execution_id = tool_args.get("execution_id")
                 trace_id = tool_args.get("trace_id")
                 limit = int(tool_args.get("limit", 500))
@@ -2648,14 +2692,14 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"list_workflow_gate_decisions failed: {str(e)}"
+                        "error": f"list_workflow_gate_decisions failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }
 
         elif tool_name == "export_tool_catalog":
             try:
-                client = get_http_client()
+                client = await get_http_client()
                 limit = int(tool_args.get("limit", 500))
                 export_format = str(tool_args.get("format", "mcp")).strip().lower()
                 if export_format == "openapi":
@@ -2682,7 +2726,7 @@ class MCPServer:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": json_module.dumps({
-                        "error": f"export_tool_catalog failed: {str(e)}"
+                        "error": f"export_tool_catalog failed: {str(e) or repr(e)}"
                     }, indent=2)}],
                     "isError": True,
                 }

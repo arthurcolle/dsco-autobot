@@ -1,0 +1,21 @@
+{
+  "contract": {
+    "name": "ACX-DOT8-R1",
+    "lanes": 8,
+    "input": "signed int8 two's-complement",
+    "multiply": "exact signed int8 x signed int8",
+    "accumulator": "signed int32, no saturation required for eight products",
+    "latency_cycles": 1,
+    "throughput": "one accepted vector pair per cycle",
+    "rounding": "none",
+    "overflow": "impossible for the defined eight-lane operation"
+  },
+  "vectors": [
+    {"id": "ZERO", "a": [0, 0, 0, 0, 0, 0, 0, 0], "b": [0, 0, 0, 0, 0, 0, 0, 0], "expected": 0},
+    {"id": "RAMP", "a": [1, 2, 3, 4, 5, 6, 7, 8], "b": [1, 1, 1, 1, 1, 1, 1, 1], "expected": 36},
+    {"id": "SIGNED_CANCEL", "a": [-1, -2, -3, -4, 5, 6, 7, 8], "b": [8, 7, 6, 5, 4, 3, 2, 1], "expected": 0},
+    {"id": "POSITIVE_EXTREME", "a": [127, 127, 127, 127, 127, 127, 127, 127], "b": [127, 127, 127, 127, 127, 127, 127, 127], "expected": 129032},
+    {"id": "NEGATIVE_EXTREME", "a": [-128, -128, -128, -128, -128, -128, -128, -128], "b": [127, 127, 127, 127, 127, 127, 127, 127], "expected": -130048},
+    {"id": "MIXED", "a": [12, -7, 3, 99, -128, 127, 0, 4], "b": [2, 5, -9, -3, 1, -1, 44, 8], "expected": -558}
+  ]
+}

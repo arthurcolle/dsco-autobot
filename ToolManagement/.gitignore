@@ -177,4 +177,5 @@ htmlcov/
 
 # Documentation build
 docs/_build/
-docs/generated/
+docs/generated/# venvs accidentally created inside integrations
+integrations/distributed-search/jina-ai/

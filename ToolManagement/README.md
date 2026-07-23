@@ -65,13 +65,20 @@ Use `./do` for fast interaction with the deployed Tool Management API:
 ```bash
 ./do health
 ./do list
-./do "run a daily strategic market brief"
+./do run "daily strategic market brief" --use-case-first
+./do recommend "evaluate autonomous agent market shifts"
+./do use-cases "market intelligence" --domain finance --limit 10
 ./do plan "evaluate autonomous agent market shifts"
 ```
 
 Defaults:
 - API URL: `https://tools.distributed.systems`
-- Use case: `market_intel_compound_briefing`
+
+Advanced CLI options:
+- `--timeout <seconds>` default request timeout
+- `--retry <count>` retries transient failures (429/5xx/network)
+- `--verbose` request/retry diagnostics
+- `--raw` print unformatted response body
 
 ### API Documentation
 

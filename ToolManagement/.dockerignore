@@ -1,0 +1,32 @@
+# Virtualenvs
+.venv
+integrations/
+
+# Large runtime data (never bake into the image)
+video_data/
+document_data/
+video_chroma/
+data/*.duckdb
+data/*.duckdb.wal
+data/*.db
+jina_corpus.db
+
+# Python cruft
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS / dev-only trees
+.git
+old_code/
+evals/
+examples/
+swarm/
+tests/
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore

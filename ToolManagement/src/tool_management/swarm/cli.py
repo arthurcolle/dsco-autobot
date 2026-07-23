@@ -62,7 +62,7 @@ def fmt_decimal(val: Any) -> str:
         return "-"
     try:
         return f"{float(val):,.4f}"
-    except:
+    except (ValueError, TypeError):
         return str(val)
 
 

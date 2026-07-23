@@ -1,0 +1,395 @@
+# Parallel
+
+## Docs
+
+- [Extract](https://docs.parallel.ai/api-reference/extract-beta/extract.md): Extracts relevant content from specific web URLs.
+
+To access this endpoint, pass the `parallel-beta` header with the value
+`search-extract-2025-10-10`.
+- [Add Enrichment to FindAll Run](https://docs.parallel.ai/api-reference/findall-api-beta/add-enrichment-to-findall-run.md): Add an enrichment to a FindAll run.
+- [Cancel FindAll Run](https://docs.parallel.ai/api-reference/findall-api-beta/cancel-findall-run.md): Cancel a FindAll run.
+- [Create Findall Run](https://docs.parallel.ai/api-reference/findall-api-beta/create-findall-run.md): Starts a FindAll run.
+
+This endpoint immediately returns a FindAll run object with status set to 'queued'.
+You can get the run result snapshot using the GET /v1beta/findall/runs/{findall_id}/result endpoint.
+You can track the progress of the run by:
+- Polling the status using the GET /v1beta/findall/runs/{findall_id} endpoint,
+- Subscribing to real-time updates via the /v1beta/findall/runs/{findall_id}/events
+endpoint,
+- Or specifying a webhook with relevant event types during run creation to receive
+notifications.
+- [Extend FindAll Run](https://docs.parallel.ai/api-reference/findall-api-beta/extend-findall-run.md): Extend a FindAll run.
+- [FindAll Run Result](https://docs.parallel.ai/api-reference/findall-api-beta/findall-run-result.md): Retrieve the FindAll run result at the time of the request.
+- [Ingest Findall Run](https://docs.parallel.ai/api-reference/findall-api-beta/ingest-findall-run.md): Transforms a natural language search objective into a structured FindAll spec.
+
+Note: Access to this endpoint requires the parallel-beta header.
+
+The generated specification serves as a suggested starting point and can be further
+customized by the user.
+- [Retrieve Findall Run Status](https://docs.parallel.ai/api-reference/findall-api-beta/retrieve-findall-run-status.md): Retrieve a FindAll run.
+- [Stream FindAll Events](https://docs.parallel.ai/api-reference/findall-api-beta/stream-findall-events.md): Stream events from a FindAll run.
+
+Args:
+    request: The Shapi request
+    findall_id: The FindAll run ID
+    last_event_id: Optional event ID to resume from.
+    timeout: Optional timeout in seconds. If None, keep connection alive
+    as long as the run is going. If set, stop after specified duration.
+- [Create Monitor](https://docs.parallel.ai/api-reference/monitor/create-monitor.md): Create a web monitor.
+
+Creates a monitor that periodically runs the specified query over the web at the
+specified cadence (hourly, daily, or weekly). The monitor runs once at creation and
+then continues according to the specified frequency.
+
+Updates will be sent to the webhook if provided. Use the `executions` endpoint
+to retrieve execution history for a monitor.
+- [Delete Monitor](https://docs.parallel.ai/api-reference/monitor/delete-monitor.md): Delete a monitor.
+
+Deletes a monitor, stopping all future executions. Deleted monitors can no
+longer be updated or retrieved.
+- [List Monitors](https://docs.parallel.ai/api-reference/monitor/list-monitors.md): List active monitors.
+
+Returns all monitors for the user, regardless of status. Each list item
+contains the monitor configuration and current status.
+- [Retrieve Execution History](https://docs.parallel.ai/api-reference/monitor/retrieve-execution-history.md): Retrieve execution history for a monitor (up to 300 runs).
+
+Retrieves successful execution events from monitor runs, including events with
+material changes. The endpoint checks up to the specified lookback period or the
+previous 300 runs, whichever is less.
+
+Events will be returned in reverse chronological order, with the most recent runs
+first. If an execution has a material change, outputs will also be included.
+
+Args:
+    lookback_period: Lookback period to fetch events from.
+    Sample values: "10d", "1w". A minimum of 1 day is supported
+    and with one day increments. Use "d" for days, "w" for weeks.
+- [Retrieve Monitor](https://docs.parallel.ai/api-reference/monitor/retrieve-monitor.md): Retrieve a monitor.
+
+Retrieves a specific monitor by `monitor_id`. Returns the monitor
+configuration including status, cadence, input, and webhook settings.
+- [Update Monitor](https://docs.parallel.ai/api-reference/monitor/update-monitor.md): Update a monitor.
+
+At least one field must be non-null to apply an update.
+- [Retrieve Event Group](https://docs.parallel.ai/api-reference/monitor/retrieve-event-group.md): Retrieve all detected events for a given `event_group_id`.
+- [List Events](https://docs.parallel.ai/api-reference/monitor/list-events.md): List monitor events (material changes, completions, errors) across recent runs.
+
+## Monitor API Quickstart
+
+> Get started with the Monitor API
+
+The Monitor API lets you continuously track the web for material changes relevant to a query, on a schedule you control. Create a monitor with a natural-language query, choose a cadence (hourly, daily, weekly) and receive webhook notifications.
+
+<Note>
+  **Alpha Notice**: The Monitor API is currently in public alpha. Endpoints and request/response formats are subject to change. For production access, contact [support@parallel.ai](mailto:support@parallel.ai).
+</Note>
+
+### Features and Use Cases
+
+The Monitor API can be used to automate continuous research for any topic, including companies, products, or regulatory areas--without building complicated web monitoring infrastructure. Define a query once along with the desired schedule, and the service will detect relevant changes and deliver concise updates (with source links) to your systems via webhooks.
+
+* **News tracking**: Alert when there is notable news about a company or product of interest.
+* **Competitive monitoring**: Detect when competitors launch new features or pricing changes.
+* **Regulatory updates**: Track new rules or guidance impacting your industry.
+* **Deal/research watchlists**: Surface material events about entities you care about.
+* **Tracking products**: Track modifications to a product listing.
+
+Monitor currently supports the following features:
+
+* **Scheduling**: Set update cadence to hourly, daily, or weekly.
+* **Webhooks**: Receive updates when events are detected or when monitors finish a scheduled run.
+* **Events history**: Retrieve updates from recent runs or via a lookback window (for example, `10d`).
+* **Lifecycle management**: Update cadence, webhook, or metadata; delete to stop future runs.
+
+### Getting Started
+
+#### Prerequisites
+
+Generate your API key on [Platform](https://platform.parallel.ai).
+
+```bash  theme={"system"}
+export PARALLEL_API_KEY="PARALLEL_API_KEY"
+```
+
+#### Step 1. Create Monitor
+
+For example, create a monitor to get the latest news on AI.
+
+**Request:**
+
+<CodeGroup>
+  ```bash cURL theme={"system"}
+  curl --request POST \
+    --url https://api.parallel.ai/v1alpha/monitors \
+    --header 'Content-Type: application/json' \
+    --header "x-api-key: $PARALLEL_API_KEY" \
+    --data '{
+      "query": "Extract recent news about quantum in AI",
+      "cadence": "daily",
+      "webhook": {
+        "url": "https://example.com/webhook",
+        "event_types": ["monitor.event.detected"]
+      },
+      "metadata": { "key": "value" }
+    }'
+  ```
+
+  ```python Python theme={"system"}
+  from httpx import Response
+  from parallel import Parallel
+
+  client = Parallel(api_key="PARALLEL_API_KEY")
+
+  res = client.post(
+    "/v1alpha/monitors",
+    cast_to=Response,
+    body={
+      "query": "Extract recent news about AI",
+      "cadence": "daily",
+      "webhook": {
+        "url": "https://example.com/webhook",
+        "event_types": ["monitor.event.detected"],
+      },
+      "metadata": {"key": "value"},
+    },
+  ).json()
+
+  print(res["monitor_id"])
+
+  ```
+
+  ```typescript TypeScript theme={"system"}
+  import Parallel from "parallel-web";
+
+  const client = new Parallel({ apiKey: process.env.PARALLEL_API_KEY! });
+
+  async function create_monitor() {
+    const monitor = await client.post("/v1alpha/monitors", {
+      body: {
+        query: "Extract recent news about AI",
+        cadence: "daily",
+        webhook: {
+          url: "https://example.com/webhook",
+          event_types: ["monitor.event.detected"],
+        },
+        metadata: { key: "value" },
+      },
+    });
+    console.log(monitor.monitor_id);
+  }
+
+  create_monitor();
+  ```
+</CodeGroup>
+
+**Response:**
+
+```json  theme={"system"}
+{
+  "monitor_id": "monitor_b0079f70195e4258a3b982c1b6d8bd3a",
+  "query": "Extract recent news about AI",
+  "status": "active",
+  "cadence": "daily",
+  "metadata": { "key": "value" },
+  "webhook": {
+    "url": "https://example.com/webhook",
+    "event_types": ["monitor.event.detected"]
+  },
+  "created_at": "2025-04-23T20:21:48.037943Z"
+}
+```
+
+#### Step 2. Retrieve Events for an Event Group
+
+After you receive a webhook with an `event_group_id` (for a detected material change), fetch the full set of related events for that group.
+
+**Request:**
+
+<CodeGroup>
+  ```bash cURL theme={"system"}
+  curl --request GET \
+    --url "https://api.parallel.ai/v1alpha/monitors/<monitor_id>/event_groups/<event_group_id>" \
+    --header "x-api-key: $PARALLEL_API_KEY"
+  ```
+
+  ```python Python theme={"system"}
+  from httpx import Response
+  from parallel import Parallel
+
+  client = Parallel(api_key="PARALLEL_API_KEY")
+
+  group = client.get(
+    f"/v1alpha/monitors/{monitor_id}/event_groups/{event_group_id}",
+    cast_to=Response,
+  ).json()
+
+  print(group["events"])
+
+  ```
+
+  ```typescript TypeScript theme={"system"}
+  import Parallel from 'parallel-web';
+
+  const client = new Parallel({ apiKey: process.env.PARALLEL_API_KEY! });
+
+  async function getEventGroup(monitorId: string, eventGroupId: string) {
+    const res = (await client.get(
+      `/v1alpha/monitors/${monitorId}/event_groups/${eventGroupId}`
+    )) as any;
+    console.log(res.events);
+  }
+
+  getEventGroup();
+  ```
+</CodeGroup>
+
+**Response:**
+
+```json  theme={"system"}
+{
+  "events": [
+    {
+      "type": "event",
+      "event_group_id": "mevtgrp_b0079f70195e4258eab1e7284340f1a9ec3a8033ed236a24",
+      "output": "New product launch announced",
+      "event_date": "2025-01-15",
+      "source_urls": ["https://example.com/news"]
+    }
+  ]
+}
+```
+
+To learn about the full event model, alternative ways to access events (including listing all events), and best practices, see the [Events](./monitor-events) page.
+
+### Lifecycle
+
+The Monitor API follows a straightforward lifecycle:
+
+1. **Create**: Define your `query`, `cadence`, and optional `webhook` and `metadata`.
+2. **Update**: Change cadence, webhook, or metadata.
+3. **Delete**: Delete a monitor and stop future executions.
+
+At any point, you can retrieve the list of events for a monitor or events within a specific event group.
+
+### Pricing
+
+The Monitor API is charged at 3 USD per 1,000 runs. Each run is billed individually. For example, a monitor with a `daily` cadence will incur a cost of 0.03 USD in 10 days.
+
+### Best Practices
+
+1. **Scope your query**: Clear queries with explicit instructions lead to higher-quality event detection.
+2. **Choose the right cadence**: Use `hourly` for fast-moving topics, `daily` for most news, `weekly` for slower changes.
+3. **Use webhooks**: Prefer webhooks to avoid unnecessary polling and reduce latency to updates.
+4. **Manage lifecycle**: Cancel monitors you no longer need to reduce your usage bills.
+
+### Next Steps
+
+* **[Events](./monitor-events)**: Understand events, when they are emitted and how to access them.
+* **[Webhooks](./monitor-webhooks)**: Information on setting up webhooks and listening for push notifications.
+* **[API Reference](https://docs.parallel.ai/api-reference/monitor)**: Complete endpoint documentation.
+
+### Rate Limits
+
+See [Rate Limits](/resources/rate-limits) for default quotas and how to request higher limits.
+
+- [Search](https://docs.parallel.ai/api-reference/search-beta/search.md): Searches the web.
+
+To access this endpoint, pass the `parallel-beta` header with the value
+`search-extract-2025-10-10`.
+- [Add Runs to Task Group](https://docs.parallel.ai/api-reference/tasks-beta/add-runs-to-task-group.md): Initiates multiple task runs within a TaskGroup.
+- [Create Task Group](https://docs.parallel.ai/api-reference/tasks-beta/create-task-group.md): Initiates a TaskGroup to group and track multiple runs.
+- [Fetch Task Group Runs](https://docs.parallel.ai/api-reference/tasks-beta/fetch-task-group-runs.md): Retrieves task runs in a TaskGroup and optionally their inputs and outputs.
+
+All runs within a TaskGroup are returned as a stream. To get the inputs and/or
+outputs back in the stream, set the corresponding `include_input` and
+`include_output` parameters to `true`.
+
+The stream is resumable using the `event_id` as the cursor. To resume a stream,
+specify the `last_event_id` parameter with the `event_id` of the last event in the
+stream. The stream will resume from the next event after the `last_event_id`.
+- [Retrieve Task Group](https://docs.parallel.ai/api-reference/tasks-beta/retrieve-task-group.md): Retrieves aggregated status across runs in a TaskGroup.
+- [Retrieve Task Group Run](https://docs.parallel.ai/api-reference/tasks-beta/retrieve-task-group-run.md): Retrieves run status by run_id.
+
+This endpiont is equivalent to fetching run status directly using the
+`retrieve()` method or the `tasks/runs` GET endpoint.
+
+The run result is available from the `/result` endpoint.
+- [Stream Task Group Events](https://docs.parallel.ai/api-reference/tasks-beta/stream-task-group-events.md): Streams events from a TaskGroup: status updates and run completions.
+
+The connection will remain open for up to an hour as long as at least one run in the
+group is still active.
+- [Create Task Run](https://docs.parallel.ai/api-reference/tasks-v1/create-task-run.md): Initiates a task run.
+
+Returns immediately with a run object in status 'queued'.
+
+Beta features can be enabled by setting the 'parallel-beta' header.
+- [Retrieve Task Run](https://docs.parallel.ai/api-reference/tasks-v1/retrieve-task-run.md): Retrieves run status by run_id.
+
+The run result is available from the `/result` endpoint.
+- [Retrieve Task Run Input](https://docs.parallel.ai/api-reference/tasks-v1/retrieve-task-run-input.md): Retrieves the input of a run by run_id.
+- [Retrieve Task Run Result](https://docs.parallel.ai/api-reference/tasks-v1/retrieve-task-run-result.md): Retrieves a run result by run_id, blocking until the run is completed.
+- [Stream Task Run Events](https://docs.parallel.ai/api-reference/tasks-v1/stream-task-run-events.md): Streams events for a task run.
+
+Returns a stream of events showing progress updates and state changes for the task
+run.
+
+For task runs that did not have enable_events set to true during creation, the
+frequency of events will be reduced.
+- [Quickstart](https://docs.parallel.ai/chat-api/chat-quickstart.md): Get started with Parallel Chat
+- [OpenAI SDK Compatibility](https://docs.parallel.ai/chat-api/sdk-compatibility.md): OpenAI SDK compatibility features and limitations
+- [Best Practices](https://docs.parallel.ai/extract/best-practices.md): Using the Parallel Extract API
+- [Quickstart](https://docs.parallel.ai/extract/extract-quickstart.md): Get started with Extract
+- [Candidates](https://docs.parallel.ai/findall-api/core-concepts/findall-candidates.md): Understanding Find All candidates, their structure, states, and how to exclude specific entities
+- [Generators and Pricing](https://docs.parallel.ai/findall-api/core-concepts/findall-generator-pricing.md): Find All API pricing structure and generators
+- [Run Lifecycle](https://docs.parallel.ai/findall-api/core-concepts/findall-lifecycle.md): Understand Find All run statuses, termination reasons, and how to cancel runs
+- [Cancel](https://docs.parallel.ai/findall-api/features/findall-cancel.md): Stop Find All runs early to control costs
+- [Enrichments](https://docs.parallel.ai/findall-api/features/findall-enrich.md): Add non-boolean enrichment data to Find All candidates without affecting match conditions
+- [Extend](https://docs.parallel.ai/findall-api/features/findall-extend.md): Increase the match limit of existing Find All runs to get more results without changing query criteria
+- [Preview](https://docs.parallel.ai/findall-api/features/findall-preview.md)
+- [Streaming Events](https://docs.parallel.ai/findall-api/features/findall-sse.md): Receive real-time updates on Find All runs using Server-Sent Events (SSE)
+- [Webhooks](https://docs.parallel.ai/findall-api/features/findall-webhook.md): Receive real-time notifications on Find All runs and candidates using webhooks
+- [Find All Migration Guide](https://docs.parallel.ai/findall-api/findall-migration-guide.md): Guide for migrating from V0 to V1 Find All API
+- [Quickstart](https://docs.parallel.ai/findall-api/findall-quickstart.md): Get Started with Parallel Find All
+- [Parallel Documentation](https://docs.parallel.ai/home.md): Explore Parallel's web API products for building intelligent applications.
+- [AWS Marketplace](https://docs.parallel.ai/integrations/aws-marketplace.md): Access Parallel's API through the AWS Marketplace
+- [Programmatic Use](https://docs.parallel.ai/integrations/mcp/programmatic-use.md): How to use the MCP servers Programmatically
+- [Quickstart](https://docs.parallel.ai/integrations/mcp/quickstart.md): Get started using Parallel MCPs
+- [Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp.md): About the Parallel Search MCP
+- [Task MCP](https://docs.parallel.ai/integrations/mcp/task-mcp.md): Learn about the Task MCP and how to use it
+- [n8n](https://docs.parallel.ai/integrations/n8n.md): Use Parallel in n8n Automations
+- [OAuth Provider](https://docs.parallel.ai/integrations/oauth-provider.md): Integrate with the Parallel OAuth Provider to get a Parallel API key on behalf of your users
+- [Vercel](https://docs.parallel.ai/integrations/vercel.md): Use Parallel with Vercel
+- [Changelog](https://docs.parallel.ai/resources/changelog.md): Product updates from the Parallel team
+- [Crawler](https://docs.parallel.ai/resources/crawler.md): This documentation provides guidance for webmasters on managing their website's interaction with our crawling system
+- [FAQs](https://docs.parallel.ai/resources/faqs.md): Common questions about the Task API
+- [Rate Limits](https://docs.parallel.ai/resources/rate-limits.md): Default rate limits
+- [Source Policy](https://docs.parallel.ai/resources/source-policy.md): Configure which domains are included or excluded from your web research results.
+- [Status Page](https://docs.parallel.ai/resources/status.md)
+- [Warnings and Errors](https://docs.parallel.ai/resources/warnings-and-errors.md): Breakdown of warnings and errors
+- [Webhook Setup](https://docs.parallel.ai/resources/webhook-setup.md): Guide to configuring and verifying webhooks for Parallel APIs
+- [Best Practices](https://docs.parallel.ai/search/best-practices.md): Using the Parallel Search API
+- [Search MCP](https://docs.parallel.ai/search/search-mcp.md)
+- [Migration Guide](https://docs.parallel.ai/search/search-migration-guide.md): Migrate from Alpha to Beta Search API (November 2025)
+- [Quickstart](https://docs.parallel.ai/search/search-quickstart.md): Get started with Search
+- [Source Policy](https://docs.parallel.ai/search/source-policy.md)
+- [Task Group](docs/task_group.md): Batch process Tasks at scale with the Parallel Task Group API
+- [Access Research Basis](https://docs.parallel.ai/task-api/guides/access-research-basis.md): Understand how to access citations, reasoning, and confidence levels for your Task Run outputs
+- [Choose a Processor](https://docs.parallel.ai/task-api/guides/choose-a-processor.md)
+- [Execute Task Runs](https://docs.parallel.ai/task-api/guides/execute-task-run.md): Understanding how Tasks Runs are created, processed, and returned
+- [Specify a Task](https://docs.parallel.ai/task-api/guides/specify-a-task.md): Define structured research tasks with customizable input and output schemas.
+- [Ingest API](docs/ingest_api.md): API reference for creating awesome tasks
+- [MCP Tool Calling](https://docs.parallel.ai/task-api/mcp-tool-call.md): Using MCP servers for tool calls in Tasks
+- [Source Policy](https://docs.parallel.ai/task-api/source-policy.md)
+- [Deep Research](https://docs.parallel.ai/task-api/task-deep-research.md): Natural language to structured intelligence with auto schema
+- [Task MCP](https://docs.parallel.ai/task-api/task-mcp.md)
+- [Quickstart](https://docs.parallel.ai/task-api/task-quickstart.md): Start building web-based enrichment flows with Parallel Tasks
+- [Streaming Events](https://docs.parallel.ai/task-api/task-sse.md): SSE for Task Runs
+- [Webhooks](https://docs.parallel.ai/task-api/webhooks.md): Webhook events for task run completions
+
+
+## Optional
+
+- [Get API Key](https://platform.parallel.ai)
+- [OpenAPI Spec](https://docs.parallel.ai/public-openapi.json)
+- [Python SDK](https://docs.parallel.ai/resources/python-sdk)
+- [TypeScript SDK](https://www.npmjs.com/package/parallel-web)

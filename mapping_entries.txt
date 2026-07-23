@@ -1,0 +1,463 @@
+# Text & File Viewing
+`cat` -> `bat` — syntax-highlighted viewer with git context and paging
+`less` -> `moar` — smarter pager with mouse scroll, search replay, unicode safety
+`more` -> `most` — multi-buffer pager with windows and status bars
+`tail -f` -> `lnav` — log navigator with SQL filters, bookmarks, timelines
+`tail` -> `multitail` — monitor many logs simultaneously with merges and color rules
+`head` -> `hck --head` — Rust-native head/cut hybrid with column addressing
+`hexdump` -> `hexyl` — colorful hex viewer that visualizes byte classes
+`strings` -> `rizin r2strings` — entropy-aware string extraction supporting UTF-16/32
+`column` -> `tabview` — curses spreadsheet with sort, filter, and scroll
+`fmt` -> `par` — intelligent paragraph formatter handling quotes/comments
+`fold` -> `wrp` — width-aware wrapper keeping ANSI colors intact
+`pr` -> `rich-cli` — modern pretty-printer supporting Markdown/tables
+`wc` -> `scc` — multi-language counter with cyclomatic metrics
+`nl` -> `bat -n` — numbered output with syntax detection and theming
+`man` -> `tealdeer` — TLDR-style manual summaries synced offline
+`info` -> `bropages` — crowdsourced command examples with quick lookup
+`cat README.md` -> `glow` — Markdown renderer with themes and clipboard export
+`vi` -> `helix` — modal text editor with built-in LSP and tree-sitter highlighting
+`nano` -> `micro` — mouse-friendly editor with syntax, plugins, and splits
+`less` for JSON -> `jless` — structure-aware JSON pager with queries and collapse
+# Search & Filtering
+`grep` -> `ripgrep` — blazing text search honoring .gitignore with PCRE2
+`grep -R` -> `ripgrep-all (rga)` — search inside archives, PDFs, office docs
+`egrep` -> `ugrep --perl` — modern grep with boolean queries, hexdump view
+`fgrep` -> `sift --fixed-strings` — parallel exact-string search with context
+`sed -n '/regex/p'` -> `comby` — structural search/replace with language awareness
+`grep` for AST shapes -> `ast-grep` — tree-sitter powered pattern engine
+`grep` JSON blobs -> `jid` — interactive JSON drill-down with regex filters
+`grep` massive logs -> `angle-grinder` — realtime structured log slicing
+`history | grep` -> `atuin search` — shell history sync with smart ranking
+`ps | grep` -> `procs --filter` — process filter with regex/user queries
+`ls | grep` -> `fzf` — fuzzy preview picker with multi-select
+`command list | grep` -> `skim (sk)` — minimal fuzzy finder with Vim bindings
+`tail | grep` -> `peco` — streaming interactive filter for pipelines
+`locate` -> `plocate` — fast mlocate successor with incremental DB
+`man -k keyword` -> `cht.sh` — cheat.sh CLI search with curlable output
+`apropos` -> `navi search` — interactive cheat-sheet query with snippets
+# Filesystem Navigation & Management
+`ls` -> `eza` — colorful ls with git status, icons, and tree view
+`ls -lah` -> `lsd` — humanized sizes, column alignment, and nerdfont icons
+`tree` -> `broot` — interactive directory tree with fuzzy jump and actions
+`tree -L 2` -> `erdtree` — blazing Rust tree showing aggregate sizes per node
+`find` -> `fd` — intuitive defaults, parallel search, glob+regex filters
+`find` deep scans -> `bfs` — breadth-first find that saturates SSD throughput
+`du` -> `dust` — sparkline disk usage sorted by biggest offenders
+`du -sh` -> `dua-cli` — TUI disk explorer with delete actions
+`du -chs` -> `gdu` — asynchronous disk usage browser with mouse support
+`df` -> `duf` — disk free summary with mount options and filtering
+`cd` -> `zoxide` — frecency-based directory jumping across shells
+`pushd/popd` -> `z.lua` — z navigation with Lua caching and priority control
+`cd recent` -> `autojump` — learn-as-you-go jump list with fallback
+`mc` -> `yazi` — GPU-accelerated TUI file manager with previews and tabs
+`ranger` -> `nnn` — minimal file picker with plugin pack and remote mounts
+`cp` -> `xcp` — copy with progress bars, resume, and checksum verification
+`mv` bulk renames -> `rnr` — Rust rename orchestrator with dry runs
+`rename 's/.../...'` -> `qmv` — edit rename plans in $EDITOR with safety checks
+`gzip` -> `pigz` — parallel gzip compatible with standard archives
+`rm -rf` -> `rip` — safe deletion with undo and trash integration
+`rm` -> `trash-cli` — send files to desktop trash with restore support
+`tar` -> `dtrx` — smart extractor that auto-detects archive types
+`zip/unzip` -> `ouch` — ergonomic multi-format pack/unpack with encryption
+# Process & System Monitoring
+`top` -> `btop` — rich graphs, per-core stats, GPU/disk panels
+`htop` -> `bottom (btm)` — cross-platform TUI with battery/net modules
+`ps aux` -> `procs` — colorful table, regex filters, watch mode
+`pstree` -> `procs --tree` — tree view with CPU/mem columns and signals
+`vmstat` -> `dstat` — unified CPU/mem/disk/net sampler with CSV export
+`iostat` -> `atop` — historical accounting for CPU, I/O, and processes
+`sar` -> `netdata-cli` — streaming dashboards aggregating system metrics
+`free -m` -> `glances` — curses monitor with alerts and API endpoints
+`watch cmd` -> `viddy` — diff-aware watch with history rewind
+`uptime` -> `tuptime` — tracks boot sessions and downtime stats
+`iotop` -> `iotop-bpf` — eBPF-powered per-process disk I/O monitor
+`mpstat` -> `zenith` — per-core utilization, temps, and fans in TUI
+`nvidia-smi -l` -> `nvtop` — live GPU process list with VRAM graphs
+`sensors` -> `s-tui` — stress + temperature monitor with charts
+`perf top` -> `bpftrace top` — kernel/user tracepoints with scripts
+`strace -p PID` -> `bcc trace` — low-overhead BPF tracing with presets
+`lsof` -> `lsfd` — fast fd lister with path caching from util-linux
+`python -m cProfile` -> `py-spy top` — sampling profiler without restarts
+`perf script | flamegraph` -> `inferno-flamegraph` — on-demand flamegraph CLI
+# Networking & HTTP
+`curl` -> `httpie` — human syntax, JSON formatting, session cookies
+`curl -X POST` -> `xh` — fast HTTPie-lite with sane defaults and HTTPS shortcuts
+`curl GraphQL` -> `restish` — GraphQL/REST explorer with auth profiles
+`curl --http2` -> `grpcurl` — gRPC reflection client for unary/stream calls
+`curl + assertions` -> `hurl` — declarative HTTP test runner with captures
+`wget` -> `aria2c` — multi-connection downloader with metalink/BitTorrent
+`ping` -> `gping` — multi-host latency graphs in the terminal
+`traceroute` -> `mtr` — combined ping/trace with realtime loss stats
+`netstat -tulpn` -> `ss` — iproute2 sockets with filtering and perf
+`ifconfig` -> `ip addr` — modern stack config with JSON and scripting hooks
+`iftop` -> `bandwhich` — per-process bandwidth accounting by interface
+`dig` -> `dog` — colorful DNS client with DoH/DoT and JSON modes
+`nmap` -> `rustscan` — async syn scanner feeding nmap for service probes
+`tcpdump` -> `termshark` — tshark UI with packet decode panes in TUI
+`nc -vz host port` -> `ncat` — encrypted netcat with socks proxies
+`nc` websockets -> `websocat` — bidirectional WS/UDP/TCP bridge
+`ftp` -> `lftp` — scriptable FTP/SFTP/HTTP client with mirror/resume
+`scp` -> `rclone` — resume-capable copier for SSH, S3, GDrive, etc.
+`ssh` over flaky links -> `mosh` — roaming SSH with UDP transport and prediction
+# Development Workflow
+`git status` -> `gitui` — TUIs for staging, stash, and branch ops
+`git log --graph` -> `lazygit` — keyboard-driven Git UI with rebase helpers
+`git log` -> `tig` — curses log/diff browser with filtering
+`git diff` -> `delta` — syntax highlighted pager, side-by-side, blame info
+`diff -u` -> `difftastic` — AST-aware diffing for dozens of languages
+`git bisect` -> `git-branchless` — guided bisect/rewrite workflows
+`git rebase --autosquash` -> `git-absorb` — auto-create fixup commits from working tree
+`git rebase -i` -> `jj` — Jujutsu revsets and snapshot workflows on top of Git
+`git submodule` -> `git-subrepo` — vendoring workflow without detached HEAD dramas
+`curl api.github.com` -> `gh` — native GitHub CLI for issues, PRs, releases
+`curl gitlab api` -> `glab` — GitLab CLI with MR pipelines and impersonation
+`make target` -> `just` — declarative command runner with variables and defaults
+`make dev` -> `task` — YAML task runner with concurrency and summaries
+`inotifywhile` scripts -> `watchexec` — trigger builds/tests on file changes
+`fswatch go run` -> `air` — Go hot reload that rebuilds on change
+`npm install` -> `pnpm` — content-addressable installs with workspaces
+`pip install` -> `uv pip` — blazing-lockfile resolver with wheels cache
+`pipenv` -> `poetry` — dependency management with publishing + lockfiles
+`python -m venv` -> `uv venv` — instant virtualenv creation with no pip bootstrap
+`docker build && docker run` -> `earthly` — reproducible build graphs bridging CI/CD
+# Data Transformation
+`sed -E 's/foo/bar/' file` -> `sd` — fast regex replacer with clearer syntax
+`sed -i '...'` -> `sad` — interactive find/replace with diffs before write
+`awk '{print $2}' file` -> `frawk` — SIMD-accelerated AWK with CSV awareness
+`cut -d, -f1,3` -> `hck` — Rust cut supporting multibyte separators and names
+`cut --fields name` -> `choose` — header-aware column picker with CSV/TSV autodetect
+`sort | uniq -c` -> `qsv frequency` — streaming value counts with charts
+`sort -t, -k2` -> `xsv sort` — multi-threaded sort by column and type
+`join file1 file2` -> `miller join` — streaming joins with type inference
+`awk aggregates on CSV` -> `miller stats1` — group-by, roll-ups, percentiles
+`paste file1 file2` -> `miller merge` — column merge respecting headers
+`python -m json.tool` -> `jaq` — drop-in jq replacement with JIT speed
+`sed` on YAML -> `yq` — YAML/JSON/TOML querying with `jq` syntax
+`xmllint --xpath` -> `dasel` — unified selector for JSON/YAML/TOML/XML
+`grep JSON for keys` -> `gron` — flattens JSON to grep-friendly assignment lines
+`less data.json` -> `fx` — structural viewer with interactive filter expressions
+`jq '.' file` -> `jqp` — TUI jq playground with history and previews
+`ifconfig | awk` -> `jc ifconfig` — convert many CLI outputs to JSON for jq
+`awk over CSV via SQL` -> `dsq` — query JSON/CSV/TSV files with SQLite syntax
+`csvlook big.csv` -> `visidata` — spreadsheet TUI with millions of rows + charts
+# Observability & Logging
+`tail -f app.log` -> `humanlog` — colorizes structured logs, hides noisy fields
+`awk nginx.log` -> `goaccess` — ncurses web log analytics with real-time charts
+`grep metrics from logs` -> `mtail` — extract metrics from log patterns into Prometheus
+`journalctl -f` -> `lnav` — auto-parses syslog/journal with timelines and SQL
+`kubectl logs -f deployment` -> `stern` — tail multiple pods with label selectors
+`kubectl logs -l app=api` -> `kail` — dynamic follower that tracks new pods
+`kubectl logs` for many pods -> `kubetail` — aggregates pod logs with prefixes
+`docker logs -f` -> `lazydocker logs` — interactive Docker log/metrics panels
+`curl /loki/api/v1/query` -> `logcli` — Grafana Loki CLI with range queries
+`aws logs tail` -> `awslogs` — CloudWatch Logs tail/follow with query filters
+`printf trace spans` -> `otel-cli span` — emit OpenTelemetry spans from shell
+`tcpdump for policies` -> `hubble observe` — Cilium-aware flow logging with filters
+`psql "select * from pg_stat_activity"` -> `pg_activity` — Top-like view for Postgres sessions
+`kafka-console-consumer` -> `kafkactl tail` — friendly consume/tail with offsets and avro decode
+`curl Prometheus query` -> `promql-cli` — interactive Prometheus queries with table/graph outputs
+# Containers & Kubernetes
+`docker stats` -> `ctop` — container top with CPU/mem graphs and sort
+`docker ps` -> `lazydocker` — interactive dashboard for containers, images, volumes
+`docker history` -> `dive` — inspect image layers, wasted bytes, and env diff
+`docker build` -> `buildah` — daemonless OCI builds with rootless support
+`docker run --privileged` -> `podman` — drop-in Docker CLI with rootless pods
+`docker push` -> `oras` — push/pull arbitrary artifacts to OCI registries
+`docker-compose up` -> `tilt` — dev orchestrator with live build/sync feedback
+`docker compose --watch` -> `skaffold dev` — k8s-aware build/deploy sync loop
+`kubectl get pods` -> `k9s` — curses control plane with exec/logs/port-forward
+`kubectl top pods` -> `kdash` — resource dashboard for namespaces/nodes
+`kubectl describe pod` -> `kubectl-neat` — cleans noisy describe output
+`kubectl get all --all-namespaces` -> `ketall` — concise multi-namespace listing
+`kubectl config use-context` -> `kubectx` — fuzzy switch contexts
+`kubectl config set-context --namespace` -> `kubens` — quick namespace jumper
+`kubectl exec + env switching` -> `kubie` — per-context subshells with prompt hints
+# Productivity & Workflow
+`export VAR in .bashrc` -> `direnv` — directory-aware env injection with allowlists
+`pyenv && rbenv && nodenv` -> `mise` — one CLI to install/use multiple runtimes
+`pip install --user tool` -> `pipx` — isolated apps with shimmed entrypoints
+`tmux` -> `zellij` — modern multiplexer with layouts, plugins, and session resume
+`Ctrl-R history search` -> `mcfly` — context-aware fuzzy search over shell history
+`grep cheatsheet.md` -> `navi` — interactive cheatsheet picker that pastes commands
+`copy/paste snippet file` -> `pet` — syncable command snippets with placeholders
+`cron edits` -> `chadburn` — readable schedule DSL with status dashboard
+`todo.txt` -> `taskwarrior` — CLI GTD with tags, priorities, sync
+`time tracking spreadsheet` -> `timewarrior` — CLI time tracker with reports
+`kanban in Markdown` -> `taskell` — terminal kanban with drag/drop columns
+`git bare dotfiles` -> `chezmoi` — manage dotfiles declaratively with templates
+`rsync ~/ dotfiles` -> `yadm` — git-backed dotfiles with encryption support
+`nohup queue scripts` -> `pueue` — manage long-running shell jobs with retries
+`ssh jump host aliases` -> `teleport tsh` — secure access with SSO, audit, recording
+`notes.txt journal` -> `jrnl` — plain-text journaling with tags and encryption
+`bc` -> `qalc` — advanced calculator with units, variables, styleable output
+`read -p` interactive prompts -> `gum` — pretty prompts, selects, forms for shell scripts
+# Security & Forensics
+`md5sum file` -> `b3sum` — BLAKE3 hashes that are faster and safer by default
+`openssl enc -aes-256-cbc` -> `age` — modern file encryption with simple keys and recipients
+`gpg --encrypt secrets.yaml` -> `sops` — structured secrets with KMS/PGP/age backends
+`grep -R API_KEY .` -> `gitleaks` — secret scanner with rulesets and git history search
+`docker scan image` -> `trivy` — container/IaC scanner with policy-as-code
+`rpm -qa | sort` -> `syft` — build SBOMs for images, dirs, registries
+`grep CVE in deps` -> `grype` — CVE matcher that consumes SBOMs and registries
+`grep -R 'eval(' src` -> `semgrep` — semantics-aware static analyzer with rules library
+# Media & Visualization
+`cat image.png` -> `imgcat` — inline images for iTerm/WezTerm/Kitty
+`display photo.jpg` -> `viu` — cross-platform terminal image viewer with truecolor
+`img2txt` -> `chafa` — high-quality ANSI/kitty block converters with animation
+`feh slideshow` -> `tiv` — Terminal Image Viewer supporting gifs/video frames
+`mpg123 song.mp3` -> `termusic` — TUI music player with playlists/lyrics
+`mplayer video.mp4` -> `mpv` — modern media player with scripting + yt-dlp hooks
+`youtube-dl URL` -> `yt-dlp` — actively maintained downloader with sponsorblock
+`script session.cast` -> `asciinema` — record/share terminal sessions in JSON cast format
+# Shell & Terminal Experience
+`bash` -> `nushell` — typed pipelines, dataframes, and plugin system for structured output
+`sh` -> `elvish` — interactive shell with structured data, autocompletion, and job control
+`PS1='\w$ '` -> `starship` — cross-shell prompt with async modules, git status, and context hints
+`python -m http.server` -> `miniserve` — drop-in static file server with TLS, auth, upload, and QR codes
+`ssh config` -> `assh` — declarative SSH inventory with templates, jump hosts, and multiplexing
+`bash -c 'complex pipelines'` -> `zx` — JavaScript shell with top-level await, fetch, and retry helpers
+# Package & Artifact Management
+`conda install numpy` -> `mamba install numpy` — drop-in solver using libsolv with parallel downloads
+`pip freeze > requirements.txt` -> `uv pip compile requirements.in` — deterministic lockfiles with hashed wheels
+`pip install -e .` -> `uv sync` — one-shot project environments with resolver + build cache
+`cargo install ripgrep` -> `cargo-binstall ripgrep` — pull prebuilt releases with signature verification
+`npm install` -> `bun install` — JS runtime + package manager with native TS transpilation
+`npx create-react-app` -> `bunx create-react-app` — fast NPX replacement without global downloads
+`brew upgrade && npm update && cargo install-update` -> `topgrade` — orchestrates multi-manager upgrades with summaries
+# Databases & Querying
+`mysql` -> `mycli` — auto-completion, syntax highlighting, and per-db prompts
+`psql` -> `pgcli` — smart suggestions, pretty output, and favorite queries
+`sqlite3` -> `litecli` — multi-line editing, completion, and syntax coloring
+`redis-cli` -> `iredis` — TTL display, cluster awareness, and ANSI-highlighted replies
+`mongo` -> `mongosh` — modern JS REPL with Node APIs, auto-complete, and snippets
+`sqlcmd` -> `usql` — universal SQL CLI that speaks Postgres, MySQL, SQL Server, Snowflake, and more
+`diff schema.sql schema_new.sql` -> `atlas schema diff` — declarative database diffing with generated migrations
+`psql -c "SELECT * FROM pg_stat_activity"` -> `pgcenter` — TUI for Postgres sessions, locks, and waits
+# Data Engineering & Messaging
+`kafka-console-producer` -> `kcat -P` — high-throughput producer with Avro/Protobuf codecs and TLS
+`kafka-consumer-groups.sh --describe` -> `kafkactl groups` — readable lag reports with JSON export
+`kafka-topics.sh --watch` -> `kaf` — interactive TUI to browse topics, offsets, and payload previews
+`pg_dump | pg_restore` -> `pgsync` — selective Postgres syncing with sampling filters
+`curl ... | jq ...` -> `benthos` — declarative streaming ETL with hundreds of connectors and tests
+`logstash` -> `vector` — high-performance telemetry pipeline with remap language and WASM transforms
+`kafka-run-class kafka.tools.GetOffsetShell` -> `rpk cluster info` — modern Kafka/Redpanda diagnostics with health checks
+# Benchmarking & QA
+`time cmd` -> `hyperfine` — statistical benchmarking with warmups and CSV export
+`ab http://example.com/` -> `bombardier` — HTTP/2 load testing with latency histograms
+`siege --concurrent` -> `k6 run` — scriptable load tests with thresholds and cloud output
+`wrk -t4 -c64` -> `oha` — Rust HTTP benchmark with live percentile charts
+`for i in {1..1000}; do curl ...; done` -> `vegeta attack` — declarative traffic generation with reports
+`tc qdisc add netem` -> `toxiproxy-cli` — programmable latency/packet loss for dependency testing
+`pytest -f` -> `ptw` — pytest-watch auto reruns on file change with minimal UI
+# Documentation & Knowledge Sharing
+`pandoc -s README.md -o docs.html` -> `mdbook build` — opinionated docs site generator with search and versioning
+`pdflatex thesis.tex` -> `typst compile thesis.typ` — modern typesetting CLI with live reload and templates
+`pandoc -t beamer slides.md` -> `marp-cli slides.md --pdf` — Markdown-to-slide deck with themes and speaker notes
+`pbpaste > gist.txt && curl` -> `gh gist create` — publish code snippets from the terminal with privacy controls
+`googling stackoverflow` -> `howdoi` — instant Q&A answers with caching and copy-ready snippets
+# AI, ML & Data Science
+`curl -X POST https://api.openai.com` -> `llm` — multi-provider LLM CLI with prompt templates and SQLite logging
+`python main.py --model llama` -> `ollama run llama2` — local model runner with model registry, quantization, and REST serving
+`awk -F, '...' data.csv` -> `duckdb` — vectorized SQL over CSV/Parquet/S3 without loading into a database
+`sqlite3 data.db '.dump'` -> `datasette publish data.db` — turn SQLite/CSV into browsable APIs with auth and search
+`git lfs clone hf-repo` -> `huggingface-cli download` — selective model/dataset fetch with resume and tokens
+`python script.py && pip install torch` -> `modal run` — serverless GPU/CPU jobs with cached containers and secrets
+# Cloud & Infrastructure Automation
+`terraform apply` -> `opentofu apply` — community-driven drop-in with feature velocity and no HashiCorp license
+`terraform -chdir envs apply` -> `terragrunt run-all apply` — orchestrates multi-module deployments with caching and DRY inputs
+`bash deploy_infra.sh` -> `pulumi up` — typed infrastructure as code with secrets and policy-as-code
+`kubectl port-forward svc` -> `kubefwd` — forward entire namespaces locally with automatic /etc/hosts entries
+`ssh -L 0.0.0.0:443:svc:443 bastion` -> `cloudflared tunnel run` — zero-trust tunnels with automatic cert rotation
+`terraform plan | less` -> `rover` — interactive TUI for exploring plans, states, and cost deltas
+`grep tf files for misconfig` -> `tfsec` — static analysis for Terraform/Tofu/IaC with policy packs
+`terraform cost spreadsheet` -> `infracost breakdown` — cost estimates and diffs inline with IaC changes
+`bash ci.sh` -> `dagger run ci` — container-native pipelines with cache sharing across CI/CD
+# Linting & Code Quality
+`flake8` -> `ruff check` — batteries-included Python linter with autofix and isort built in
+`autopep8` -> `ruff format` — fast Python formatter sharing Ruff's config
+`eslint` -> `biome lint` — JS/TS lint+format with incremental caching and sensible defaults
+`prettier` -> `dprint fmt` — plugin-based multi-language formatter with shared cache
+`sqlint` -> `sqlfluff lint` — dialect-aware SQL linting with fixer support
+`aspell` -> `vale` — prose/style linter enforcing terminology and tone guides
+# Reverse Engineering & Debugging
+`gdb ./a.out` -> `pwndbg ./a.out` — GDB plugin with heap visualizers, exploit helpers, and context panes
+`python -m pdb script.py` -> `pudb script.py` — full-screen TUI debugger with breakpoints, stack view, and variable watches
+`go test -run TestThing -v` -> `dlv debug ./cmd` — Go-native debugger with goroutine inspect, conditional breakpoints, and headless mode
+`ltrace binary` -> `frida-trace binary` — dynamic instrumentation with runtime hooks, JavaScript filters, and cross-platform injectors
+`objdump -d firmware.bin` -> `rizin rz-bin -d firmware.bin` — multi-arch disassembler with graph navigation, scripting, and binary patching
+`file malware.bin` -> `diec malware.bin` — Detect It Easy CLI with signature, entropy, and ML heuristics for binary triage
+`size service` -> `bloaty service` — multi-dimension binary size profiler with diff mode and owners per section
+# Backup & Sync
+`rsync /home backup:/home` -> `restic backup /home` — deduplicated, encrypted backups with forget policies and mounts
+`tar czf backup.tgz dir` -> `borg create repo::archive dir` — content-addressable archives with compression, encryption, and mountable snapshots
+`sqlite3 app.db .dump > dump.sql` -> `litestream replicate app.db s3://bucket` — continuous WAL streaming replicas to S3/GCS with failover restore
+`mysqldump --single-transaction` -> `mydumper --compress` — parallel MySQL logical dumps with chunked tables and gzip output
+`duplicity /data s3://bucket` -> `kopia snapshot create s3:bucket/data` — policy-driven deduped snapshots with retention and verification
+`rsnapshot hourly` -> `bupstash store /data` — encrypted append-only store with glob include/exclude and instant pruning
+`aws s3 sync ./site s3://bucket` -> `mc mirror ./site minio/bucket` — multi-remote mirroring with health checks, bandwidth limits, and versioned deletes
+# Collaboration & Communication
+`mutt` -> `aerc` — modern TUI email with notmuch search, Gmail auth, and split panes
+`irssi` -> `weechat` — extensible chat client with scripts, relays, Matrix/Slack bridges, and hotplug networks
+`slack-term` -> `matterhorn` — Mattermost-focused TUI supporting threads, emoji reactions, and slash commands
+`cal` -> `khal agenda` — CalDAV/ICS-aware calendar with colorized agenda, interactive edits, and reminders
+`abook -C contacts.vcf` -> `khard` — CardDAV contact manager with fuzzy search, tags, and vCard sync
+`grep notes/*.md -n pattern` -> `nb search pattern` — git-backed notebook with tagging, templates, and fzf-powered search
+`wall 'deploying now'` -> `ntfy publish ops 'deploying now'` — fan-out notifications to mobile/web via HTTPS, MQTT, and webhooks
+# Browser Automation & Scraping
+`curl https://site | grep '<title>'` -> `htmlq 'title' https://site` — CSS selector queries with attribute extraction and tidy output
+`wget -r https://site` -> `grab-site https://site` — high-fidelity site archiver emitting WARC/JSON with ignores and concurrency
+`wget --page-requisites https://post` -> `monolith https://post` — saves a page with inlined assets/fonts into a single HTML file
+`phantomjs script.js` -> `playwright codegen https://app` — launches Chromium/Firefox/WebKit and records scripted flows with auth helpers
+`lynx -dump https://news` -> `browsh https://news` — renders JS-heavy pages via headless Firefox and streams pixels into the terminal
+`wkhtmltopdf https://spec doc.pdf` -> `weasyprint https://spec doc.pdf` — CSS Paged Media engine with flexbox, OpenType features, and SVG support
+`selenium-side-runner smoke.side` -> `shot-scraper https://app --wait 2 --selector '.ready'` — headless Chromium screenshots plus selector asserts and cookies
+# File Transfer & Sharing
+`nc -l 9000 < big.iso` -> `croc send big.iso` — encrypted, resumable P2P transfer with relay fallback and short codes
+`tar cz dir | ssh host tar xz -C /tmp` -> `magic-wormhole send dir` — zip + encrypt directories with one-time human-readable codes
+`curl -T file https://transfer.sh/file` -> `ffsend upload file` — Mozilla Send-compatible CLI with passwords, expiry, and share links
+`ssh -R 80:localhost:3000 bastion` -> `zrok share public http 3000` — authenticated reverse proxy over OpenZiti with TLS, quotas, and audit logs
+`ssh -L 0.0.0.0:8000:localhost:8000 host` -> `tailscale serve https 443 localhost:8000` — expose local services on your tailnet with automatic TLS and ACLs
+`scp -r folder user@host:` -> `mutagen sync create folder ssh://user@host/folder` — continuous bidirectional sync with change detection and compression
+`scp notes.txt laptop:` -> `tailscale file cp notes.txt laptop:` — zero-config file handoff across devices behind NAT without opening ports
+# Virtualization & Dev Environments
+`docker-machine start default` -> `colima start` — lightweight macOS hypervisor exposing Docker/Podman with automatic port forwarding and volume sync
+`vagrant up ubuntu` -> `limactl start ubuntu.yaml` — Lima spins cloud-init style VMs using native hypervisors and simple YAML config
+`docker run -it debian bash` -> `distrobox create --image debian:stable` — integrates OCI containers with the host so packages/apps appear natively
+`minikube start --driver=virtualbox` -> `k3d cluster create dev` — launches multi-node Kubernetes on Docker with fast rebuilds and built-in load balancer
+`kind create cluster` -> `talosctl cluster create` — spins Talos-managed Kubernetes clusters for prod-parity immutable control planes
+`virtualenv env && source env/bin/activate` -> `devbox shell` — declarative Nix-based dev shells with pinned packages and automatic activation
+`conda env create -f environment.yml` -> `pixi run` — lockfile-managed Conda/mamba environments with cross-language dependencies and tasks
+# Secrets & Credentials
+`aws configure` -> `aws-vault add default` — stores long-lived AWS creds in the OS keychain and mints short-lived MFA sessions on demand
+`aws sts assume-role --role-arn ...` -> `saml2aws login --role ...` — fetch AWS credentials from Okta/SAML IdPs with cached tokens and automatic MFA
+`pass insert api/token` -> `gopass insert api/token` — tree-structured password store with git sync, templates, TOTP, and team mounts
+`source .env && command` -> `dotenvx run -- command` — layered .env loader supporting encryption, overrides, and remote secret stores
+`scp secrets.env server:` -> `doppler run -- command` — inject centrally managed secrets at runtime with rotation, audit, and access controls
+`kubectl apply -f secret.yaml` -> `kubeseal --format yaml < secret.yaml` — generate SealedSecrets that only the cluster controller can decrypt
+`aws ssm get-parameter --with-decryption Name` -> `chamber exec service -- command` — pulls AWS Parameter Store/Secrets Manager values just-in-time into env vars
+# Release Automation & CI
+`bash scripts/test.sh` -> `act pull_request` — executes GitHub Actions workflows locally using Docker-based runners for parity
+`npm version patch && npm publish` -> `changeset version && changeset publish` — manages changelog entries and semantic releases across monorepos
+`git commit -m "feat"` -> `cz commit` — Commitizen prompt enforces Conventional Commits with scopes, breaking-change notes, and emojis
+`pre-commit run --all-files` -> `lefthook run pre-commit` — parallel, language-aware git hook runner with caching and per-tool isolation
+`foreman start` -> `hivemind Procfile` — Procfile supervisor with hot reloading, restart policies, and multiplexed logs
+`npm run lint && npm run test` -> `turbo run lint test --parallel` — distributed task runner with remote caching across CI/CD and dev machines
+`python release.py` -> `release-please release` — automates semantic versioning, changelog generation, and GitHub releases via manifest configs
+# Diagramming & Publishing
+`plantuml diagram.puml` -> `d2 render diagram.d2` — diagrams-as-code with auto layout, live preview, and multiple output targets
+`dot -Tpng flow.dot` -> `mermaid-cli -i flow.mmd -o flow.svg` — renders Mermaid sequence/flow/state diagrams with theme + config flags
+`ascii art in README` -> `svgbob diagram.txt > diagram.svg` — converts text diagrams into crisp SVG/PNG assets automatically
+`visio architecture.vsdx` -> `structurizr-cli export workspace.dsl --format plantuml` — generates C4 diagrams from a versioned DSL with style sets
+`mysqldump --no-data appdb` -> `tbls doc mysql://user:pass@host/appdb` — auto documents schemas/ER diagrams into Markdown/HTML sites
+`manually screenshot code` -> `carbon-now-cli file.js --save-to shots/` — produces themed code screenshots with fonts/backgrounds straight from CLI
+`mindmap in GUI` -> `markmap-cli notes.md -o mindmap.html` — turns Markdown heading structures into interactive mind maps
+# Policy & Compliance
+`grep -R "0.0.0.0/0" terraform/` -> `checkov -d terraform/` — IaC static analysis against CIS/NIST benchmarks with suppressions + reports
+`terraform validate` -> `tflint --chdir terraform/` — provider-aware linting with custom rules and plugin ecosystem
+`kubectl apply --dry-run=client -f manifests` -> `kubeconform -strict manifests/` — schema validation across Kubernetes versions and CRDs
+`kubectl get pods --all-namespaces | grep privileged` -> `kubescape scan --controls nsa` — maps cluster posture to NSA/CIS profiles with remediation hints
+`bash audit.sh configs/` -> `conftest test configs/` — OPA/Rego policy testing for YAML, Helm, Terraform, and Dockerfiles
+`aws iam list-policies | jq` -> `steampipe query 'select * from aws_iam_policy where policy ->> ''Statement'' like ''%*%'' '` — multi-cloud inventory exposed as SQL tables for ad-hoc audits
+`ansible-playbook hardening.yml --check` -> `inspec exec profiles/hardening` — compliance-as-code with human readable reports and waiver support
+# API Mocking & Contract Testing
+`python -m http.server` -> `prism mock openapi.yaml` — mock REST server generated from OpenAPI with examples, validation, and dynamic responses
+`nc -l 8080` -> `mockoon-cli start --data mocks.json` — headless Mockoon runtime serving complex mocks, delays, and CRUD from JSON config
+`curl endpoints manually` -> `schemathesis run openapi.yaml --checks all` — property-based tests + fuzzing derived from OpenAPI/GraphQL schemas
+`swagger-cli validate openapi.yaml` -> `spectral lint openapi.yaml` — modern linter with shared/organization rulesets for OpenAPI and AsyncAPI
+`bash fuzz.sh api` -> `restler fuzz --grammar openapi.json` — stateful REST fuzzing that infers request dependencies automatically
+`tcpdump traffic && replay` -> `wiremock standalone --proxy-all="https://api" --record-mappings` — capture/replay HTTP interactions with templating and scenario state
+# Configuration Authoring & Validation
+`python -m toml.tool pyproject.toml` -> `taplo fmt pyproject.toml` — schema-aware TOML formatter with lint rules and canonical ordering
+`diff configA.yaml configB.yaml` -> `dyff between configA.yaml configB.yaml` — semantic YAML/JSON diff that ignores ordering and highlights structural changes
+`envsubst < values.yaml > rendered.yaml` -> `ytt -f templates/ --data-values-file values.yaml` — overlays, schemas, and templating without brittle sed/awk hacks
+`python - <<'PY' import jsonschema; jsonschema.validate(data, schema)` -> `cue vet schema.cue data.yaml` — typed validation plus defaults across YAML/JSON/TOML inputs
+`yamllint .github/workflows` -> `actionlint .github/workflows` — GitHub Actions–aware linter catching invalid jobs, expressions, and matrix typos
+`helm upgrade --install svc ./charts/svc` (for every chart) -> `helmfile apply` — declaratively manages many Helm releases with diffs, ordering, and rollbacks
+`sed -i '' 's/DEBUG=true/DEBUG=false/' .env` -> `dotenv-linter --fix .env` — finds duplicate keys, spacing, and quoting issues with one command
+`grep -R 'extensions/v1beta1' manifests/` -> `pluto detect-files manifests/` — surfaces deprecated Kubernetes APIs with suggested target versions
+# Data Versioning & Experiment Tracking
+`rsync data/ s3://bucket` -> `dvc push` — deduplicated, resumable dataset uploads with remote caches and locking
+`python train.py --lr=0.01` -> `dvc exp run --set-param train.lr=0.01` — records params, metrics, and code refs per experiment branch
+`diff metrics-prev.json metrics-new.json` -> `dvc metrics diff --targets metrics.json` — regression-aware metric comparisons between commits or experiments
+`python compare_tables.py --source db1 --target db2` -> `data-diff postgres://src/schema.table postgres://dst/schema.table` — streaming row-level diff across databases with sampling controls
+`aws s3 cp -r data/ s3://bucket-feature` -> `lakectl branch create lakefs://repo/feature-data --source lakefs://repo/main` — Git-style branching over object stores for isolated experimentation
+`tensorboard --logdir runs` -> `aim up --repo .` — interactive dashboard to compare runs, filter metrics, and inspect params
+`python train.py && python log_metrics.py` -> `mlflow run . --experiment-name churn` — packages code + params into reproducible runs with tracked artifacts
+`bash train.sh` -> `guild run train` — YAML-defined experiments with dependency capture, flag sweeps, and comparison tooling
+# Local Cloud & Emulators
+`aws --endpoint-url http://localhost:4566 s3 ls` -> `awslocal s3 ls` — AWS CLI wrapper that auto-injects LocalStack endpoints and creds
+`docker run localstack/localstack` -> `localstack start -d` — richer AWS service emulation with profiles, state persistence, and ready checks
+`python -m smtpd -n -c DebuggingServer localhost:1025` -> `mailpit serve --listen :1025 --http :8025` — modern SMTP sink with web UI, spam testing, and Webhooks
+`curl https://api.stripe.com/v1/customers` -> `stripe-mock --http-port 12111 --https-port 12112` — local Stripe API emulator with fixtures and schema validation
+`firebase serve --only functions` -> `miniflare --modules src/index.mjs --kv KV --durable-objects Counter` — Cloudflare Workers dev server with KV/Durable Objects and live reload
+`aws s3 cp -r static/ s3://dev-bucket` -> `minio server ./object-store --console-address :9090` — self-hosted S3-compatible storage with IAM-style policies and browser console
+`docker compose up temporal` -> `temporalite start --namespace default --ip 0.0.0.0` — single-binary Temporal dev server using SQLite for quick workflows
+`az storage blob upload --account devstorage ...` -> `azurite --silent --location ./azurite` — Azure Storage emulator covering Blob/Queue/Table APIs with local persistence
+# Repo Insights & Maintenance
+`git shortlog -sn --all` -> `onefetch` — generates repo cards with contributor stats, languages, and ASCII logos in one command
+`git count-objects -v` -> `git-sizer --verbose` — pinpoints oversize blobs, commits, and trees before they tank performance
+`rm -rf target node_modules dist` -> `kondo clean` — multi-language build-artifact cleanup with previews and ignore rules
+`git filter-branch --tree-filter 'rm secrets.txt' -- --all` -> `git filter-repo --path secrets.txt --invert-paths` — fast, safe history rewrite with automatic backups
+`find . -name '*.pyc' -delete` -> `pyclean .` — multi-core deletion of Python bytecode caches plus detection of stray __pycache__ dirs
+`git branch -vv` -> `git machete status` — visualizes stacked branches, sync state, and guides rebase/squash flows interactively
+`git rebase main && git push -f feature` -> `git town sync` — enforces clean branch hierarchies while syncing and rebasing with fewer footguns
+`git rebase --onto main feature` -> `git-imerge rebase main feature` — conflict-tolerant incremental rebase with checkpoints and undo
+# Project Scaffolding & Templates
+`cp -r boilerplate/ new-service` -> `cookiecutter gh:pydanny/cookiecutter-django` — interactive prompts, secrets, and best practices baked into the template
+`sed -e 's/APP_NAME/api/' -e 's/PORT/8080/' template/* > new/` -> `copier copy gh:ansible/cookiecutter-molecule api-service` — typed prompts, upgrades, and drift detection for scaffolds
+`cargo new cli-tool` -> `cargo generate --git https://github.com/rust-cli/cli-template cli-tool` — pulls maintained Rust templates with clap, tests, and CI wiring
+`git clone --depth 1 sveltejs/template app && rm -rf app/.git` -> `npx degit sveltejs/template app` — grabs a template without .git history or remote origin cruft
+`cat component.tsx.stub | sed 's/NAME/Button/' > src/Button.tsx` -> `hygen component new --name Button` — reusable generators with partials, prompts, and formatting hooks
+`printf 'function Component(){}' > src/Component.tsx` -> `plop component -- --name Component` — handlebars-based scaffolding with add/remove actions and prompts
+`mkdir package && touch setup.cfg` -> `hatch new package` — creates modern Python projects with pyproject, virtualenvs, and task hooks ready to go
+`python -m venv venv && pip install -r requirements.txt` -> `pdm init` — PEP 582 project scaffolding with lockfiles, scripts, and per-project environments
+# Terminal Dashboards & Widgets
+`watch 'free -m'` -> `gotop` — oscilloscope-style graphs, per-core load, and process tree controls in one view
+`vmstat 1` -> `tiptop` — performance-counter-aware top showing IPC, cache misses, and NUMA stats per process
+`lsmod` -> `kmon` — kernel module browser with live load/unload, parameter editing, and IRQ visualization
+`ifstat -t eth0` -> `bmon` — ncurses bandwidth graphs per interface with rate alarms and traffic totals
+`iwconfig wlan0` -> `wavemon` — Wi-Fi monitor with signal/noise history, bitrate tracking, and roaming events
+`cat /sys/class/power_supply/BAT0/capacity` -> `battop` — battery TUI with charge/discharge curves, cell temps, and wear indicators
+`pactl list sinks short` -> `pulsemixer` — PulseAudio/pipewire mixer with per-app volumes, channel balance, and default sink switching
+`docker stats` -> `dockly` — container dashboard with interactive logs, exec shell, resource charts, and pruning shortcuts
+`tmux panes running watch` -> `wtfutil` — modular terminal dashboard that tiles widgets (Grafana, logs, alerts) with YAML config
+`curl status.json | jq` -> `devdash` — compose Grafana-like boards (GitHub, Jira, k8s, Prometheus) directly in a ncurses grid
+# Terminal Feeds & Social
+`curl https://site/feed.xml` -> `newsboat` — offline-first RSS/Atom reader with tagging, podcast queueing, and external reader hooks
+`lynx https://reddit.com/r/devops` -> `tuir` — Reddit client with OAuth, inbox, multireddits, and inline media previews
+`curl https://api.twitter.com/2/tweets` -> `rainbowstream` — Twitter timeline in truecolor with streaming, filters, compose, and image previews
+`watch 'curl https://api.polygon.io/v2/last/trade/AAPL'` -> `ticker` — terminal stock tape with spark lines, alerts, and multi-ticker layouts
+`python price.py BTC` -> `cointop` — crypto portfolio view with depth charts, order books, and exchange feeds
+`element-desktop` -> `gomuks` — Matrix client focused on keyboard workflows, E2EE, and rooms/threads in splits
+`mastodon-cli toot` -> `toot tui` — ncurses Mastodon/XMPP interface with timelines, CW previews, and compose buffers
+`curl https://news.ycombinator.com` -> `hackernews-tui` — Hacker News browser with comment folding, job filtering, and `open-in-$EDITOR`
+# Terminal Media & Creativity
+`mpg123 playlist.m3u` -> `ncmpcpp` — MPD client with library search, lyrics pane, visualizer, and queue editing
+`spotify web player` -> `ncspot` — keyboard-driven Spotify front-end supporting offline cache, search, and multi-device sync
+`vlc -I dummy playlist.m3u` -> `musikcube` — cross-platform audio player with gapless playback, libraries, and streaming radio
+`watch 'pactl list sinks | grep Volume'` -> `cava` — real-time audio spectrum bars with configurable FFT backends and color themes
+`less slides.md` -> `mdp slides.md` — present Markdown with code highlight, live reload, and split-screen speaker notes
+`pandoc -t beamer talk.md` -> `lookatme talk.md` — GPU-accelerated Markdown slides with fragments, presenter console, and theme packs
+`watch -n 1 date` -> `peaclock` — animated world clock with alarms, timezone math, and layout presets
+`printf 'ASCII plant'` -> `cbonsai` — procedural bonsai generator with growth stages, seasons, and exportable art
+`cat /dev/urandom` -> `pipes-rs` — nostalgic pipes animation with colors, unicode styles, and screenshot capture
+# Terminal File Ops & Transfers
+`find DIR | less` -> `xplr DIR` — Rust file explorer with tree pane, file previews, bulk actions, and Lua automation
+`ls | fzf` -> `lf` — ranger-like manager with remote editing, server mode, and directory bookmarking
+`find DIR -type f | head` -> `walk` — fuzzy file picker showing Git status, file previews, and batch operations
+`select d in */; do cd "$d"; break; done` -> `clifm` — dual-pane manager with tabs, file tagging, trash, and shell integration
+`sftp user@host` -> `termscp` — TUI SCP/SFTP client with bookmarks, resume, and background transfers
+`grep '^Host' ~/.ssh/config` -> `sshs` — SSH launcher with search, tags, sync, and built-in tmux/sudo helpers
+`du -hs *` -> `diskonaut` — interactive sunburst of disk usage with deletions and undo safety net
+`grep -R TODO . | awk '{print $1}'` -> `fpp` — Facebook PathPicker turns grep output into navigable selections piped to editors
+# Terminal Productivity & Dev Flow
+`task next` -> `vit` — Taskwarrior TUI offering sorting, custom queries, and bulk edit/review flows
+`grep '^-' tasks.md` -> `taskbook` — Kanban-style todo/notes board with boards, priorities, and cloud sync via git
+`ncal -3` -> `calcure` — calendar + habit tracker with ICS import, agenda view, and countdowns
+`habit_tracker.csv` -> `dijo` — curses habit tracker with streaks, heatmaps, and scripting hooks
+`tmux new -s dev 'npm start'` -> `mprocs 'npm start'` — run multiple long-lived commands with logs, restarts, and hotkeys
+`gh issue list` -> `gh dash` — GitHub CLI dashboard showing PR/issue queues, reviews, and status with keyboard navigation
+`mysql -t` -> `termdbms` — universal DB browser (Postgres/MySQL/SQLite) with sort/filter/export, all in TUI
+`printf 'label value\nfoo 3\nbar 8' | column -t` -> `termgraph` — plots bar/line charts inline with annotations, colors, and streaming updates
+`git add -p` -> `gitu` — lightweight Git TUI to stage, amend, resolve conflicts, and inspect bisects interactively

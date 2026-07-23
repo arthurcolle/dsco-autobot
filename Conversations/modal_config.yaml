@@ -1,0 +1,39 @@
+name: conversations-modal
+import_path: fastapi_app:app  # module:attr (attr may be an app or a factory)
+
+image:
+  base: debian_slim          # debian_slim is recommended; other bases optional
+  pip:
+    - fastapi[standard]
+    - uvicorn
+    - pyyaml                 # needed to read this YAML at build time
+  apt: []                    # e.g., [curl, git]
+
+function:
+  concurrency: 100           # @modal.concurrent(max_inputs=...)
+  timeout: 60                # seconds
+  cpu: 1                     # vCPU
+  memory: 1024               # MiB
+  gpu: null                  # e.g., "t4" or null
+  min_containers: 0          # minimum containers to keep warm
+
+env:
+  APP_NAME: Conversations API
+  APP_VERSION: "0.1.0"
+  ENV: production
+
+secrets: []
+  # - name: my-web-auth-token
+
+volumes: []
+  # - name: conversations-data
+  #   mount_path: /data
+  #   create_if_missing: true
+
+domain:
+  custom_domain: null        # optional; set via Modal dashboard/CLI when deploying
+
+auth:
+  enabled: false
+  bearer_env_var: AUTH_TOKEN # if enabled, expects this env var to contain token
+

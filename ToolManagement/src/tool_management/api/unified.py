@@ -231,7 +231,9 @@ class Neo4jConnection:
 
         uri = os.getenv("NEO4J_URI", "bolt://n4j.brainchain.cloud")
         user = os.getenv("NEO4J_USER", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "password")
+        password = os.getenv("NEO4J_PASSWORD", "")
+        if not password:
+            logger.warning("NEO4J_PASSWORD not set — Neo4j connection will likely fail")
         self.driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
 
     async def close(self):
@@ -386,6 +388,17 @@ def create_app() -> FastAPI:
             graphiql=True
         )
         app.include_router(graphql_app, prefix="/graphql")
+
+    # ========================================================================
+    # Preset Integrations Catalog
+    # ========================================================================
+
+    try:
+        from .preset_routes import router as preset_router
+        app.include_router(preset_router)
+        logger.info("Preset integrations catalog enabled")
+    except Exception as e:
+        logger.warning(f"Could not load preset integrations: {e}")
 
         @app.get("/graphql/prompt")
         async def graphql_prompt():

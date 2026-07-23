@@ -54,10 +54,10 @@ def web():
     os.environ["SERVICE_URL"] = "https://arthurcolle--distributed-research-mcp-web.modal.run"
 
     # Parallel AI API key for deep research and task execution
-    os.environ["PARALLEL_API_KEY"] = "ge_Apqx6h_SK_S182NeG1l_vzBV_e2cpjfsPTjgB"
+    os.environ["PARALLEL_API_KEY"] = "TevoujRFhKoBwb5uqGit5SuajxiePU8pQHLF-uCJ"
 
     # Jina AI API key for web search and reading
-    os.environ["JINA_API_KEY"] = "jina_e3b2e0bc5b054de0b6fbbe50b059df94ii1L4iodLdyKwST4pSxTXiw3BbgT"
+    os.environ["JINA_API_KEY"] = "jina_c6997e7c38a240cabdd77d13dbfd4e40bP6-IWJ__OX8bSG51488ro0g6sQQ"
 
     from native.distributed_research_mcp.server import app
     return app

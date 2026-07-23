@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TTFT Test</title>
+    <link rel="preconnect" href="http://localhost:2046">
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #0f0; }
+        #results { white-space: pre; }
+        .fast { color: #0f0; }
+        .slow { color: #f00; }
+        button { padding: 10px 20px; font-size: 16px; margin: 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>⚡ TTFT Performance Test</h1>
+    <button onclick="testTTFT()">Run TTFT Test</button>
+    <button onclick="runMultiple()">Run 5 Tests</button>
+    <div id="results"></div>
+
+    <script>
+        async function testTTFT() {
+            const results = document.getElementById('results');
+            const start = performance.now();
+            
+            results.innerHTML += `\n🔄 Starting test at ${new Date().toISOString().split('T')[1]}...`;
+            
+            try {
+                const response = await fetch('http://localhost:2046/v1/interactions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: 'Say ok',
+                        stream: true,
+                        temperature: 0.3,
+                        max_tokens: 50
+                    })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let ttft = null;
+                let tokens = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data:')) {
+                            const data = JSON.parse(line.substring(5).trim());
+                            if (data.event === 'message.chunk' && !ttft) {
+                                ttft = performance.now() - start;
+                                const className = ttft < 1000 ? 'fast' : 'slow';
+                                results.innerHTML += `\n<span class="${className}">✅ TTFT: ${ttft.toFixed(0)}ms ${ttft < 1000 ? '🚀 FAST!' : '⚠️  SLOW'}</span>`;
+                            }
+                            if (data.event === 'message.chunk') tokens++;
+                        }
+                    }
+                }
+
+                const total = performance.now() - start;
+                results.innerHTML += `\n   Total: ${total.toFixed(0)}ms | Tokens: ${tokens}`;
+            } catch (error) {
+                results.innerHTML += `\n❌ Error: ${error.message}`;
+            }
+        }
+
+        async function runMultiple() {
+            for (let i = 0; i < 5; i++) {
+                await testTTFT();
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+    </script>
+</body>
+</html>

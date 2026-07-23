@@ -1,0 +1,21 @@
+#!/bin/bash
+# MCP Chat - Connect to multiple MCP servers
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT="$SCRIPT_DIR/dsco-mcp-chat.py"
+REQS="$SCRIPT_DIR/requirements.txt"
+
+# Default servers
+SERVERS=(
+  "http://localhost:2040"
+  "http://localhost:8787"
+  "http://localhost:8765"
+)
+
+# Build server args
+SERVER_ARGS=""
+for s in "${SERVERS[@]}"; do
+  SERVER_ARGS="$SERVER_ARGS --server-url $s"
+done
+
+exec uv run --with-requirements "$REQS" "$SCRIPT" $SERVER_ARGS "$@"

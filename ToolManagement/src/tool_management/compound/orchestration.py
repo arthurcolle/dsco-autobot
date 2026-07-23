@@ -695,7 +695,7 @@ class CollaborationManager:
         for event in room.event_buffer:
             try:
                 await websocket.send_json(event.model_dump(mode="json"))
-            except:
+            except Exception:
                 pass
 
         return True

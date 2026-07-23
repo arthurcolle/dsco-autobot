@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dsco-shared"
+version = "0.1.0"
+description = "Shared distributed-systems primitives for dsco-autobot services."
+readme = "README.md"
+requires-python = ">=3.10"
+# Phase 1: stdlib-only (addressing). Later phases add:
+#   httpx, tenacity, pybreaker, pydantic>=2, prometheus-client,
+#   opentelemetry-*, structlog, redis>=4.2, asyncpg, PyJWT[crypto], temporalio
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dsco_shared"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/dsco_shared" = "dsco_shared"

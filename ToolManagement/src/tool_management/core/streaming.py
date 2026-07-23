@@ -1437,6 +1437,11 @@ def create_tool_executor_for_jobs():
     _warm_ttl_seconds = float(os.getenv("BACKEND_WARM_TTL_SECONDS", "180"))
     _health_probe_timeout = float(os.getenv("BACKEND_HEALTH_PROBE_TIMEOUT_SECONDS", "2.5"))
     _stream_backend_default = os.getenv("ENABLE_BACKEND_STREAMING_PATH", "1") == "1"
+    # Max seconds to wait between two SSE frames from a backend stream before
+    # we treat the stream as stalled and fail over to the non-streaming path.
+    # Must exceed a backend's worst-case time-to-first-chunk (search backends
+    # run the full handler before streaming, ~20s), so default generously.
+    _stream_idle_timeout = float(os.getenv("BACKEND_STREAM_IDLE_TIMEOUT_SECONDS", "45"))
 
     def _load_replica_map() -> Dict[str, List[str]]:
         raw = os.getenv("BACKEND_REPLICA_URLS_JSON", "").strip()
@@ -1577,7 +1582,40 @@ def create_tool_executor_for_jobs():
 
             current_event = "message"
             data_lines: List[str] = []
-            async for line in response.aiter_lines():
+            # Bound the wait between SSE frames. A backend that emits `meta`
+            # then stalls (or a proxy that drops the long-lived connection
+            # without a terminal `done`/`error` frame) must NOT wedge the job
+            # forever at `stream_meta_received`. On idle-timeout we abandon the
+            # stream and return None so the caller fails over to the
+            # non-streaming /mcp path.
+            _line_iter = response.aiter_lines().__aiter__()
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        _line_iter.__anext__(),
+                        timeout=_stream_idle_timeout,
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Backend stream idle >%.1fs (tool=%s call_id=%s); "
+                        "falling back to non-streaming path",
+                        _stream_idle_timeout,
+                        resolved_name,
+                        call_id,
+                    )
+                    if call_id:
+                        try:
+                            await _shared_client.post(
+                                f"{base_url.rstrip('/')}/api/v1/calls/{call_id}/control",
+                                json={"action": "stop"},
+                                timeout=2.0,
+                            )
+                        except Exception:
+                            pass
+                    return None
+
                 if cancel_event and cancel_event.is_set():
                     if call_id:
                         try:
@@ -1730,6 +1768,37 @@ def create_tool_executor_for_jobs():
             stages_remaining=["route_backend", "invoke_backend", "process_response", "completed"],
             eta_seconds=20,
         )
+
+        # In-process registry tools (built-ins) are not in the backend tool
+        # store; execute them directly instead of routing to a backend.
+        if ":" not in tool_name:
+            from ..registry import get_registry as get_local_registry
+
+            local_registry = get_local_registry()
+            if local_registry.get_by_name(tool_name):
+                await _emit_stage(
+                    progress_callback,
+                    progress=50.0,
+                    stage="invoke_backend",
+                    stages_completed=["resolve_backend", "route_backend"],
+                    stages_remaining=["process_response", "completed"],
+                    eta_seconds=5,
+                    metadata={"backend_id": "local-registry"},
+                )
+                local_inputs = {
+                    k: v for k, v in inputs.items() if not k.startswith("_")
+                }
+                result = await local_registry.execute(tool_name, **local_inputs)
+                await _emit_stage(
+                    progress_callback,
+                    progress=90.0,
+                    stage="process_response",
+                    stages_completed=["resolve_backend", "route_backend", "invoke_backend"],
+                    stages_remaining=["completed"],
+                    eta_seconds=1,
+                    metadata={"backend_id": "local-registry"},
+                )
+                return result
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)

@@ -8,6 +8,7 @@ Provides endpoints for:
 - Queue statistics and diagnostics
 """
 
+import os
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
@@ -20,6 +21,9 @@ from ..queue import (
     TaskPriority,
     MCPBackend,
 )
+from ..integrations.codex_apps_vault import get_codex_apps_vault
+from ..integrations.codex_apps_adapter import get_codex_apps_adapter
+from ..integrations.codex_apps_oauth import get_codex_apps_oauth, KNOWN_PROVIDERS
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -469,6 +473,178 @@ async def embed_all_tools():
     }
 
 
+# =============================================================================
+# Codex Apps Secret Management
+# =============================================================================
+
+def _resolve_connector_id(key: str) -> str:
+    adapter = get_codex_apps_adapter()
+    connector = adapter.get(key)
+    if connector:
+        return connector.id
+    raise HTTPException(status_code=404, detail=f"Connector not found: {key}")
+
+
+def _get_oauth_client_creds(provider: str) -> tuple[str, str]:
+    """Load OAuth client credentials from env or vault."""
+    env_prefix = provider.upper().replace("-", "_")
+    client_id = os.getenv(f"{env_prefix}_CLIENT_ID", "")
+    client_secret = os.getenv(f"{env_prefix}_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        vault = get_codex_apps_vault()
+        client_id = vault.get_secret(f"_oauth_clients/{provider}", "client_id") or ""
+        client_secret = vault.get_secret(f"_oauth_clients/{provider}", "client_secret") or ""
+    return client_id, client_secret
+
+
+class SetCodexSecretRequest(BaseModel):
+    connector_id: str = Field(..., description="Codex Apps connector id, name, or slug")
+    key: str = Field(default="token", description="Secret key, e.g. token, api_key, refresh_token")
+    value: str = Field(..., description="Secret value (never returned by this API)")
+
+
+@router.post("/codex-secrets")
+async def set_codex_secret(request: SetCodexSecretRequest):
+    """Store a credential for a Codex Apps connector in the system keychain/vault."""
+    resolved_id = _resolve_connector_id(request.connector_id)
+    vault = get_codex_apps_vault()
+    success = vault.set_secret(resolved_id, request.key, request.value)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to store secret")
+    return {
+        "success": True,
+        "connector_id": resolved_id,
+        "key": request.key,
+        "stored": True,
+    }
+
+
+@router.get("/codex-secrets/{connector_id}")
+async def get_codex_secret_metadata(connector_id: str):
+    """Check whether a connector has stored secrets. Values are never returned."""
+    resolved_id = _resolve_connector_id(connector_id)
+    vault = get_codex_apps_vault()
+    keys = vault.list_keys(resolved_id)
+    return {
+        "connector_id": resolved_id,
+        "has_secrets": bool(keys),
+        "keys": keys,
+    }
+
+
+@router.delete("/codex-secrets/{connector_id}")
+async def delete_codex_secrets(connector_id: str, key: Optional[str] = Query(None)):
+    """Delete stored secret(s) for a connector. If key is omitted, all keys are deleted."""
+    resolved_id = _resolve_connector_id(connector_id)
+    vault = get_codex_apps_vault()
+    if key:
+        success = vault.delete_secret(resolved_id, key)
+        deleted = [key] if success else []
+    else:
+        keys = vault.list_keys(resolved_id)
+        deleted = [k for k in keys if vault.delete_secret(resolved_id, k)]
+    return {"success": True, "connector_id": resolved_id, "deleted_keys": deleted}
+
+
+@router.get("/codex-secrets")
+async def list_codex_secret_scopes():
+    """List connector ids that have stored secrets. Values are never returned."""
+    vault = get_codex_apps_vault()
+    return {"scopes": vault.list_scopes()}
+
+
+# =============================================================================
+# Codex Apps OAuth Management
+# =============================================================================
+
+class OAuthClientCredsRequest(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    scopes: Optional[List[str]] = Field(default=None, description="Override default scopes")
+
+
+@router.get("/codex-oauth/providers")
+async def list_codex_oauth_providers():
+    """List OAuth providers known to the system."""
+    return {
+        "providers": {
+            k: {
+                "name": v.name,
+                "auth_url": v.auth_url,
+                "token_url": v.token_url,
+                "scopes": v.scopes,
+                "pkce": v.pkce,
+            }
+            for k, v in KNOWN_PROVIDERS.items()
+        }
+    }
+
+
+@router.post("/codex-oauth/clients/{provider}")
+async def set_codex_oauth_client(provider: str, request: OAuthClientCredsRequest):
+    """Store OAuth client credentials for a provider in the vault."""
+    vault = get_codex_apps_vault()
+    scope = f"_oauth_clients/{provider}"
+    vault.set_secret(scope, "client_id", request.client_id)
+    vault.set_secret(scope, "client_secret", request.client_secret)
+    return {"success": True, "provider": provider, "stored": True}
+
+
+@router.post("/codex-oauth/{connector_id}/authorize")
+async def start_codex_oauth_authorization(connector_id: str, request: OAuthAuthorizeRequest = OAuthAuthorizeRequest()):
+    """Start OAuth flow for a connector. Returns the URL to open in a browser."""
+    resolved_id = _resolve_connector_id(connector_id)
+    oauth = get_codex_apps_oauth()
+    provider_name = oauth._detect_provider(oauth.adapter.get(resolved_id))
+    if not provider_name:
+        raise HTTPException(status_code=400, detail="Connector does not match a known OAuth provider")
+    client_id, client_secret = _get_oauth_client_creds(provider_name)
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=400,
+            detail=f"OAuth client credentials not configured for {provider_name}. Set env vars or POST /admin/codex-oauth/clients/{provider_name}",
+        )
+    auth_url, state, error = oauth.build_authorization_url(
+        resolved_id,
+        client_id=client_id,
+        scopes=request.scopes,
+    )
+    if error or not auth_url:
+        raise HTTPException(status_code=400, detail=error or "Failed to build authorization URL")
+    return {
+        "success": True,
+        "connector_id": resolved_id,
+        "provider": provider_name,
+        "authorization_url": auth_url,
+        "state": state,
+        "instructions": f"Open this URL in a browser and authorize the connector. The callback will land at /api/v1/codex-oauth/callback",
+    }
+
+
+@router.post("/codex-oauth/{connector_id}/refresh")
+async def refresh_codex_oauth_token(connector_id: str):
+    """Refresh the access token for a connector if a refresh token is stored."""
+    resolved_id = _resolve_connector_id(connector_id)
+    oauth = get_codex_apps_oauth()
+    provider_name = oauth._detect_provider(oauth.adapter.get(resolved_id))
+    if not provider_name:
+        raise HTTPException(status_code=400, detail="Connector does not match a known OAuth provider")
+    client_id, client_secret = _get_oauth_client_creds(provider_name)
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="OAuth client credentials not configured")
+    result = await oauth.refresh_token(resolved_id, client_id, client_secret)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Refresh failed"))
+    return result
+
+
+# =============================================================================
+# Semantic Tool Search
+# =============================================================================
+
 @router.get("/search-tools-semantic")
 async def search_tools_semantic(
     query: str,
@@ -573,22 +749,16 @@ async def list_tool_names(
     Get a quick list of all tool names (lightweight).
 
     Useful for autocomplete or quick reference.
+
+    Reflects the union of in-process tools and durable backend tools.
     """
-    from ..registry import get_registry
+    from ..catalog_view import merged_names, merged_by_category
 
-    registry = get_registry()
-    all_tools = registry.list_all()
-
-    if category:
-        all_tools = [t for t in all_tools if t.category == category]
-
+    names = merged_names(category)
     return {
-        "tool_names": [t.name for t in all_tools],
-        "count": len(all_tools),
-        "by_category": {
-            cat: [t.name for t in all_tools if t.category == cat]
-            for cat in set(t.category for t in all_tools if t.category)
-        }
+        "tool_names": names,
+        "count": len(names),
+        "by_category": merged_by_category(category),
     }
 
 
@@ -597,16 +767,16 @@ async def get_tool_categories():
     """
     Get all categories with tool counts.
 
-    Enables category-based browsing.
+    Enables category-based browsing. Reflects the union of in-process tools
+    and durable backend tools.
     """
-    from ..registry import get_registry
+    from ..catalog_view import merged_tool_dicts
 
-    registry = get_registry()
-    all_tools = registry.list_all()
+    all_tools = merged_tool_dicts()
 
     categories = {}
     for tool in all_tools:
-        cat = tool.category or "uncategorized"
+        cat = tool.get("category") or "uncategorized"
         if cat not in categories:
             categories[cat] = {
                 "count": 0,
@@ -614,9 +784,10 @@ async def get_tool_categories():
                 "backends": set()
             }
         categories[cat]["count"] += 1
-        categories[cat]["tools"].append(tool.name)
-        if tool.service_url:
-            categories[cat]["backends"].add(tool.service_url)
+        categories[cat]["tools"].append(tool.get("name"))
+        backend = tool.get("service_url") or tool.get("backend_id")
+        if backend:
+            categories[cat]["backends"].add(backend)
 
     # Convert sets to lists for JSON serialization
     for cat in categories:

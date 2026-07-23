@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Chat UI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        }
+        .message {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .typing-indicator {
+            display: inline-block;
+        }
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #6366f1;
+            margin: 0 2px;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+        .chat-container {
+            height: calc(100vh - 200px);
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        .tool-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #e0e7ff;
+            color: #4338ca;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            margin: 2px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto max-w-4xl p-4">
+        <!-- Header -->
+        <div class="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-t-lg p-6 text-white shadow-lg">
+            <h1 class="text-2xl font-bold">🤖 Agent Chat</h1>
+            <p class="text-purple-100 text-sm mt-1">Connected to Agent Server on port 2046</p>
+            <div class="mt-3 flex gap-4 text-sm">
+                <span id="status" class="flex items-center gap-2">
+                    <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+                    <span>Ready</span>
+                </span>
+                <span id="session-id" class="text-purple-200"></span>
+            </div>
+        </div>
+
+        <!-- Chat Messages -->
+        <div id="chat-container" class="chat-container bg-white border-x border-gray-200 p-6 space-y-4">
+            <!-- Welcome message -->
+            <div class="text-center text-gray-400 py-12">
+                <div class="text-6xl mb-4">💬</div>
+                <p class="text-lg">Start a conversation with the agent</p>
+                <p class="text-sm mt-2">Try: "say hello" or "what can you do?"</p>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="bg-white rounded-b-lg border border-gray-200 p-4 shadow-lg">
+            <form id="chat-form" class="flex gap-2">
+                <input
+                    type="text"
+                    id="message-input"
+                    placeholder="Type your message..."
+                    class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    autocomplete="off"
+                />
+                <button
+                    type="submit"
+                    id="send-btn"
+                    class="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                    Send
+                </button>
+            </form>
+            <div class="mt-2 flex gap-4 text-xs text-gray-500">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="enable-tools" checked class="rounded">
+                    <span>Enable Tools</span>
+                </label>
+                <button id="clear-btn" class="text-purple-600 hover:text-purple-700">
+                    Clear Chat
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let sessionId = null;
+        let currentMessageEl = null;
+        let isProcessing = false;
+
+        // DOM elements
+        const chatContainer = document.getElementById('chat-container');
+        const messageInput = document.getElementById('message-input');
+        const chatForm = document.getElementById('chat-form');
+        const sendBtn = document.getElementById('send-btn');
+        const statusEl = document.getElementById('status');
+        const sessionIdEl = document.getElementById('session-id');
+        const enableToolsEl = document.getElementById('enable-tools');
+        const clearBtn = document.getElementById('clear-btn');
+
+        // Utility: Create message element
+        function createMessageElement(role, content = '') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = `max-w-[80%] rounded-lg px-4 py-3 ${
+                role === 'user'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-100 text-gray-800'
+            }`;
+
+            const contentEl = document.createElement('div');
+            contentEl.className = 'whitespace-pre-wrap break-words';
+            contentEl.textContent = content;
+
+            bubble.appendChild(contentEl);
+            messageDiv.appendChild(bubble);
+
+            return { messageDiv, contentEl, bubble };
+        }
+
+        // Utility: Add typing indicator
+        function showTypingIndicator() {
+            const { messageDiv, bubble } = createMessageElement('assistant');
+            bubble.innerHTML = `
+                <div class="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
+            chatContainer.appendChild(messageDiv);
+            scrollToBottom();
+            return messageDiv;
+        }
+
+        // Utility: Scroll to bottom
+        function scrollToBottom() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Utility: Update status
+        function updateStatus(text, color = 'green') {
+            statusEl.innerHTML = `
+                <span class="w-2 h-2 bg-${color}-400 rounded-full"></span>
+                <span>${text}</span>
+            `;
+        }
+
+        // Utility: Add tool badge
+        function addToolBadge(bubble, toolName) {
+            const badge = document.createElement('span');
+            badge.className = 'tool-badge';
+            badge.textContent = `🔧 ${toolName}`;
+            bubble.appendChild(badge);
+        }
+
+        // Clear chat
+        clearBtn.addEventListener('click', () => {
+            chatContainer.innerHTML = `
+                <div class="text-center text-gray-400 py-12">
+                    <div class="text-6xl mb-4">💬</div>
+                    <p class="text-lg">Start a conversation with the agent</p>
+                    <p class="text-sm mt-2">Try: "say hello" or "what can you do?"</p>
+                </div>
+            `;
+            sessionId = null;
+            sessionIdEl.textContent = '';
+        });
+
+        // Handle form submission
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const message = messageInput.value.trim();
+            if (!message || isProcessing) return;
+
+            // Clear input
+            messageInput.value = '';
+            isProcessing = true;
+            sendBtn.disabled = true;
+            messageInput.disabled = true;
+
+            // Remove welcome message if present
+            const welcome = chatContainer.querySelector('.text-center');
+            if (welcome) welcome.remove();
+
+            // Add user message
+            const { messageDiv: userMsg } = createMessageElement('user', message);
+            chatContainer.appendChild(userMsg);
+            scrollToBottom();
+
+            // Show typing indicator
+            const typingIndicator = showTypingIndicator();
+
+            try {
+                // Send request
+                const response = await fetch('http://localhost:2046/v1/interactions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: sessionId,
+                        enable_tools: enableToolsEl.checked,
+                        temperature: 0.7,
+                        max_tokens: 4000
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                // Get session ID from headers
+                const responseSessionId = response.headers.get('X-Session-ID');
+                if (responseSessionId && !sessionId) {
+                    sessionId = responseSessionId;
+                    sessionIdEl.textContent = `Session: ${sessionId.substring(0, 8)}...`;
+                }
+
+                // Remove typing indicator
+                typingIndicator.remove();
+
+                // Create assistant message element
+                const { messageDiv: assistantMsg, contentEl, bubble } = createMessageElement('assistant');
+                chatContainer.appendChild(assistantMsg);
+                currentMessageEl = contentEl;
+                scrollToBottom();
+
+                // Read SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let currentContent = '';
+
+                updateStatus('Streaming...', 'blue');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('event:')) {
+                            // Event type line
+                            continue;
+                        }
+
+                        if (line.startsWith('data:')) {
+                            try {
+                                const data = JSON.parse(line.substring(5).trim());
+
+                                // Handle different event types
+                                if (data.event === 'message.chunk') {
+                                    // Stream text chunks
+                                    if (data.data && data.data.chunk) {
+                                        currentContent += data.data.chunk;
+                                        contentEl.textContent = currentContent;
+                                        scrollToBottom();
+                                    }
+                                } else if (data.event === 'message.complete') {
+                                    // Message complete
+                                    if (data.data && data.data.content) {
+                                        currentContent = data.data.content;
+                                        contentEl.textContent = currentContent;
+                                    }
+                                } else if (data.event === 'tool.execute.start') {
+                                    // Tool execution started
+                                    if (data.data && data.data.tool_name) {
+                                        addToolBadge(bubble, data.data.tool_name);
+                                        updateStatus(`Using tool: ${data.data.tool_name}`, 'blue');
+                                    }
+                                } else if (data.event === 'interaction.complete') {
+                                    // Interaction complete
+                                    updateStatus('Ready', 'green');
+                                }
+                            } catch (err) {
+                                console.error('Error parsing SSE data:', err, line);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                typingIndicator.remove();
+
+                const { messageDiv: errorMsg } = createMessageElement(
+                    'assistant',
+                    `❌ Error: ${error.message}\n\nMake sure the agent server is running on port 2046.`
+                );
+                chatContainer.appendChild(errorMsg);
+                updateStatus('Error', 'red');
+            } finally {
+                isProcessing = false;
+                sendBtn.disabled = false;
+                messageInput.disabled = false;
+                messageInput.focus();
+                scrollToBottom();
+            }
+        });
+
+        // Auto-focus input on load
+        messageInput.focus();
+    </script>
+</body>
+</html>

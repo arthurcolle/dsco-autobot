@@ -16,6 +16,15 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Load gitignored .env so launchd-spawned processes (which do not inherit an
+# interactive shell's env) get live API keys instead of falling back to sandbox.
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
 # Set PYTHONPATH to include src and native directories
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)/src:$(pwd)"
 
@@ -43,8 +52,10 @@ export MEMORY_MCP_PORT="${MEMORY_MCP_PORT:-4004}"
 export MEMORY_DATA_DIR="${MEMORY_DATA_DIR:-./data/memory}"
 
 # External MCP Backend URLs (optional - native MCPs take priority)
-export PARALLEL_AI_URL="${PARALLEL_AI_URL:-http://localhost:2040}"
-export JINA_MCP_URL="${JINA_MCP_URL:-http://localhost:8787}"
+# Only exported when explicitly set; otherwise these backends are skipped to
+# avoid registering unreachable endpoints that fail every health check.
+[[ -n "${PARALLEL_AI_URL:-}" ]] && export PARALLEL_AI_URL
+[[ -n "${JINA_MCP_URL:-}" ]] && export JINA_MCP_URL
 
 # API Keys (optional)
 export JINA_API_KEY="${JINA_API_KEY:-}"
@@ -71,8 +82,8 @@ echo "║  Native MCPs: DISABLED                                           "
 fi
 echo "╠══════════════════════════════════════════════════════════════════╣"
 echo "║  External Backends (if available):                               "
-echo "║    • Parallel AI: $PARALLEL_AI_URL"
-echo "║    • Jina MCP: $JINA_MCP_URL"
+echo "║    • Parallel AI: ${PARALLEL_AI_URL:-not configured (set PARALLEL_AI_URL)}"
+echo "║    • Jina MCP: ${JINA_MCP_URL:-not configured (set JINA_MCP_URL)}"
 echo "╠══════════════════════════════════════════════════════════════════╣"
 echo "║  API Keys:                                                       "
 echo "║    • JINA_API_KEY: ${JINA_API_KEY:+configured}${JINA_API_KEY:-not set}"
@@ -91,9 +102,19 @@ echo ""
 # DEPENDENCY CHECK
 # =============================================================================
 
+VENV_DIR="${VENV_DIR:-.venv}"
+
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Creating virtualenv at $VENV_DIR..."
+    uv venv --python 3.12 "$VENV_DIR"
+fi
+
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+
 if ! python3 -c "import fastapi" 2>/dev/null; then
     echo "Installing dependencies..."
-    pip install -e . || pip install fastapi uvicorn httpx pydantic websockets
+    uv pip install -r requirements.txt
 fi
 
 # =============================================================================
@@ -103,7 +124,9 @@ fi
 echo "Starting server..."
 echo ""
 
-python3 -m uvicorn tool_management.app:app \
-    --host "$HOST" \
-    --port "$PORT" \
-    --reload
+UVICORN_ARGS=(--host "$HOST" --port "$PORT")
+if [[ "$RELOAD" == "1" ]]; then
+    UVICORN_ARGS+=(--reload)
+fi
+
+exec python3 -m uvicorn tool_management.app:app "${UVICORN_ARGS[@]}"

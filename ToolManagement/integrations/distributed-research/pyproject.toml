@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parallel-websearch-server"
+version = "0.1.0"
+description = "FastAPI server wrapper for Parallel.ai websearch API with streaming support"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Parallel.ai", email = "support@parallel.ai"}]
+license = {text = "MIT"}
+
+dependencies = [
+    "fastapi>=0.109.0",
+    "fastapi-mcp>=0.4.0",
+    "uvicorn[standard]>=0.31.0",
+    "pydantic>=2.11.0,<3.0.0",
+    "pydantic-settings>=2.5.2",
+    "httpx>=0.28.1",
+    "aiohttp>=3.10",
+    "parallel-web>=0.1.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=23.2.0",
+    "sse-starlette>=1.6.1",
+    "psutil>=5.9",
+    "tiktoken>=0.5.0",
+    "anthropic>=0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-httpx>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+streaming = [
+    "sse-starlette>=1.6.0",
+]
+
+[project.scripts]
+parallel-websearch-server = "parallel_websearch_server.main:main"
+
+[tool.setuptools]
+packages = ["parallel_websearch_server"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+select = ["E", "F", "W"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
