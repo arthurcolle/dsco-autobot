@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from .api.routes import router as tools_router
 from .api.service_routes import router as service_router
@@ -36,6 +37,7 @@ from .api.tools_api import router as tools_api_router
 from .api.execution_routes import router as execution_router
 from .api.advanced_search_routes import router as advanced_search_router
 from .api.job_routes import router as job_router
+from .api.runtime_build_routes import router as runtime_build_router
 from .api.codex_apps_routes import router as codex_apps_router
 from .api.feedback_routes import router as feedback_router
 from .oauth import router as oauth_router, require_bearer, make_401_response
@@ -221,12 +223,28 @@ async def lifespan(app: FastAPI):
 
     # Initialize streaming executor for async jobs
     _cleanup_task = None
+    _durable_init_task = None
     try:
         from .core.streaming import create_tool_executor_for_jobs, get_streaming_executor
         from .persistence import get_execution_store
         tool_executor_fn = create_tool_executor_for_jobs()
         streaming_executor = get_streaming_executor(tool_executor=tool_executor_fn)
-        execution_store = get_execution_store()
+        execution_store = None
+        defer_durable_init = os.getenv("DEFER_DURABLE_EXECUTION_INIT", "0") == "1"
+        if defer_durable_init:
+            async def _initialize_durable_store():
+                nonlocal execution_store
+                try:
+                    execution_store = await asyncio.to_thread(get_execution_store)
+                    streaming_executor._execution_store = execution_store
+                    logger.info("Durable execution store initialized in background")
+                except Exception as exc:
+                    logger.warning(f"Deferred durable execution store unavailable: {exc}")
+
+            _durable_init_task = asyncio.create_task(_initialize_durable_store())
+            logger.info("Durable execution store initialization deferred")
+        else:
+            execution_store = get_execution_store()
         cleanup_interval_seconds = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "300"))
         job_ttl = int(os.getenv("JOB_EXECUTION_TTL_SECONDS", "3600"))
         workflow_ttl = int(os.getenv("WORKFLOW_EXECUTION_TTL_SECONDS", "86400"))
@@ -273,34 +291,36 @@ async def lifespan(app: FastAPI):
                         logger.info(f"Cleaned up {removed} old job executions")
                 except Exception as exc:
                     logger.warning(f"Job cleanup error: {exc}")
-                try:
-                    removed_workflows = execution_store.cleanup_old_workflows(max_age_seconds=workflow_ttl)
-                    cleanup_run["workflow_executions"] = int(removed_workflows or 0)
-                    if removed_workflows:
-                        logger.info(f"Cleaned up {removed_workflows} old workflow executions")
-                except Exception as exc:
-                    logger.warning(f"Workflow cleanup error: {exc}")
-                try:
-                    removed_artifacts = execution_store.cleanup_old_workflow_artifacts(max_age_seconds=artifact_ttl)
-                    cleanup_run["workflow_artifacts"] = int(removed_artifacts or 0)
-                    if removed_artifacts:
-                        logger.info(f"Cleaned up {removed_artifacts} old workflow artifacts")
-                except Exception as exc:
-                    logger.warning(f"Workflow artifact cleanup error: {exc}")
-                try:
-                    removed_side_effects = execution_store.cleanup_old_workflow_side_effects(max_age_seconds=side_effect_ttl)
-                    cleanup_run["workflow_side_effects"] = int(removed_side_effects or 0)
-                    if removed_side_effects:
-                        logger.info(f"Cleaned up {removed_side_effects} old workflow side-effect journal records")
-                except Exception as exc:
-                    logger.warning(f"Workflow side-effect cleanup error: {exc}")
-                try:
-                    removed_definitions = execution_store.cleanup_old_workflow_definitions(max_age_seconds=definition_ttl)
-                    cleanup_run["workflow_definitions"] = int(removed_definitions or 0)
-                    if removed_definitions:
-                        logger.info(f"Cleaned up {removed_definitions} old workflow definitions")
-                except Exception as exc:
-                    logger.warning(f"Workflow definition cleanup error: {exc}")
+                durable_store = execution_store
+                if durable_store is not None:
+                    try:
+                        removed_workflows = durable_store.cleanup_old_workflows(max_age_seconds=workflow_ttl)
+                        cleanup_run["workflow_executions"] = int(removed_workflows or 0)
+                        if removed_workflows:
+                            logger.info(f"Cleaned up {removed_workflows} old workflow executions")
+                    except Exception as exc:
+                        logger.warning(f"Workflow cleanup error: {exc}")
+                    try:
+                        removed_artifacts = durable_store.cleanup_old_workflow_artifacts(max_age_seconds=artifact_ttl)
+                        cleanup_run["workflow_artifacts"] = int(removed_artifacts or 0)
+                        if removed_artifacts:
+                            logger.info(f"Cleaned up {removed_artifacts} old workflow artifacts")
+                    except Exception as exc:
+                        logger.warning(f"Workflow artifact cleanup error: {exc}")
+                    try:
+                        removed_side_effects = durable_store.cleanup_old_workflow_side_effects(max_age_seconds=side_effect_ttl)
+                        cleanup_run["workflow_side_effects"] = int(removed_side_effects or 0)
+                        if removed_side_effects:
+                            logger.info(f"Cleaned up {removed_side_effects} old workflow side-effect journal records")
+                    except Exception as exc:
+                        logger.warning(f"Workflow side-effect cleanup error: {exc}")
+                    try:
+                        removed_definitions = durable_store.cleanup_old_workflow_definitions(max_age_seconds=definition_ttl)
+                        cleanup_run["workflow_definitions"] = int(removed_definitions or 0)
+                        if removed_definitions:
+                            logger.info(f"Cleaned up {removed_definitions} old workflow definitions")
+                    except Exception as exc:
+                        logger.warning(f"Workflow definition cleanup error: {exc}")
                 # Also clean up stale rate limiter entries
                 try:
                     from .core.rate_limit import get_quota_manager
@@ -467,12 +487,12 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"Background sync failed: {e}")
 
-            # Sync tools to Neo4j graph (optional, graceful failure)
+            # Sync tools to GraphSub (optional, graceful failure). Neo4j is
+            # selected only through the explicit compatibility mode.
             try:
-                neo4j_url = os.getenv("NEO4J_URL")
-                if neo4j_url:
-                    from .services.graph_client import GraphManagementClient
-                    graph = GraphManagementClient(base_url=neo4j_url)
+                from .services.graph_client import get_graph_substrate_client
+                graph = get_graph_substrate_client()
+                if graph:
                     store = get_tool_store()
                     tools = store.list_tools(limit=1000)
                     for tool in tools:
@@ -490,9 +510,9 @@ async def lifespan(app: FastAPI):
                                 "category": tool.category or "general",
                             }
                         )
-                    logger.info(f"Synced {len(tools)} tools to Neo4j graph")
+                    logger.info(f"Synced {len(tools)} tools to graph substrate")
             except Exception as e:
-                logger.warning(f"Neo4j graph sync skipped: {e}")
+                logger.warning(f"Graph substrate sync skipped: {e}")
 
         asyncio.create_task(_background_sync())
         logger.info("Background sync started (non-blocking)")
@@ -502,7 +522,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Stop background tasks
-    for _bg_task in [_cleanup_task, _health_poller_task, _warm_pool_task]:
+    for _bg_task in [_cleanup_task, _health_poller_task, _warm_pool_task, _durable_init_task]:
         if _bg_task:
             _bg_task.cancel()
             try:
@@ -702,7 +722,7 @@ def create_app() -> FastAPI:
     require_bearer_auth = os.getenv("REQUIRE_BEARER_AUTH", "0") == "1"
     allow_anonymous_announce = os.getenv("ALLOW_ANON_ANNOUNCE", "1") == "1"
     public_exact_paths = {
-        "/", "/health", "/openapi.json", "/favicon.ico",
+        "/", "/health", "/api/v1/status", "/openapi.json", "/favicon.ico",
         # Account bootstrap + browser-facing integration-auth surfaces
         "/api/v1/users/signup", "/api/v1/users/login",
         "/connect", "/account", "/api/v1/codex-oauth/callback",
@@ -712,8 +732,15 @@ def create_app() -> FastAPI:
         public_exact_paths.add("/api/v1/tools/announce")
     # Feedback submission is public (any AI agent calling a tool should be able to
     # report back without a token); listing/stats stay behind bearer auth.
-    public_post_paths = {"/api/v1/integration-feedback"} if allow_anonymous_announce else set()
-    public_prefixes = ("/docs", "/redoc", "/oauth", "/.well-known")
+    public_post_paths = {"/api/v1/billing/webhook"}
+    if allow_anonymous_announce:
+        public_post_paths.add("/api/v1/integration-feedback")
+    public_prefixes = (
+        "/docs",
+        "/redoc",
+        "/oauth",
+        "/.well-known",
+    )
 
     @app.middleware("http")
     async def bearer_auth_gate(request, call_next):
@@ -723,13 +750,83 @@ def create_app() -> FastAPI:
             return await call_next(request)
 
         path = request.url.path or "/"
-        if path in public_exact_paths or any(path.startswith(prefix) for prefix in public_prefixes):
+        signed_calendar_download = (
+            request.method == "GET"
+            and re.fullmatch(
+                r"/api/v1/calendar/invites/cal_[0-9a-f]{32}/calendar\.ics",
+                path,
+            )
+            is not None
+            and bool(request.query_params.get("token"))
+        )
+        public_ultimate_demo = (
+            path == "/api/v1/demo/ultimate"
+            or path.startswith("/api/v1/demo/ultimate/")
+        )
+        if (
+            path in public_exact_paths
+            or any(path.startswith(prefix) for prefix in public_prefixes)
+            or signed_calendar_download
+            # This workflow has fixed read-only sources and can only create
+            # local artifacts plus approval-gated drafts.
+            or public_ultimate_demo
+        ):
             return await call_next(request)
         if request.method == "POST" and path in public_post_paths:
             return await call_next(request)
 
         if require_bearer(request) is None:
             return make_401_response(request)
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def customer_scope_gate(request, call_next):
+        """Keep customer keys on tenant-aware, commercially gated surfaces.
+
+        Operator/service tokens remain available to the control plane. Until
+        older execution/MCP paths carry user identity end to end, customers use
+        only the canonical tools execute/batch routes and tenant-bound jobs.
+        """
+        try:
+            from .api.user_routes import resolve_user_from_request
+
+            user = resolve_user_from_request(request)
+        except Exception:
+            user = None
+        if not user:
+            return await call_next(request)
+
+        path = request.url.path or "/"
+        method = request.method.upper()
+        blocked = (
+            path.startswith(("/api/v1/admin", "/api/v1/native", "/api/v1/desktop"))
+            or path.startswith("/api/v1/gateway")
+            or path.startswith(("/api/v1/compose", "/compose"))
+            or (
+                path.startswith("/mcp")
+                and path not in {"/mcp", "/mcp/sse"}
+            )
+            or path in {"/api/v1/execute", "/api/v1/batch"}
+            or (path.startswith("/api/v1/services") and method != "GET")
+        )
+        if path.startswith("/api/v1/tools/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
+            blocked = path not in {
+                "/api/v1/tools/execute",
+                "/api/v1/tools/batch",
+                "/api/v1/tools/recommendations",
+                "/api/v1/tools/recommendations/feedback",
+            }
+        if blocked:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "customer_scope_denied",
+                    "detail": (
+                        "Customer keys use /api/v1/tools/execute or /api/v1/tools/batch. "
+                        "This route is reserved for the Tool Management control plane."
+                    ),
+                },
+            )
         return await call_next(request)
 
     # Backpressure middleware — shed load before hitting Modal's 2000 pending input queue limit
@@ -755,9 +852,8 @@ def create_app() -> FastAPI:
         finally:
             _inflight -= 1
 
-    # Root endpoint
-    @app.get("/")
-    async def root():
+    def _service_status():
+        """Machine-readable status shared by the landing page and status API."""
         service_registry = get_service_registry()
 
         # Remote backends from DuckDB (the real source of truth on Modal)
@@ -808,7 +904,7 @@ def create_app() -> FastAPI:
                 "health": "/health",
                 "gateway": "/api/v1/gateway",
                 "tools": "/api/v1/tools",
-                "execute": "/api/v1/execute",
+                "execute": "/api/v1/tools/execute",
                 "services": "/api/v1/services",
                 "admin": "/api/v1/admin",
                 "desktop": "/api/v1/desktop",
@@ -816,6 +912,30 @@ def create_app() -> FastAPI:
                 "urls": "/api/v1/urls",
             },
         }
+
+    # Commercial front door. The former JSON response remains at /api/v1/status.
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def root():
+        from .web.landing import render_landing
+
+        status = _service_status()
+        return HTMLResponse(
+            render_landing(
+                tool_count=status["tools_registered"],
+                backend_count=status["backends"]["total"],
+                healthy_backends=status["backends"]["healthy"],
+            ),
+            headers={
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+            },
+        )
+
+    @app.get("/api/v1/status", include_in_schema=False)
+    async def service_status():
+        return _service_status()
 
     # Health check
     @app.get("/health")
@@ -898,6 +1018,22 @@ def create_app() -> FastAPI:
     # Include composition/workflow routes with schema registry
     app.include_router(composition_router, prefix="/api/v1")
 
+    # Include declarative Life OS / private-butler blueprint planning
+    from .api.butler_routes import router as butler_router
+    app.include_router(butler_router)
+
+    # Give every integration a stable call, realtime-widget, and webhook handoff.
+    from .api.integration_surface_routes import router as integration_surface_router
+    app.include_router(integration_surface_router)
+
+    # Durable bidirectional calendar artifacts and approval-gated dispatch plans.
+    from .api.calendar_invite_routes import router as calendar_invite_router
+    app.include_router(calendar_invite_router)
+
+    # Public map/reduce proof: four sources -> artifact -> action drafts.
+    from .api.ultimate_demo_routes import router as ultimate_demo_router
+    app.include_router(ultimate_demo_router)
+
     # Include MCP protocol routes (direct /mcp access for SSE connections)
     app.include_router(mcp_router)
 
@@ -919,6 +1055,9 @@ def create_app() -> FastAPI:
     # Include async jobs API (/api/v1/jobs for submit/poll/stream/cancel)
     app.include_router(job_router, prefix="/api/v1")
 
+    # Tenant-owned RuntimeSpec approval/build control plane.
+    app.include_router(runtime_build_router)
+
     # Include Codex Apps connector catalog wrappers (/api/v1/codex-apps/*)
     app.include_router(codex_apps_router)
 
@@ -930,6 +1069,10 @@ def create_app() -> FastAPI:
     # Billing + resource provisioning (/api/v1/me/billing, /api/v1/me/resources)
     from .api.billing_routes import router as billing_router
     app.include_router(billing_router)
+
+    # Pandemonium agent forum (/api/v1/forum) — gated threads settle via prepaid credits
+    from .api.pandemonium_routes import router as forum_router
+    app.include_router(forum_router, prefix="/api/v1")
 
     # Include Codex Apps OAuth callback (must be public; browser redirects here)
     from .api.codex_apps_routes import callback_router
