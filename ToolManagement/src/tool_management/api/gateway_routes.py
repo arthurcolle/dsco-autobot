@@ -36,6 +36,8 @@ from ..core.cache import get_cache, CachePolicy
 from ..core.rate_limit import get_quota_manager, ClientQuota, RateLimitResult
 from ..core.metrics import get_metrics_collector, RequestTrace
 from ..core.streaming import get_streaming_executor, EventType
+from ..persistence.billing_store import get_billing_store
+from ..services import usage_billing as ub
 
 logger = logging.getLogger(__name__)
 
@@ -416,11 +418,13 @@ async def execute(
     request: ExecuteRequest,
     client_id: str = Depends(get_client_id),
     _rate_limit: RateLimitResult = Depends(check_rate_limit),
+    principal: Optional[str] = Depends(ub.billing_principal),
 ):
     """
     Execute a single tool.
 
     Features:
+    - Usage-based payment enforcement (prepaid credits / subscription)
     - Automatic backend routing
     - Result caching
     - Rate limiting
@@ -428,6 +432,19 @@ async def execute(
     """
     start_time = time.time()
     quota_manager = get_quota_manager()
+
+    # Usage-based payment gate: charge up front, refund below if the call fails.
+    store = get_billing_store()
+    charge = ub.charge(store, principal, request.tool)
+    if not charge["allowed"]:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "payment_required",
+                **{k: charge[k] for k in ("reason", "price_cents", "balance_cents") if k in charge},
+                "topup": "/api/v1/me/billing/topup",
+            },
+        )
 
     try:
         options = request.options or {}
@@ -450,8 +467,10 @@ async def execute(
         )
 
     except HTTPException:
+        ub.refund(store, principal, charge, request.tool)
         raise
     except Exception as e:
+        ub.refund(store, principal, charge, request.tool)
         return ExecuteResponse(
             execution_id="",
             tool=request.tool,
