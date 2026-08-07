@@ -1074,6 +1074,10 @@ def create_app() -> FastAPI:
     from .api.pandemonium_routes import router as forum_router
     app.include_router(forum_router, prefix="/api/v1")
 
+    # Agentic payment rails (/api/v1/pay) — card / x402 / Circle / CDP / Lightning / Cloudflare
+    from .api.payments_routes import router as payments_router
+    app.include_router(payments_router, prefix="/api/v1")
+
     # Include Codex Apps OAuth callback (must be public; browser redirects here)
     from .api.codex_apps_routes import callback_router
     app.include_router(callback_router)
