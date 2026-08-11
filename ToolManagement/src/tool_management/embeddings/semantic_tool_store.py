@@ -36,6 +36,29 @@ except Exception:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _embedder_space_suffix(embedding_service) -> str:
+    """Return a filename-safe suffix namespacing a vector DB by embedder+model.
+
+    Vectors produced by different embedding models occupy incompatible spaces
+    and must never be compared, so each embedder gets its own database file.
+    The legacy Jina v3 space keeps the historic empty suffix (the existing
+    ``tool_embeddings.db``) so current deployments do not silently lose their
+    already-indexed corpus.
+    """
+    import re as _re
+
+    name = str(getattr(embedding_service, "name", "") or "")
+    model = str(getattr(getattr(embedding_service, "config", None), "model", "") or "")
+    identity = name or model
+    if not identity:
+        return ""
+    if identity == "jina" and (not model or "jina-embeddings-v3" in model):
+        # Historic default space -> keep existing DB filename.
+        return ""
+    slug = _re.sub(r"[^a-z0-9]+", "_", identity.lower()).strip("_")
+    return f"_{slug}" if slug else ""
+
+
 @dataclass
 class ToolEmbedding:
     """Tool with its embedding"""
@@ -92,13 +115,16 @@ class SemanticToolStore:
     """
 
     def __init__(self, db_path: Optional[str] = None, max_context_tools: int = 50):
+        self.embedding_service = get_embedding_service()
         if db_path is None:
-            db_path = str(DATA_DIR / "tool_embeddings.db")
+            # Namespace the vector DB by embedder+model: vectors from different
+            # embedding models live in incompatible spaces and must never be
+            # compared. Derive a stable suffix from the active embedder.
+            db_path = str(DATA_DIR / f"tool_embeddings{_embedder_space_suffix(self.embedding_service)}.db")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"SemanticToolStore using database at {self.db_path}")
 
-        self.embedding_service = get_embedding_service()
         self.context = ContextWindow(max_tools=max_context_tools)
 
         # In-memory embedding matrix (loaded lazily)
@@ -126,21 +152,97 @@ class SemanticToolStore:
             self._conn.execute("PRAGMA cache_size=10000")
         return self._conn
 
+    @staticmethod
+    def _backend_key(backend: Optional[str]) -> str:
+        """Normalize the backend column to a non-null string for the composite PK."""
+        return backend or ""
+
+    @staticmethod
+    def _row_identity(tool_name: str, backend: Optional[str]) -> str:
+        """Stable in-memory identity for a (tool_name, backend) row.
+
+        Distinct backends may expose a tool under the same name; the identity
+        must therefore include the backend so they never collide.
+        """
+        return f"{SemanticToolStore._backend_key(backend)}::{tool_name}"
+
+    @staticmethod
+    def _enrich_tool_for_embedding(tool: Dict[str, Any], backend: Optional[str]) -> Dict[str, Any]:
+        """Return a copy of ``tool`` guaranteed to carry its provider label.
+
+        The embedder turns provider/backend/source/category/tags into embedded
+        text, so the label must be present on the dict handed to it even when
+        the caller did not enrich the tool upstream.
+        """
+        if not backend:
+            return tool
+        annotations = tool.get("annotations") or {}
+        has_label = (
+            tool.get("provider")
+            or tool.get("backend")
+            or tool.get("source")
+            or annotations.get("backend")
+        )
+        if has_label:
+            return tool
+        enriched = dict(tool)
+        merged = dict(annotations)
+        merged["backend"] = backend
+        enriched["annotations"] = merged
+        enriched["backend"] = backend
+        return enriched
+
     def _init_db(self):
         """Initialize the tool embeddings database"""
         with self._conn_lock:
             conn = self._get_conn()
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tool_embeddings (
-                    tool_name TEXT PRIMARY KEY,
-                    tool_data TEXT NOT NULL,
-                    embedding BLOB NOT NULL,
-                    backend TEXT,
-                    last_accessed TEXT,
-                    access_count INTEGER DEFAULT 0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+
+            # Detect the legacy name-only primary key. Two backends that expose
+            # a tool with the same name must not overwrite each other, so the
+            # identity is the (tool_name, backend) pair. Migrate in place when
+            # the old single-column PK is present.
+            pk_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(tool_embeddings)").fetchall()
+                if row[5] > 0
+            ]
+            if pk_cols == ["tool_name"]:
+                logger.info(
+                    "Migrating tool_embeddings to composite (tool_name, backend) primary key"
                 )
-            """)
+                conn.execute("ALTER TABLE tool_embeddings RENAME TO tool_embeddings_legacy")
+                conn.execute("""
+                    CREATE TABLE tool_embeddings (
+                        tool_name TEXT NOT NULL,
+                        tool_data TEXT NOT NULL,
+                        embedding BLOB NOT NULL,
+                        backend TEXT NOT NULL DEFAULT '',
+                        last_accessed TEXT,
+                        access_count INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (tool_name, backend)
+                    )
+                """)
+                conn.execute("""
+                    INSERT OR REPLACE INTO tool_embeddings
+                        (tool_name, tool_data, embedding, backend, last_accessed, access_count, created_at)
+                    SELECT tool_name, tool_data, embedding, COALESCE(backend, ''),
+                           last_accessed, access_count, created_at
+                    FROM tool_embeddings_legacy
+                """)
+                conn.execute("DROP TABLE tool_embeddings_legacy")
+            else:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS tool_embeddings (
+                        tool_name TEXT NOT NULL,
+                        tool_data TEXT NOT NULL,
+                        embedding BLOB NOT NULL,
+                        backend TEXT NOT NULL DEFAULT '',
+                        last_accessed TEXT,
+                        access_count INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (tool_name, backend)
+                    )
+                """)
 
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_backend
@@ -205,7 +307,12 @@ class SemanticToolStore:
         self._tool_data = data
         self._backends = backends
         self._access_counts = counts
-        self._name_to_idx = {name: i for i, name in enumerate(names)}
+        # In-memory identity mirrors the (tool_name, backend) composite PK so
+        # same-named tools from distinct backends never collide.
+        self._name_to_idx = {
+            self._row_identity(name, backend): i
+            for i, (name, backend) in enumerate(zip(names, backends))
+        }
         self._matrix_dirty = False
 
         logger.info(f"Loaded {len(names)} tool embeddings into in-memory matrix ({self._matrix.shape})")
@@ -215,11 +322,18 @@ class SemanticToolStore:
         if self._matrix_dirty or self._matrix is None:
             self._load_matrix()
 
-    async def index_tool(self, tool: Dict[str, Any], backend: Optional[str] = None):
-        """Index a single tool with its embedding."""
+    async def index_tool(self, tool: Dict[str, Any], backend: Optional[str] = None, force: bool = True):
+        """Index a single tool with its embedding.
+
+        ``force`` re-embeds even when the row already exists, so enriched text
+        actually takes effect (INSERT OR REPLACE semantics already overwrite).
+        """
         tool_name = tool.get("name")
         if not tool_name:
             return
+
+        tool = self._enrich_tool_for_embedding(tool, backend)
+        backend_key = self._backend_key(backend)
 
         try:
             embedding = await self.embedding_service.embed_tool_schema(tool)
@@ -230,62 +344,83 @@ class SemanticToolStore:
                     INSERT OR REPLACE INTO tool_embeddings
                     (tool_name, tool_data, embedding, backend, last_accessed, access_count)
                     VALUES (?, ?, ?, ?, ?, COALESCE(
-                        (SELECT access_count FROM tool_embeddings WHERE tool_name = ?),
+                        (SELECT access_count FROM tool_embeddings WHERE tool_name = ? AND backend = ?),
                         0
                     ))
                 """, (
                     tool_name,
                     json.dumps(tool),
                     embedding.tobytes(),
-                    backend,
+                    backend_key,
                     datetime.utcnow().isoformat(),
-                    tool_name
+                    tool_name,
+                    backend_key
                 ))
                 conn.commit()
 
             self._matrix_dirty = True
-            logger.debug(f"Indexed tool: {tool_name}")
+            logger.debug(f"Indexed tool: {tool_name} (backend={backend_key})")
 
         except Exception as e:
             logger.error(f"Failed to index tool {tool_name}: {e}")
 
-    async def index_tools_batch(self, tools: List[Dict[str, Any]], backend: Optional[str] = None):
-        """Batch index multiple tools — skips tools that already have embeddings."""
+    async def index_tools_batch(
+        self,
+        tools: List[Dict[str, Any]],
+        backend: Optional[str] = None,
+        force: bool = False,
+    ):
+        """Batch index multiple tools.
+
+        By default this skips tools that already have an embedding for this
+        backend. Pass ``force=True`` to re-embed and overwrite existing rows —
+        required whenever the embedded text format changes (e.g. injecting the
+        provider label), otherwise the stale embeddings are never refreshed.
+        Tool identity is the (tool_name, backend) pair, so two backends that
+        expose the same tool name do not collide.
+        """
         if not tools:
             return
 
+        backend_key = self._backend_key(backend)
+
         try:
-            # Check which tools already exist in the DB
+            # Check which tools already exist in the DB for THIS backend
             all_names = [t.get("name") for t in tools if t.get("name")]
             if not all_names:
                 return
 
-            with self._conn_lock:
-                conn = self._get_conn()
-                placeholders = ",".join("?" for _ in all_names)
-                cursor = conn.execute(
-                    f"SELECT tool_name FROM tool_embeddings WHERE tool_name IN ({placeholders})",
-                    all_names,
-                )
-                existing = {row[0] for row in cursor}
+            existing: Set[str] = set()
+            if not force:
+                with self._conn_lock:
+                    conn = self._get_conn()
+                    placeholders = ",".join("?" for _ in all_names)
+                    cursor = conn.execute(
+                        f"SELECT tool_name FROM tool_embeddings WHERE backend = ? AND tool_name IN ({placeholders})",
+                        [backend_key, *all_names],
+                    )
+                    existing = {row[0] for row in cursor}
 
-            # Filter to only new tools
+            # Filter to tools we actually need to (re)embed
             new_tools = []
             new_names = []
             new_texts = []
             for tool in tools:
                 name = tool.get("name")
-                if not name or name in existing:
+                if not name or (not force and name in existing):
                     continue
-                new_tools.append(tool)
+                enriched = self._enrich_tool_for_embedding(tool, backend)
+                new_tools.append(enriched)
                 new_names.append(name)
-                new_texts.append(self.embedding_service._tool_to_text(tool))
+                new_texts.append(self.embedding_service._tool_to_text(enriched))
 
             if not new_texts:
                 logger.debug(f"All {len(all_names)} tools from {backend or 'unknown'} already indexed, skipping")
                 return
 
-            logger.info(f"Embedding {len(new_texts)} new tools (skipping {len(existing)} existing) from {backend or 'unknown'}")
+            logger.info(
+                f"Embedding {len(new_texts)} tools (force={force}, skipping {len(existing)} existing) from {backend or 'unknown'}"
+            )
             embeddings = await self.embedding_service.embed(new_texts)
 
             with self._conn_lock:
@@ -297,13 +432,18 @@ class SemanticToolStore:
                     conn.execute("""
                         INSERT OR REPLACE INTO tool_embeddings
                         (tool_name, tool_data, embedding, backend, last_accessed, access_count)
-                        VALUES (?, ?, ?, ?, ?, 0)
+                        VALUES (?, ?, ?, ?, ?, COALESCE(
+                            (SELECT access_count FROM tool_embeddings WHERE tool_name = ? AND backend = ?),
+                            0
+                        ))
                     """, (
                         tool_name,
                         json.dumps(tool),
                         embedding.tobytes(),
-                        backend,
+                        backend_key,
                         datetime.utcnow().isoformat(),
+                        tool_name,
+                        backend_key,
                     ))
 
                 conn.commit()
@@ -353,7 +493,8 @@ class SemanticToolStore:
             similarities = np.nan_to_num(similarities, nan=0.0, posinf=0.0, neginf=0.0)
             # Map back to global indices
             top_k = min(limit, len(indices))
-            top_local = np.argpartition(-similarities, top_k)[:top_k]
+            top_k = min(limit, len(similarities))
+            top_local = np.argpartition(-similarities, top_k - 1)[:top_k]
             top_local = top_local[np.argsort(-similarities[top_local])]
             top_indices = indices[top_local]
             top_sims = similarities[top_local]
@@ -362,7 +503,7 @@ class SemanticToolStore:
                 similarities = self._matrix @ q / (self._matrix_norms * q_norm)
             similarities = np.nan_to_num(similarities, nan=0.0, posinf=0.0, neginf=0.0)
             top_k = min(limit, len(similarities))
-            top_indices = np.argpartition(-similarities, top_k)[:top_k]
+            top_indices = np.argpartition(-similarities, top_k - 1)[:top_k]
             top_indices = top_indices[np.argsort(-similarities[top_indices])]
             top_sims = similarities[top_indices]
 
@@ -411,7 +552,7 @@ class SemanticToolStore:
 
         # Top-k results
         top_k = min(limit, len(similarities))
-        top_indices = np.argpartition(-similarities, top_k)[:top_k]
+        top_indices = np.argpartition(-similarities, top_k - 1)[:top_k]
         top_indices = top_indices[np.argsort(-similarities[top_indices])]
 
         results = []
@@ -426,16 +567,24 @@ class SemanticToolStore:
                 "access_count": self._access_counts[idx],
             })
 
-        # Resolve extra names by direct lookup (O(1) per name)
+        # Resolve extra names by direct lookup. A bare name may be provided by
+        # several backends; map it to its highest-similarity occurrence.
         name_map: Dict[str, Dict[str, Any]] = {}
         for name in extra_names:
-            idx = self._name_to_idx.get(name)
-            if idx is not None:
+            best_idx: Optional[int] = None
+            best_sim = float("-inf")
+            for idx, (row_name, row_backend) in enumerate(zip(self._tool_names, self._backends)):
+                if row_name != name:
+                    continue
+                sim = float(similarities[idx])
+                if best_idx is None or sim > best_sim:
+                    best_idx, best_sim = idx, sim
+            if best_idx is not None:
                 name_map[name] = {
-                    "tool": self._tool_data[idx],
-                    "similarity": float(similarities[idx]),
-                    "backend": self._backends[idx],
-                    "access_count": self._access_counts[idx],
+                    "tool": self._tool_data[best_idx],
+                    "similarity": best_sim,
+                    "backend": self._backends[best_idx],
+                    "access_count": self._access_counts[best_idx],
                 }
 
         return results, name_map

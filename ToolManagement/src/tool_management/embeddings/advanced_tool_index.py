@@ -200,7 +200,7 @@ class AdvancedToolIndex:
         tool_id = f"{backend}:{name}"
 
         # Generate faceted text representations
-        purpose_text = self._generate_purpose_text(tool)
+        purpose_text = self._generate_purpose_text(tool, backend)
         input_text = self._generate_input_text(tool)
         output_text = self._generate_output_text(tool)
         example_text = self._generate_example_text(tool)
@@ -252,7 +252,7 @@ class AdvancedToolIndex:
             if not name:
                 continue
 
-            purpose_text = self._generate_purpose_text(tool)
+            purpose_text = self._generate_purpose_text(tool, backend)
             input_text = self._generate_input_text(tool)
             output_text = self._generate_output_text(tool)
             example_text = self._generate_example_text(tool)
@@ -550,9 +550,26 @@ class AdvancedToolIndex:
 
     # ==================== Private Methods ====================
 
-    def _generate_purpose_text(self, tool: Dict[str, Any]) -> str:
-        """Generate text describing what the tool does."""
+    def _generate_purpose_text(self, tool: Dict[str, Any], backend: str = "") -> str:
+        """Generate text describing what the tool does.
+
+        The provider/backend label and human source must enter the embedded
+        purpose text: semantic retrieval matches on this text, and a backend
+        label kept only as a filter column makes provider-name queries
+        (e.g. "cloudmail") match nothing.
+        """
+        provider = (
+            backend
+            or tool.get("backend")
+            or (tool.get("annotations") or {}).get("backend")
+            or ""
+        )
         parts = [f"Tool: {tool.get('name', 'unknown')}"]
+        if provider:
+            parts.append(f"Provider: {provider}")
+            parts.append(f"Provided by {provider}.")
+        if source := tool.get("source"):
+            parts.append(f"Source: {source}")
         if desc := tool.get("description"):
             parts.append(f"Purpose: {desc}")
         if tags := tool.get("tags"):

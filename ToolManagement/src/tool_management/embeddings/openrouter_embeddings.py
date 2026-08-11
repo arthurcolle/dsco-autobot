@@ -168,17 +168,30 @@ def tool_to_text(tool: Dict[str, Any]) -> str:
 
     Format:
     Tool: {name}
+    Provider: {backend}     # strong, repeated provider label for name queries
     Description: {description}
     Inputs: {input_schema}
     Outputs: {output_schema}
     Tags: {tags}
     Category: {category}
+    Source: {source}
     """
     parts = []
 
     # Name
     if "name" in tool:
         parts.append(f"Tool: {tool['name']}")
+
+    # Provider / backend label. This is the fix for provider-name retrieval
+    # (discover_tools("cloudmail") -> matched:0): the backend label used to be
+    # only a filter column and never entered the embedded text, so provider
+    # queries could never semantically match. Resolve it from every place it
+    # can live and emit a strong, explicit line.
+    provider = _resolve_provider_label(tool)
+    if provider:
+        parts.append(f"Provider: {provider}")
+        parts.append(f"Backend: {provider}")
+        parts.append(f"This tool is provided by {provider}.")
 
     # Description
     if "description" in tool:
@@ -216,13 +229,30 @@ def tool_to_text(tool: Dict[str, Any]) -> str:
     if "category" in tool:
         parts.append(f"Category: {tool['category']}")
 
-    # Annotations
-    if "annotations" in tool:
-        ann = tool["annotations"]
-        if ann.get("backend"):
-            parts.append(f"Backend: {ann['backend']}")
+    # Human-facing source / provider display name
+    if tool.get("source"):
+        parts.append(f"Source: {tool['source']}")
 
     return "\n".join(parts)
+
+
+def _resolve_provider_label(tool: Dict[str, Any]) -> str:
+    """Resolve the provider/backend label from wherever it may live.
+
+    Prefers the machine-readable backend id (an explicit ``provider``/``backend``
+    field or ``annotations.backend``), falling back to a human-facing ``source``
+    display name. Returns an empty string when no label is present.
+    """
+    for key in ("provider", "backend"):
+        value = tool.get(key)
+        if value:
+            return str(value)
+    annotations = tool.get("annotations") or {}
+    backend = annotations.get("backend")
+    if backend:
+        return str(backend)
+    source = tool.get("source")
+    return str(source) if source else ""
 
 
 class LocalHashEmbeddings:

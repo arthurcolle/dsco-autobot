@@ -9,13 +9,16 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+import secrets
+import threading
 import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 import httpx
 
 from ..persistence import get_tool_store, RegisteredTool, get_execution_store
@@ -46,6 +49,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
+# These are transport/control-plane fields, never tool arguments.  In
+# particular, accepting them inside a JSON object lets a caller impersonate a
+# tenant or smuggle credentials into a backend call.
+_RESERVED_ARGUMENT_KEYS = frozenset({
+    "tenant_id", "_tenant_credential", "_pooled_ok", "_tenant_id",
+    "_trace_id", "_session_id", "_parent_execution_id", "_timeout",
+    "_convergence_key", "_fanout_budget", "_group_reducer",
+    "_group_reducer_config",
+})
+
 # Shared HTTP client
 _client: Optional[httpx.AsyncClient] = None
 # backend_id -> (last accepted announce time, sha256 of announced tool surface)
@@ -70,10 +83,31 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
+def _backend_headers(backend_id: str, tenant_id: Optional[str] = None) -> Dict[str, str]:
+    """Resolve a backend bearer only from server-side environment secrets."""
+    env_suffix = re.sub(r"[^A-Z0-9]+", "_", backend_id.upper()).strip("_")
+    token = os.getenv(f"BACKEND_{env_suffix}_BEARER_TOKEN")
+    if not token:
+        token = os.getenv("BACKEND_BEARER_TOKEN")
+    if not token and backend_id in {"distributed-email", "distributed-email-mcp"}:
+        token = (
+            os.getenv("TOOLMANAGEMENT_EMAIL_BEARER_TOKEN")
+            or os.getenv("EMAIL_MCP_BEARER_TOKEN")
+        )
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if backend_id == "distributed-email-mcp" or backend_id == "distributed-email":
+        if tenant_id:
+            headers["X-DSCO-Tenant-ID"] = tenant_id
+    return headers
+
+
 # ==================== Request/Response Models ====================
 
 class ToolCall(BaseModel):
     """A single tool call request."""
+
+    model_config = ConfigDict(extra="forbid")
+
     tool: str = Field(..., description="Tool name or 'backend:tool' format")
     arguments: Dict[str, Any] = Field(default_factory=dict)
     timeout: float = Field(default=60.0, description="Timeout in seconds")
@@ -84,15 +118,22 @@ class ToolCall(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
-    tenant_id: Optional[str] = Field(
-        default=None,
-        description="Authenticated user id; set server-side from the bearer token. "
-                    "Injects the user's own integration credentials into execution.",
-    )
+    # Never part of the wire model. The route binds it from the validated bearer
+    # identity after Pydantic has rejected caller-supplied extra fields.
+    _tenant_id: Optional[str] = PrivateAttr(default=None)
+
+    @property
+    def tenant_id(self) -> Optional[str]:
+        return self._tenant_id
+
+    def bind_tenant(self, tenant_id: Optional[str]) -> None:
+        self._tenant_id = tenant_id
 
 
 class BatchRequest(BaseModel):
     """Batch tool execution request."""
+
+    model_config = ConfigDict(extra="forbid")
     calls: List[ToolCall]
     execution: str = Field(
         default="parallel",
@@ -200,6 +241,165 @@ class RecommendationFeedbackRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+def assert_safe_tool_arguments(arguments: Dict[str, Any]) -> None:
+    """Reject control-plane fields at every nesting level before execution."""
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                if key_text in _RESERVED_ARGUMENT_KEYS:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": "reserved_tool_argument",
+                            "field": f"{path}.{key_text}" if path else key_text,
+                        },
+                    )
+                walk(child, f"{path}.{key_text}" if path else key_text)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]")
+
+    walk(arguments, "arguments")
+
+
+def resolve_execution_identity(
+    request: Request, tool_names: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Authenticate an execution caller and classify customer vs service.
+
+    A token that looks like a customer key is never allowed to fall through to
+    operator behavior. This avoids turning a stale/revoked customer key into a
+    tenantless execution.
+
+    When ``tool_names`` is provided, non-entitled customers may still qualify
+    for the free discovery tier (allowlisted read-only tools, daily quota).
+    Callers that omit it (jobs, calendar) keep the strict subscription gate.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail={"error": "execution_auth_required"})
+    token = auth_header[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail={"error": "execution_auth_required"})
+
+    from .user_routes import resolve_user_from_request
+    from ..oauth import get_token_identity, require_bearer
+
+    user = resolve_user_from_request(request)
+    if token.startswith("sk-user-"):
+        if not user:
+            raise HTTPException(status_code=401, detail={"error": "customer_identity_invalid"})
+    elif user:
+        # User-bound OAuth identities are customer identities as well.
+        pass
+    elif require_bearer(request) is None:
+        raise HTTPException(status_code=401, detail={"error": "operator_or_service_identity_invalid"})
+
+    if user:
+        from ..persistence.billing_store import get_billing_store
+
+        try:
+            entitled = get_billing_store().has_active_entitlement(user["user_id"])
+        except Exception as exc:
+            logger.warning("Customer entitlement lookup failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "customer_entitlement_unavailable"},
+            ) from exc
+        if not entitled:
+            # Free discovery tier: non-entitled users may still call a small
+            # allowlist of read-only discovery/search tools under a daily
+            # quota, so an agent that just found us can evaluate the gateway
+            # before hitting the paywall. Everything else still 402s.
+            if tool_names and _trial_allows(user["user_id"], tool_names):
+                return {
+                    "kind": "customer_trial",
+                    "tenant_id": user["user_id"],
+                    "user": user,
+                }
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "customer_subscription_required",
+                    "checkout": "/api/v1/me/billing/checkout-session",
+                    "trial": {
+                        "free_tools": sorted(TRIAL_TOOL_ALLOWLIST),
+                        "free_calls_per_day": TRIAL_CALLS_PER_DAY,
+                        "remaining_today": _trial_remaining(user["user_id"]),
+                    },
+                },
+            )
+        return {"kind": "customer", "tenant_id": user["user_id"], "user": user}
+
+    identity = get_token_identity(token) or {}
+    return {"kind": "operator_service", "tenant_id": None, "identity": identity}
+
+
+# ==================== Free discovery tier ====================
+
+# Read-only discovery/search tools an unentitled user may sample. Bare names
+# match any backend namespacing (resolve happens later); keep this list to
+# side-effect-free tools only.
+TRIAL_TOOL_ALLOWLIST = {
+    t.strip()
+    for t in os.getenv(
+        "TRIAL_TOOL_ALLOWLIST",
+        "search_tools,list_tool_names,get_tool,query_tools,batch_get_tools,"
+        "list_tool_categories,list_tools_paginated,search,embed,rerank,read,"
+        "get_search_result,deepsearch,multi_search,segment,classify",
+    ).split(",")
+    if t.strip()
+}
+TRIAL_CALLS_PER_DAY = int(os.getenv("TRIAL_CALLS_PER_DAY", "25"))
+
+# Per-process daily counters {user_id: (yyyymmdd, count)}. Soft limit: multi-
+# container deployments each hold their own counter, so the effective global
+# quota is N_containers * TRIAL_CALLS_PER_DAY — acceptable for a trial gate.
+_trial_counts: Dict[str, Any] = {}
+_trial_lock = threading.Lock()
+
+
+def _trial_day() -> str:
+    return time.strftime("%Y%m%d", time.gmtime())
+
+
+def _trial_remaining(user_id: str) -> int:
+    with _trial_lock:
+        day, count = _trial_counts.get(user_id, (None, 0))
+        if day != _trial_day():
+            return TRIAL_CALLS_PER_DAY
+        return max(0, TRIAL_CALLS_PER_DAY - count)
+
+
+def _trial_allows(user_id: str, tool_names: List[str]) -> bool:
+    """True if every requested tool is trial-eligible and quota covers them."""
+    for name in tool_names:
+        # Accept both bare and backend-qualified ("backend:tool") forms.
+        bare = name.rsplit(":", 1)[-1]
+        if bare not in TRIAL_TOOL_ALLOWLIST:
+            return False
+    n = len(tool_names)
+    today = _trial_day()
+    with _trial_lock:
+        day, count = _trial_counts.get(user_id, (today, 0))
+        if day != today:
+            day, count = today, 0
+        if count + n > TRIAL_CALLS_PER_DAY:
+            return False
+        _trial_counts[user_id] = (day, count + n)
+    return True
+
+
+def _bind_customer_identity(request: Request, calls: List[ToolCall]) -> Dict[str, Any]:
+    """Validate caller, reject reserved arguments, and bind the server tenant."""
+    identity = resolve_execution_identity(request, [c.tool for c in calls])
+    for call in calls:
+        assert_safe_tool_arguments(call.arguments)
+        call.bind_tenant(identity["tenant_id"])
+    return identity
+
+
 # ==================== Tool Execution ====================
 
 async def execute_tool(call: ToolCall) -> ToolResult:
@@ -214,6 +414,48 @@ async def execute_tool(call: ToolCall) -> ToolResult:
         # Resolve the tool to backend
         backend_id, backend_url, tool_name = store.resolve_tool(call.tool)
         resolved_tool_id = f"{backend_id}:{tool_name}"
+
+        # Fast-fail: if the live service index knows this backend is currently
+        # unhealthy, skip the proxy hop instead of blocking on a doomed call.
+        # Fail-open — unknown/stale backends are still attempted (see
+        # service_index.is_healthy), so this only trims *known-dead* hops.
+        try:
+            from ..services.service_index import is_healthy
+
+            if not is_healthy(backend_id):
+                return ToolResult(
+                    tool=call.tool,
+                    backend=backend_id,
+                    success=False,
+                    error=f"BACKEND_UNAVAILABLE: {backend_id} failed its latest health probe",
+                    latency_ms=(time.time() - start) * 1000,
+                )
+        except Exception:  # noqa: BLE001 — never let the index break execution
+            pass
+
+        # Some backends front a single operator-owned data plane. They are not
+        # public managed add-ons until a tenant-specific instance exists.
+        if call.tenant_id and backend_id in {"distributed-email", "distributed-email-mcp"}:
+            configured_tenants = (
+                os.getenv("DISTRIBUTED_EMAIL_ALLOWED_TENANTS", "")
+                or os.getenv("EMAIL_ALLOWED_TENANT_IDS", "")
+            )
+            allowed_tenants = {
+                value.strip()
+                for value in configured_tenants.split(",")
+                if value.strip()
+            }
+            if call.tenant_id not in allowed_tenants:
+                return ToolResult(
+                    tool=call.tool,
+                    backend=backend_id,
+                    success=False,
+                    error=(
+                        "ACCESS_DENIED: Distributed Email is private while tenant-isolated "
+                        "mailbox provisioning is being completed."
+                    ),
+                    latency_ms=(time.time() - start) * 1000,
+                )
         allowed, circuit_state = breaker.allow_request(backend_id)
         if not allowed:
             retry_after = circuit_state.get("retry_after_seconds")
@@ -280,7 +522,6 @@ async def execute_tool(call: ToolCall) -> ToolResult:
 
             auth_provider = provider_for_tool(tool_name)
             if call.tenant_id:
-                outbound_arguments.setdefault("tenant_id", call.tenant_id)
                 if auth_provider:
                     from ..services.tenant_credentials import (
                         _default_store as _tenant_store,
@@ -288,7 +529,22 @@ async def execute_tool(call: ToolCall) -> ToolResult:
 
                     credential = _tenant_store().get_secret(call.tenant_id, auth_provider)
                     if credential:
-                        outbound_arguments.setdefault("_tenant_credential", credential)
+                        if backend_id != "integration-fabric":
+                            return ToolResult(
+                                tool=call.tool,
+                                backend=backend_id,
+                                success=False,
+                                error="CREDENTIAL_ENVELOPE_UNSUPPORTED: backend cannot receive tenant BYOK credentials safely",
+                                latency_ms=(time.time() - start) * 1000,
+                            )
+                        from ..core.credential_envelope import seal_credential_envelope
+
+                        outbound_arguments["_credential_envelope"] = seal_credential_envelope(
+                            credential,
+                            tenant_id=call.tenant_id,
+                            provider=auth_provider,
+                            backend_id=backend_id,
+                        )
                         auth_connected = True
                     else:
                         from ..persistence.billing_store import get_billing_store
@@ -314,6 +570,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 }
             },
             timeout=call.timeout,
+            headers=_backend_headers(backend_id, call.tenant_id),
         )
 
         latency_ms = (time.time() - start) * 1000
@@ -599,20 +856,12 @@ async def execute_single_tool(call: ToolCall, request: Request):
     Authenticated users (sk-user-* bearer) get their own integration
     credentials injected automatically.
     """
-    if not call.tenant_id:
-        try:
-            from .user_routes import resolve_user_from_request
-
-            user = resolve_user_from_request(request)
-            if user:
-                call.tenant_id = user["user_id"]
-        except Exception:
-            pass
+    _bind_customer_identity(request, [call])
     return await execute_tool(call)
 
 
 @router.post("/batch", response_model=BatchResponse)
-async def execute_batch(request: BatchRequest):
+async def execute_batch(batch: BatchRequest, request: Request):
     """
     Execute multiple tools in batch.
 
@@ -622,17 +871,18 @@ async def execute_batch(request: BatchRequest):
 
     Set parallel=false for sequential execution.
     """
-    execution_mode = request.execution.lower() if request.execution else "parallel"
-    if request.parallel is not None:
-        execution_mode = "parallel" if request.parallel else "sequential"
+    _bind_customer_identity(request, batch.calls)
+    execution_mode = batch.execution.lower() if batch.execution else "parallel"
+    if batch.parallel is not None:
+        execution_mode = "parallel" if batch.parallel else "sequential"
     if execution_mode not in {"parallel", "sequential"}:
         raise HTTPException(status_code=400, detail="execution must be 'parallel' or 'sequential'")
 
     if execution_mode == "parallel":
-        results = await asyncio.gather(*[execute_tool(call) for call in request.calls])
+        results = await asyncio.gather(*[execute_tool(call) for call in batch.calls])
     else:
         results = []
-        for call in request.calls:
+        for call in batch.calls:
             result = await execute_tool(call)
             results.append(result)
 
@@ -700,14 +950,35 @@ async def register_backend(request: RegisterBackendRequest):
 
 
 @router.post("/announce")
-async def announce_backend(request: AnnounceRequest, background_tasks: BackgroundTasks):
+async def announce_backend(
+    request: AnnounceRequest,
+    background_tasks: BackgroundTasks,
+    http_request: Request,
+):
     """
     Push-announce: a backend registers itself and its tools in one call.
 
     1. Registers the backend in DuckDB (synchronous)
     2. Registers each tool in DuckDB (synchronous)
-    3. Queues background tasks for embedding generation + Neo4j sync
+    3. Queues independently gated embedding generation and graph projection
     """
+    expected_token = (
+        os.getenv("REGISTRY_ANNOUNCE_TOKEN", "")
+        or os.getenv("TOOLMANAGEMENT_ANNOUNCE_TOKEN", "")
+    )
+    if expected_token:
+        supplied_token = http_request.headers.get("x-registry-token", "")
+        if not supplied_token:
+            authorization = http_request.headers.get("authorization", "")
+            if authorization.lower().startswith("bearer "):
+                supplied_token = authorization[7:]
+        if not secrets.compare_digest(supplied_token, expected_token):
+            raise HTTPException(status_code=401, detail="Valid backend announce token required")
+    elif os.getenv("REQUIRE_BEARER_AUTH", "0") == "1":
+        # A production registry must never silently fall back to anonymous
+        # backend mutation if its deployment secret was omitted.
+        raise HTTPException(status_code=503, detail="Backend announcement is not configured")
+
     min_interval = int(os.getenv("ANNOUNCE_MIN_INTERVAL_SECONDS", "300"))
     now = time.time()
     last_seen, last_hash = _announce_last_seen.get(request.backend_id, (0.0, ""))
@@ -728,6 +999,7 @@ async def announce_backend(request: AnnounceRequest, background_tasks: Backgroun
             "backend_id": request.backend_id,
             "registered": 0,
             "embedding_sync": "skipped_recent_announce",
+            "graph_projection": "skipped_recent_announce",
             "min_interval_seconds": min_interval,
         }
 
@@ -779,51 +1051,155 @@ async def announce_backend(request: AnnounceRequest, background_tasks: Backgroun
 
     registered = await asyncio.to_thread(_persist_announce)
 
-    # 3. Optional background: generate embeddings + sync to Neo4j
-    embed_sync_enabled = os.getenv("ENABLE_ANNOUNCE_EMBED_SYNC", "1") == "1"
-    if embed_sync_enabled:
-        background_tasks.add_task(_embed_and_graph_sync, request.backend_id, request.tools, request.url)
-        embed_sync_status = "queued"
-    else:
-        embed_sync_status = "disabled"
+    # Embedding generation and GraphSub projection deliberately have separate
+    # gates. A registry can keep its announce path lightweight while still
+    # maintaining a current graph-native tool catalogue.
+    #
+    # Enrich the raw announced tools with the provider/category/tags the
+    # persistence layer computed. The semantic embedders turn these fields
+    # into embedded text, so the provider/backend label must be present here
+    # or provider-name queries (e.g. discover_tools("cloudmail")) can never
+    # match anything.
+    enriched_tools = _enrich_announced_tools(request)
+    embed_sync_enabled = _announce_embedding_sync_enabled()
+    graph_projection_enabled = _announce_graph_projection_enabled()
+    if embed_sync_enabled or graph_projection_enabled:
+        background_tasks.add_task(_embed_and_graph_sync, request.backend_id, enriched_tools, request.url)
+    embed_sync_status = "queued" if embed_sync_enabled else "disabled"
+    graph_projection_status = "queued" if graph_projection_enabled else "disabled"
 
-    return {"backend_id": request.backend_id, "registered": registered, "embedding_sync": embed_sync_status}
+    return {
+        "backend_id": request.backend_id,
+        "registered": registered,
+        "embedding_sync": embed_sync_status,
+        "graph_projection": graph_projection_status,
+    }
 
 
-async def _embed_and_graph_sync(backend_id: str, tools: List[Dict], backend_url: str):
-    """Background task: generate embeddings and sync to Neo4j."""
-    # Embeddings
+def _enabled_env(name: str, default: str = "0") -> bool:
+    """Parse deployment feature flags consistently."""
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enrich_announced_tools(request) -> List[Dict[str, Any]]:
+    """Inject provider/category/tags into each announced tool for embedding.
+
+    The persistence layer derives ``backend_category`` and per-tool ``tags`` at
+    announce time, but previously handed the embedder the raw ``request.tools``
+    so that metadata never reached the vector index. Semantic retrieval matches
+    against embedded *text*, and the provider/backend label was only ever a
+    filter column — so provider-name queries matched nothing. This builds
+    enriched dicts (shallow copies; request.tools is left untouched) carrying
+    the backend label, human source, category, and tags so they enter the
+    embedded text.
+    """
+    backend_category = (
+        request.backend_id.replace("distributed-", "").replace("-mcp", "").strip()
+        or "general"
+    )
+    enriched: List[Dict[str, Any]] = []
+    for tool_data in request.tools:
+        tags = tool_data.get("tags", [])
+        if not tags:
+            schema = tool_data.get("inputSchema", {})
+            props = schema.get("properties", {})
+            tags = list(props.keys())[:5]
+
+        merged_annotations = dict(tool_data.get("annotations") or {})
+        merged_annotations["backend"] = request.backend_id
+
+        enriched_tool = dict(tool_data)
+        enriched_tool["category"] = tool_data.get("category", backend_category)
+        enriched_tool["tags"] = tags
+        enriched_tool["annotations"] = merged_annotations
+        enriched_tool["source"] = request.name
+        enriched.append(enriched_tool)
+    return enriched
+
+
+def _announce_embedding_sync_enabled() -> bool:
+    return _enabled_env("ENABLE_ANNOUNCE_EMBED_SYNC", "1")
+
+
+def _announce_graph_projection_enabled() -> bool:
+    # Preserve existing full-sync behaviour for deployments that have not yet
+    # opted into the explicit projection gate. Production sets this separately
+    # so it can project announcements without triggering embedding work.
+    return _enabled_env(
+        "ENABLE_ANNOUNCE_GRAPH_PROJECTION",
+        os.getenv("ENABLE_ANNOUNCE_EMBED_SYNC", "1"),
+    )
+
+
+async def _sync_announced_tool_embeddings(backend_id: str, tools: List[Dict]):
+    """Generate embeddings for an announced backend's tool surface.
+
+    Writes to the SAME SemanticToolStore that the semantic serving path reads
+    (semantic_mcp_routes), so announce-write and semantic-read share one vector
+    index. Previously this wrote only to the separate AdvancedToolIndex, which
+    the search path never reads — that fragmentation was the write/read store
+    split behind provider-name queries returning no matches.
+    """
     try:
-        from ..embeddings.advanced_tool_index import get_advanced_index
-        index = get_advanced_index()
-        await index.index_tools_batch(tools, backend_id)
-        logger.info(f"Embedded {len(tools)} tools for {backend_id}")
+        from ..embeddings.semantic_tool_store import get_tool_store
+        store = get_tool_store()
+        await store.index_tools_batch(tools, backend_id, force=True)
+        logger.info(f"Embedded {len(tools)} tools for {backend_id} into semantic tool store")
     except Exception as e:
         logger.warning(f"Embedding failed for {backend_id}: {e}")
 
-    # Neo4j
+
+async def _project_announced_tools_to_graph(
+    backend_id: str,
+    tools: List[Dict],
+    backend_url: str,
+    *,
+    raise_errors: bool = False,
+) -> int:
+    """Project announced tool metadata to the configured graph substrate."""
+    # GraphSub is the default substrate. Neo4j is available only with an
+    # explicit GRAPH_SUBSTRATE=neo4j_compat selection.
     try:
-        import os
-        neo4j_url = os.getenv("NEO4J_URL")
-        if neo4j_url:
-            from ..services.graph_client import GraphManagementClient
-            graph = GraphManagementClient(base_url=neo4j_url)
-            stmts = []
-            for t in tools:
-                stmts.append({
-                    "query": "MERGE (tool:Tool {tool_id: $tid}) "
-                             "SET tool.name=$name, tool.description=$desc, "
-                             "tool.backend_id=$bid, tool.backend_url=$burl, "
-                             "tool.updated_at=datetime()",
-                    "parameters": {
-                        "tid": f"{backend_id}:{t['name']}", "name": t["name"],
-                        "desc": t.get("description", ""), "bid": backend_id, "burl": backend_url
-                    }
-                })
-            await graph.execute_transaction(stmts)
-            logger.info(f"Neo4j synced {len(tools)} tools for {backend_id}")
+        from ..services.graph_client import get_graph_substrate_client
+        graph = get_graph_substrate_client()
+        if not graph:
+            if raise_errors:
+                raise RuntimeError("graph substrate is not configured")
+            return 0
+
+        stmts = []
+        for t in tools:
+            stmts.append({
+                "query": "MERGE (tool:Tool {tool_id: $tid}) "
+                         "SET tool.name=$name, tool.description=$desc, "
+                         "tool.backend_id=$bid, tool.backend_url=$burl, "
+                         "tool.updated_at=datetime()",
+                "parameters": {
+                    "tid": f"{backend_id}:{t['name']}", "name": t["name"],
+                    "desc": t.get("description", ""), "bid": backend_id, "burl": backend_url
+                }
+            })
+        await graph.execute_transaction(stmts)
+        logger.info(f"Graph substrate synced {len(tools)} tools for {backend_id}")
+        return len(tools)
     except Exception as e:
-        logger.warning(f"Neo4j sync failed for {backend_id}: {e}")
+        if raise_errors:
+            logger.warning(
+                "Graph substrate reconciliation failed for %s (%s)",
+                backend_id,
+                type(e).__name__,
+            )
+            raise
+        logger.warning(f"Graph substrate sync failed for {backend_id}: {e}")
+        return 0
+
+
+async def _embed_and_graph_sync(backend_id: str, tools: List[Dict], backend_url: str):
+    """Run only the announce background jobs enabled for this deployment."""
+    if _announce_embedding_sync_enabled():
+        await _sync_announced_tool_embeddings(backend_id, tools)
+    if _announce_graph_projection_enabled():
+        await _project_announced_tools_to_graph(backend_id, tools, backend_url)
 
 
 @router.get("/backends")
@@ -1766,21 +2142,72 @@ async def sync_backend_tools(backend_id: str):
 
     try:
         client = get_client()
+        url = f"{backend['url']}/mcp"
+        # Streamable-HTTP MCP requires: Authorization bearer, an initialize
+        # handshake to obtain a session id, and an Accept header covering
+        # text/event-stream. Bare tools/list without these returns 400/401/406
+        # on strict servers (e.g. cloudmail).
+        headers = _backend_headers(backend_id)
+        headers.setdefault("Content-Type", "application/json")
+        headers["Accept"] = "application/json, text/event-stream"
+
+        def _parse(body: str) -> dict:
+            # MCP may answer as SSE ("data: {...}") or plain JSON.
+            text = body.strip()
+            if text.startswith("data:") or "\ndata:" in text:
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("data:"):
+                        payload = line[5:].strip()
+                        if payload:
+                            try:
+                                return json.loads(payload)
+                            except Exception:
+                                continue
+                return {}
+            return json.loads(text)
+
+        session_id: Optional[str] = None
+        try:
+            init_resp = await client.post(
+                url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "init",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "tool-registry-sync", "version": "1.0"},
+                    },
+                },
+                headers=headers,
+                timeout=15.0,
+            )
+            session_id = init_resp.headers.get("mcp-session-id")
+        except Exception:
+            session_id = None  # fall through to a session-less attempt
+
+        list_headers = dict(headers)
+        if session_id:
+            list_headers["Mcp-Session-Id"] = session_id
+
         response = await client.post(
-            f"{backend['url']}/mcp",
+            url,
             json={
                 "jsonrpc": "2.0",
                 "id": "sync",
                 "method": "tools/list",
                 "params": {}
             },
-            timeout=10.0
+            headers=list_headers,
+            timeout=15.0
         )
 
         if response.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Backend returned {response.status_code}")
 
-        data = response.json()
+        data = _parse(response.text)
         tools = data.get("result", {}).get("tools", [])
 
         registered = 0
