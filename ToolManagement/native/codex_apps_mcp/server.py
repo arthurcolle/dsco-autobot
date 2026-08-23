@@ -17,7 +17,7 @@ Configure Claude Desktop to run:
           "args": ["-m", "native.codex_apps_mcp.server"],
           "env": {
         "TOOLMANAGEMENT_API_URL": "https://tools.distributed.systems",
-        "TOOLMANAGEMENT_BEARER_TOKEN": "sk-arthur-234"
+        "TOOLMANAGEMENT_BEARER_TOKEN": "<from secret manager>"
           }
         }
       }

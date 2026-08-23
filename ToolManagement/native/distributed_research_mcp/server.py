@@ -50,6 +50,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from native.base import install_backend_bearer_middleware
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1520,6 +1522,10 @@ class DistributedResearchMCP:
                         "capabilities": list(self._tools.keys()),
                         "tools": self.tools,
                     },
+                    headers=(
+                        {"x-registry-token": os.environ["REGISTRY_ANNOUNCE_TOKEN"]}
+                        if os.getenv("REGISTRY_ANNOUNCE_TOKEN") else {}
+                    ),
                     timeout=15.0,
                 )
                 if response.status_code == 200:
@@ -3043,6 +3049,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+install_backend_bearer_middleware(app)
 
 
 # =============================================================================

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -38,6 +39,57 @@ import uvicorn
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+
+def backend_bearer_is_valid(authorization: str) -> tuple[bool, bool]:
+    """Return (auth_required, valid) for native worker MCP requests."""
+    production = os.getenv("ENVIRONMENT", "").lower() in {"prod", "production"}
+    required = os.getenv("NATIVE_MCP_REQUIRE_BEARER", "1" if production else "0") == "1"
+    if not required:
+        return False, True
+    expected = os.getenv("BACKEND_BEARER_TOKEN", "")
+    if not expected or not authorization.lower().startswith("bearer "):
+        return True, False
+    return True, hmac.compare_digest(authorization[7:], expected)
+
+
+def install_backend_bearer_middleware(
+    app: FastAPI,
+    *,
+    public_paths: Optional[Set[str]] = None,
+) -> None:
+    """Fail closed around every non-public native-worker HTTP route.
+
+    Several older workers expose bespoke ``/execute`` and SSE routes instead
+    of using :class:`NativeMCPBase`.  Protecting only the shared ``/mcp``
+    handler therefore leaves equivalent execution surfaces reachable.  This
+    middleware is deliberately allowlist-based so future worker routes inherit
+    the private control-plane boundary automatically.
+    """
+
+    allowed = frozenset(public_paths or {"/", "/health"})
+
+    @app.middleware("http")
+    async def require_backend_bearer(request: Request, call_next):
+        if request.method == "OPTIONS" or request.url.path in allowed:
+            return await call_next(request)
+
+        required, valid = backend_bearer_is_valid(
+            request.headers.get("authorization", "")
+        )
+        if required:
+            if not os.getenv("BACKEND_BEARER_TOKEN", ""):
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "backend_auth_not_configured"},
+                )
+            if not valid:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "backend_auth_required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
 
 # =============================================================================
@@ -473,10 +525,13 @@ class MCPMesh:
             "params": {"name": tool, "arguments": args},
         }
 
+        token = os.getenv("BACKEND_BEARER_TOKEN", "")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         response = await self._client.post(
             f"{endpoint.url}/mcp",
             json=request,
             timeout=timeout or 30.0,
+            headers=headers,
         )
 
         if response.status_code != 200:
@@ -814,6 +869,10 @@ class NativeMCPBase(ABC):
                         "capabilities": list(self.CAPABILITIES),
                         "tools": self.TOOLS,
                     },
+                    headers=(
+                        {"x-registry-token": os.environ["REGISTRY_ANNOUNCE_TOKEN"]}
+                        if os.getenv("REGISTRY_ANNOUNCE_TOKEN") else {}
+                    ),
                 )
                 if response.status_code == 200:
                     result = response.json()
@@ -959,6 +1018,19 @@ class NativeMCPBase(ABC):
 
         @app.post("/mcp")
         async def mcp_handler(request: Request):
+            # Native workers often carry pooled provider credentials. In a
+            # production deployment their MCP surface is control-plane-only.
+            required, valid = backend_bearer_is_valid(request.headers.get("authorization", ""))
+            if required:
+                expected = os.getenv("BACKEND_BEARER_TOKEN", "")
+                if not expected:
+                    return JSONResponse(status_code=503, content={"error": "backend_auth_not_configured"})
+                if not valid:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"error": "backend_auth_required"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
             body = await request.json()
             return await self._handle_mcp_request(body)
 

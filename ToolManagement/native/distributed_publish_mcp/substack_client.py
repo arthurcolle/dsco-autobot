@@ -12,14 +12,44 @@ A comprehensive Python client for the Substack API with:
 Author: Built by exploring the Substack API
 """
 
-import requests
 import json
+import os
 import re
+import threading
 import time
 from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
+class SubstackAPIError(RuntimeError):
+    """A sanitized Substack API or response-contract failure."""
+
+
+def _normalize_publication(publication: str) -> str:
+    """Return a safe publication hostname without credentials, paths, or ports."""
+    value = (publication or "").strip()
+    parsed = urlparse(value if "://" in value else f"https://{value}")
+    hostname = parsed.hostname or ""
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("publication must be a hostname such as example.substack.com")
+    if not re.fullmatch(r"(?=.{1,253}$)[A-Za-z0-9.-]+", hostname):
+        raise ValueError("publication contains unsupported hostname characters")
+    return hostname.lower().rstrip(".")
 
 
 # =============================================================================
@@ -84,6 +114,45 @@ class SubstackNote:
 # =============================================================================
 # DOCUMENT BUILDER - ProseMirror Format
 # =============================================================================
+
+"""
+SUBSTACK PROSEMIRROR SCHEMA (empirically verified April 2026)
+
+SAFE NODE TYPES (render in editor):
+  paragraph          - attrs: {textAlign?}
+  heading            - attrs: {level: 2|3|4}
+  blockquote         - content: [paragraph]
+  pullquote          - content: [paragraph]  (centered italic with rules)
+  horizontalRule     - (no attrs)
+  codeBlock          - attrs: {language?}
+  bulletList         - content: [listItem]   (camelCase works, snake_case also works)
+  orderedList        - attrs: {order: 1}, content: [listItem]
+  listItem           - content: [paragraph]
+  image2             - attrs: {src, alt, ...full attrs}  (USE THIS for images)
+  youtube2           - attrs: {videoId, startTime?, endTime?}
+  paywall            - (no attrs, inserts paid divider)
+  button             - attrs: {url, text}
+  embeddedPost       - attrs: {url}
+
+CRASHED NODE TYPES (DO NOT USE):
+  image              - plain image node crashes editor
+  captionedImage     - crashes editor
+  subscribeWidget    - crashes editor
+  footnote           - crashes editor (inline)
+  table/tableRow/etc - all crash editor
+
+SAFE MARKS:
+  strong             - bold
+  em                 - italic
+  code               - inline code
+  link               - attrs: {href}
+
+CRASHED MARKS (DO NOT USE):
+  strike             - crashes editor
+  underline          - crashes editor
+  highlight          - crashes editor
+"""
+
 
 class SubstackDocument:
     """
@@ -201,11 +270,8 @@ class SubstackDocument:
             }
         }
 
-        # Note: Don't include imageCaption - it breaks Substack's editor
-        self.content.append({
-            "type": "captionedImage",
-            "content": [image_node]
-        })
+        # Use image2 directly - captionedImage crashes the editor
+        self.content.append(image_node)
         if caption:
             self.content.append({
                 "type": "paragraph",
@@ -258,6 +324,38 @@ class SubstackDocument:
             "type": "orderedList",
             "attrs": {"order": 1},
             "content": list_items
+        })
+        return self
+
+    def pullquote(self, text: str) -> 'SubstackDocument':
+        """Add a pull quote (centered italic text between horizontal rules)"""
+        self.content.append({
+            "type": "pullquote",
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text}]
+            }]
+        })
+        return self
+
+    def paywall(self) -> 'SubstackDocument':
+        """Add a paywall divider (paid content below this line)"""
+        self.content.append({"type": "paywall"})
+        return self
+
+    def button(self, text: str, url: str) -> 'SubstackDocument':
+        """Add a CTA button"""
+        self.content.append({
+            "type": "button",
+            "attrs": {"url": url, "text": text}
+        })
+        return self
+
+    def embedded_post(self, url: str) -> 'SubstackDocument':
+        """Embed another Substack post"""
+        self.content.append({
+            "type": "embeddedPost",
+            "attrs": {"url": url}
         })
         return self
 
@@ -437,6 +535,37 @@ class MarkdownToSubstack:
                     doc.numbered_list(items)
                 continue
 
+            # Markdown table (| col | col |) -> code block (Substack has no table nodes)
+            if stripped.startswith('|') and stripped.endswith('|') and '|' in stripped[1:-1]:
+                table_rows = []
+                while i < len(lines):
+                    l = lines[i].strip()
+                    if l.startswith('|') and l.endswith('|'):
+                        if not re.match(r'^\|[\s\-:|]+\|$', l):
+                            cells = [c.strip() for c in l.split('|')[1:-1]]
+                            table_rows.append(cells)
+                        i += 1
+                    else:
+                        break
+                if table_rows:
+                    n_cols = max(len(r) for r in table_rows)
+                    widths = [0] * n_cols
+                    for r in table_rows:
+                        for ci, c in enumerate(r):
+                            if ci < n_cols:
+                                widths[ci] = max(widths[ci], len(c.replace('**', '')))
+                    code_lines = []
+                    for ri, r in enumerate(table_rows):
+                        parts = []
+                        for ci in range(n_cols):
+                            cell = r[ci].replace('**', '') if ci < len(r) else ''
+                            parts.append(cell.ljust(widths[ci]))
+                        code_lines.append('  '.join(parts).rstrip())
+                        if ri == 0:
+                            code_lines.append('  '.join('─' * w for w in widths))
+                    doc.code_block('\n'.join(code_lines))
+                continue
+
             # Regular paragraph - parse inline formatting
             paragraph_content = MarkdownToSubstack._parse_inline(stripped)
             if paragraph_content:
@@ -544,12 +673,27 @@ class SubstackClient:
         print(f"Published: {post.canonical_url}")
     """
 
-    def __init__(self, token: str, publication: str, rate_limit: float = 0.5, timeout: float = 30.0):
-        self.token = token
-        self.publication = publication.replace("https://", "").replace("http://", "")
-        self.rate_limit = rate_limit
-        self.timeout = timeout
-        self._last_request = 0
+    def __init__(
+        self,
+        token: str,
+        publication: str,
+        rate_limit: float = 0.5,
+        timeout: float = 30.0,
+        session: Optional[requests.Session] = None,
+    ):
+        if not token or not token.strip():
+            raise ValueError("token is required")
+        if rate_limit < 0:
+            raise ValueError("rate_limit must be non-negative")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+
+        self.token = token.strip()
+        self.publication = _normalize_publication(publication)
+        self.rate_limit = float(rate_limit)
+        self.timeout = float(timeout)
+        self._last_request = 0.0
+        self._rate_limit_lock = threading.Lock()
 
         # Base URLs
         self.pub_base = f"https://{self.publication}/api/v1"
@@ -557,48 +701,86 @@ class SubstackClient:
 
         # Headers
         self.headers = {
-            "Cookie": f"substack.sid={token}",
+            "Cookie": f"substack.sid={self.token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
         }
+
+        # Retry only reads. Retrying draft creation, publication, or Notes can
+        # duplicate irreversible actions when a response is lost in transit.
+        self.session = session or requests.Session()
+        retries = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=0.4,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+            respect_retry_after_header=True,
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retries))
 
         # Cache
         self._user_id: Optional[int] = None
 
     def _rate_limit_wait(self):
         """Respect rate limits"""
-        elapsed = time.time() - self._last_request
-        if elapsed < self.rate_limit:
-            time.sleep(self.rate_limit - elapsed)
-        self._last_request = time.time()
+        with self._rate_limit_lock:
+            elapsed = time.monotonic() - self._last_request
+            if elapsed < self.rate_limit:
+                time.sleep(self.rate_limit - elapsed)
+            self._last_request = time.monotonic()
+
+    def _request(self, method: str, base: str, path: str, data: Optional[Dict] = None) -> Any:
+        self._rate_limit_wait()
+        try:
+            response = self.session.request(
+                method,
+                f"{base}{path}",
+                headers=self.headers,
+                json=data,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            suffix = f" (HTTP {status})" if status else ""
+            raise SubstackAPIError(f"Substack request failed{suffix}") from exc
+
+        if response.status_code == 204 or not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise SubstackAPIError("Substack returned a non-JSON response") from exc
 
     def _get(self, base: str, path: str) -> Dict:
         """GET request"""
-        self._rate_limit_wait()
-        r = requests.get(f"{base}{path}", headers=self.headers, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        return self._request("GET", base, path)
 
     def _post(self, base: str, path: str, data: Dict) -> Dict:
         """POST request"""
-        self._rate_limit_wait()
-        r = requests.post(f"{base}{path}", headers=self.headers, json=data, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        return self._request("POST", base, path, data)
 
     def _put(self, base: str, path: str, data: Dict) -> Dict:
         """PUT request"""
-        self._rate_limit_wait()
-        r = requests.put(f"{base}{path}", headers=self.headers, json=data, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        return self._request("PUT", base, path, data)
 
     def _delete(self, base: str, path: str) -> bool:
         """DELETE request"""
-        self._rate_limit_wait()
-        r = requests.delete(f"{base}{path}", headers=self.headers, timeout=self.timeout)
-        return r.status_code in [200, 204]
+        self._request("DELETE", base, path)
+        return True
+
+    def close(self) -> None:
+        """Release pooled HTTP connections."""
+        self.session.close()
+
+    def __enter__(self) -> "SubstackClient":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
 
     @staticmethod
     def _ensure_doc_structure(body_json: Dict) -> Dict:
@@ -664,30 +846,35 @@ class SubstackClient:
         """
         import base64
         import mimetypes
+        from pathlib import Path
+
+        path = Path(image_path).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError("image_path must reference an existing regular file")
+        max_bytes = int(os.getenv("SUBSTACK_MAX_IMAGE_BYTES", str(15 * 1024 * 1024)))
+        size = path.stat().st_size
+        if size <= 0:
+            raise ValueError("image file is empty")
+        if size > max_bytes:
+            raise ValueError(f"image exceeds SUBSTACK_MAX_IMAGE_BYTES ({max_bytes})")
 
         # Read and encode the image
-        with open(image_path, 'rb') as f:
+        with path.open('rb') as f:
             image_data = f.read()
 
         # Detect mime type
-        mime_type, _ = mimetypes.guess_type(image_path)
-        if not mime_type:
-            mime_type = 'image/png'
+        mime_type, _ = mimetypes.guess_type(path.name)
+        if not mime_type or not mime_type.startswith("image/"):
+            raise ValueError("image_path must have a recognized image file type")
 
         # Create data URI
         b64_data = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
 
         # Upload to Substack (must use JSON format)
-        self._rate_limit_wait()
-        r = requests.post(
-            f"{self.pub_base}/image",
-            headers=self.headers,
-            json={"image": data_uri},
-            timeout=self.timeout
-        )
-        r.raise_for_status()
-        result = r.json()
+        result = self._post(self.pub_base, "/image", {"image": data_uri})
+        if not isinstance(result, dict) or not result.get("url"):
+            raise SubstackAPIError("Substack image upload response did not include a URL")
         return {
             "url": result.get("url", ""),
             "width": result.get("imageWidth"),
@@ -699,26 +886,46 @@ class SubstackClient:
     # --- Authentication & Profile ---
 
     def test_connection(self) -> bool:
-        """Test if connected with valid credentials"""
+        """Test if connected with valid credentials by fetching the archive"""
         try:
-            self._put(self.sub_base, "/user-setting", {
-                "type": "last_home_tab",
-                "value_text": "inbox"
-            })
-            return True
-        except:
+            r = self._get(self.pub_base, "/archive?limit=1")
+            return isinstance(r, list)
+        except (SubstackAPIError, ValueError, TypeError):
             return False
 
     def get_user_id(self) -> int:
-        """Get authenticated user's ID"""
+        """Get authenticated user's ID from archive bylines or publication info"""
         if self._user_id:
             return self._user_id
-        r = self._put(self.sub_base, "/user-setting", {
-            "type": "last_home_tab",
-            "value_text": "inbox"
-        })
-        self._user_id = r.get("user_id")
-        return self._user_id
+        # Try archive bylines first
+        try:
+            posts = self._get(self.pub_base, "/archive?limit=1&sort=new")
+            if posts and isinstance(posts, list) and len(posts) > 0:
+                post = posts[0]
+                # Check multiple possible byline keys
+                for key in ("publishedBylines", "bylines", "authors"):
+                    bylines = post.get(key, [])
+                    if bylines and isinstance(bylines, list):
+                        self._user_id = bylines[0].get("id")
+                        if self._user_id:
+                            return self._user_id
+                # Fallback: author_id on the post itself
+                aid = post.get("author_id")
+                if aid:
+                    self._user_id = aid
+                    return self._user_id
+        except:
+            pass
+        # Fallback: get handle then profile
+        try:
+            handle = self.get_handle()
+            r = self._get(self.sub_base, f"/user/{handle}/public_profile")
+            self._user_id = r.get("id")
+            if self._user_id:
+                return self._user_id
+        except:
+            pass
+        raise ValueError("Could not determine user ID - check credentials")
 
     def get_handle(self) -> str:
         """Get authenticated user's handle"""
@@ -786,7 +993,13 @@ class SubstackClient:
 
     def get_archive(self, limit: int = 50) -> List[SubstackPost]:
         """Get published posts"""
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer from 1 to 100")
         r = self._get(self.pub_base, f"/archive?sort=new&limit={limit}")
+        if isinstance(r, dict):
+            r = r.get("posts", [])
+        if not isinstance(r, list):
+            raise SubstackAPIError("Unexpected archive response shape")
         posts = []
         for p in r:
             posts.append(SubstackPost(
@@ -833,6 +1046,12 @@ class SubstackClient:
     def get_drafts(self) -> List[SubstackDraft]:
         """Get all drafts"""
         r = self._get(self.pub_base, "/drafts")
+        # Substack's current endpoint wraps the page in an object.  Retain
+        # compatibility with the older bare-list response used by this client.
+        if isinstance(r, dict):
+            r = r.get("posts", [])
+        if not isinstance(r, list):
+            raise ValueError("Unexpected drafts response shape")
         drafts = []
         for d in r:
             drafts.append(SubstackDraft(
@@ -861,6 +1080,12 @@ class SubstackClient:
             audience: "everyone", "only_paid", or "founding"
             cover_image: Cover image URL
         """
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title is required")
+        if audience not in {"everyone", "only_paid", "founding"}:
+            raise ValueError("audience must be everyone, only_paid, or founding")
+
         # Convert body to JSON
         if isinstance(body, SubstackDocument):
             body_json = body.build()
@@ -932,6 +1157,8 @@ class SubstackClient:
 
     def publish_draft(self, draft_id: int, send_email: bool = False) -> Dict:
         """Publish a draft"""
+        if not isinstance(draft_id, int) or isinstance(draft_id, bool) or draft_id <= 0:
+            raise ValueError("draft_id must be a positive integer")
         data = {
             "send": send_email,
             "share_automatically": False
@@ -951,6 +1178,9 @@ class SubstackClient:
 
     def post_note(self, text: str) -> Dict:
         """Post a simple text note"""
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("text is required")
         data = {
             "bodyJson": {
                 "type": "doc",
@@ -968,6 +1198,12 @@ class SubstackClient:
 
     def post_note_with_link(self, text: str, link_url: str) -> Dict:
         """Post a note with a link attachment"""
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("text is required")
+        parsed = urlparse(link_url or "")
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("link_url must be an absolute HTTP(S) URL")
         # Create attachment
         attach = self._post(self.sub_base, "/comment/attachment/", {
             "url": link_url,

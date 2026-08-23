@@ -23,7 +23,7 @@ Exposes the ToolManagement Codex Apps catalog to Claude via the Model Context Pr
       "args": ["/Users/arthurcolle/Dsco/dsco-autobot/ToolManagement/start_codex_apps_mcp.sh"],
       "env": {
         "TOOLMANAGEMENT_API_URL": "https://tools.distributed.systems",
-        "TOOLMANAGEMENT_BEARER_TOKEN": "sk-arthur-234"
+        "TOOLMANAGEMENT_BEARER_TOKEN": "<from secret manager>"
       }
     }
   }

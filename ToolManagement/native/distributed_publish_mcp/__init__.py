@@ -1,7 +1,8 @@
 """
 Distributed Publish MCP - Native MCP server for content publishing and syndication.
 
-Provides webhooks, notifications, content distribution, and event streaming.
+Provides human-controlled Substack drafts and publishing alongside webhooks,
+notifications, content distribution, and event streaming.
 
 v2: Migrated to NativeMCPBase with cross-MCP mesh communication and broadcast.
 """

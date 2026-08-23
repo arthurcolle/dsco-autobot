@@ -46,6 +46,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
+from native.base import install_backend_bearer_middleware
+
 # Internal client for cross-MCP calls
 try:
     from native.internal_client import get_internal_client, InternalMCPClient
@@ -73,6 +75,15 @@ try:
 except ImportError:
     LOCAL_EMBEDDINGS_AVAILABLE = False
     get_resilient_embedding_service = None  # type: ignore
+
+# Turbopuffer-backed vector index (Jina v3 + turbopuffer, per-tenant namespace)
+try:
+    from .turbopuffer_store import TurbopufferMemoryIndex
+except ImportError:
+    try:
+        from turbopuffer_store import TurbopufferMemoryIndex  # type: ignore
+    except ImportError:
+        TurbopufferMemoryIndex = None  # type: ignore
 
 # Output guard for enforcing size limits and URL capture
 try:
@@ -1159,6 +1170,10 @@ class DistributedMemoryMCP:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; isolates this operation to the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    },
                     "event_type": {
                         "type": "string",
                         "description": "Type of event (e.g., 'task_completed', 'error', 'interaction')"
@@ -1199,6 +1214,10 @@ class DistributedMemoryMCP:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; isolates this operation to the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    },
                     "query": {
                         "type": "string",
                         "description": "Similarity search query"
@@ -1237,6 +1256,10 @@ class DistributedMemoryMCP:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; isolates this operation to the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    },
                     "subject": {
                         "type": "string",
                         "description": "Subject of the belief"
@@ -1411,6 +1434,10 @@ class DistributedMemoryMCP:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; isolates this operation to the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    },
                     "tier": {
                         "type": "string",
                         "enum": ["working", "episodic", "semantic", "procedural"],
@@ -1470,7 +1497,12 @@ class DistributedMemoryMCP:
             "description": "Get statistics about memory usage across all tiers.",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; reports the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    }
+                }
             }
         },
         {
@@ -1479,6 +1511,10 @@ class DistributedMemoryMCP:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "tenant": {
+                        "type": "string",
+                        "description": "Optional tenant id; isolates this operation to the tenant-scoped turbopuffer namespace dsco-memory-{tenant}."
+                    },
                     "query": {
                         "type": "string",
                         "description": "Natural language query"
@@ -1653,6 +1689,21 @@ class DistributedMemoryMCP:
             except Exception as e:
                 logger.warning(f"Failed to initialize SemanticBeliefStore: {e}")
 
+        # Turbopuffer vector index: replaces brute-force cosine scans when
+        # TURBOPUFFER_API_KEY + JINA_API_KEY are present. Local SQLite stays
+        # the source of truth; turbopuffer serves similarity/hybrid recall.
+        self._tpuf: Optional["TurbopufferMemoryIndex"] = None
+        if TurbopufferMemoryIndex is not None:
+            try:
+                self._tpuf = TurbopufferMemoryIndex.from_env()
+                if self._tpuf:
+                    logger.info(
+                        f"Turbopuffer index ready (namespace={self._tpuf.namespace}, "
+                        f"region={self._tpuf.region}, embedder={self._tpuf.embedder_tag})"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to initialize turbopuffer index: {e}")
+
         # Internal MCP client for cross-MCP calls (skill execution, etc.)
         self._mcp_client: Optional[InternalMCPClient] = None
         self._embeddings_available = self._embedder is not None
@@ -1753,6 +1804,7 @@ class DistributedMemoryMCP:
             description="Cognitive memory architecture MCP",
             version=self.VERSION,
         )
+        install_backend_bearer_middleware(app)
 
         @app.on_event("startup")
         async def seed_memory():
@@ -1789,6 +1841,10 @@ class DistributedMemoryMCP:
                             "capabilities": [t["name"] for t in self.TOOLS],
                             "tools": self.TOOLS,
                         },
+                        headers=(
+                            {"x-registry-token": os.environ["REGISTRY_ANNOUNCE_TOKEN"]}
+                            if os.getenv("REGISTRY_ANNOUNCE_TOKEN") else {}
+                        ),
                         timeout=15.0,
                     )
                     if response.status_code == 200:
@@ -2097,6 +2153,22 @@ class DistributedMemoryMCP:
             session_id=args.get("session_id"),
         )
 
+        if self._tpuf:
+            content_text = content if isinstance(content, str) else json.dumps(content)
+            self._tpuf.upsert_background(
+                episode_id, "episodic",
+                f"{event_type}: {content_text}",
+                event_type=event_type,
+                tenant=args.get("tenant"),
+                session_id=args.get("session_id"),
+                timestamp=time.time(),
+                meta={
+                    "participants": args.get("participants"),
+                    "outcome": args.get("outcome"),
+                    "importance": args.get("importance", 0.5),
+                },
+            )
+
         return {
             "content": [{
                 "type": "text",
@@ -2122,8 +2194,37 @@ class DistributedMemoryMCP:
         if args.get("query"):
             query = args["query"]
 
+            # Turbopuffer hybrid recall first (indexed ANN + BM25, no local scan)
+            if self._tpuf:
+                hits = await self._tpuf.search(
+                    query, tiers=["episodic"], session_id=session_id, limit=limit,
+                    tenant=args.get("tenant"),
+                )
+                by_id = {e.id: e for e in self.episodic._episodes}
+                for hit in hits:
+                    ep = by_id.get(hit["id"])
+                    if ep is None:
+                        # Row exists only in the tenant's namespace (e.g. written
+                        # by another container); synthesize from the indexed copy.
+                        ep = Episode(
+                            id=hit["id"],
+                            event_type=hit.get("event_type") or "unknown",
+                            content=hit.get("text"),
+                            timestamp=hit.get("ts") or 0.0,
+                            session_id=hit.get("session_id"),
+                        )
+                    episodes.append(ep)
+                    similarity_scores[ep.id] = hit["score"]
+                if episodes:
+                    used_embeddings = True
+
+            # Tenant-scoped recall must stay inside the tenant's namespace:
+            # the local SQLite store is shared, so falling back would leak
+            # other tenants' memories.
+            tenant_scoped = bool(args.get("tenant")) and self._tpuf is not None
+
             # Try embedding-based similarity first
-            if self._embeddings_available:
+            if not episodes and not tenant_scoped and self._embeddings_available:
                 # Ensure episodes have embeddings from the active embedder
                 await self._ensure_episode_embeddings(limit=100)
                 query_embedding = await self._get_embedding(query)
@@ -2138,7 +2239,7 @@ class DistributedMemoryMCP:
                     used_embeddings = True
 
             # Fallback to text similarity
-            if not episodes:
+            if not episodes and not tenant_scoped:
                 episodes = self.episodic.recall_by_similarity_text(query, limit=limit, session_id=session_id)
 
         elif args.get("event_type"):
@@ -2201,6 +2302,22 @@ class DistributedMemoryMCP:
                 persistent_stored = True
             except Exception as e:
                 logger.warning(f"Failed to store belief in persistent store: {e}")
+
+        if self._tpuf:
+            self._tpuf.upsert_background(
+                belief_id, "semantic",
+                f"{args['subject']} {args['predicate']} {args['object']}",
+                tenant=args.get("tenant"),
+                session_id=args.get("session_id"),
+                timestamp=time.time(),
+                meta={
+                    "subject": args["subject"],
+                    "predicate": args["predicate"],
+                    "object": args["object"],
+                    "confidence": args.get("confidence", 1.0),
+                    "source": args.get("source"),
+                },
+            )
 
         return {
             "content": [{
@@ -2589,22 +2706,31 @@ class DistributedMemoryMCP:
                     forgotten += 1
 
         elif tier == "episodic":
+            deleted_ids = []
             if item_ids:
                 for ep_id in item_ids:
                     if self.episodic.delete(ep_id):
                         forgotten += 1
+                        deleted_ids.append(ep_id)
             elif cutoff_time:
                 to_remove = [ep for ep in self.episodic._episodes if ep.timestamp < cutoff_time]
                 for ep in to_remove:
                     if self.episodic.delete(ep.id):
                         forgotten += 1
+                        deleted_ids.append(ep.id)
+            if self._tpuf and deleted_ids:
+                await self._tpuf.delete(deleted_ids, tenant=args.get("tenant"))
 
         elif tier == "semantic":
             if item_ids:
+                deleted_ids = []
                 for belief_id in item_ids:
                     if belief_id in self.semantic._beliefs:
                         self.semantic.invalidate(belief_id, "explicit_forget")
                         forgotten += 1
+                        deleted_ids.append(belief_id)
+                if self._tpuf and deleted_ids:
+                    await self._tpuf.delete(deleted_ids, tenant=args.get("tenant"))
 
         elif tier == "procedural":
             if item_ids:
@@ -2762,23 +2888,43 @@ class DistributedMemoryMCP:
             "results": {},
         }
 
-        # Search episodic memory
+        # Search episodic memory (turbopuffer hybrid index first, local scan fallback)
         if "episodic" in tiers:
-            ep_results = self.episodic.recall_by_embedding(
-                query_embedding, limit=limit, min_similarity=min_similarity,
-                embedder=self._active_embedder_name(),
-                session_id=session_id,
-            )
-            results["results"]["episodic"] = [
-                {
-                    "id": ep.id,
-                    "event_type": ep.event_type,
-                    "content": ep.content,
-                    "timestamp": ep.timestamp,
-                    "similarity": score,
-                }
-                for ep, score in ep_results
-            ]
+            ep_rows = []
+            if self._tpuf:
+                hits = await self._tpuf.search(
+                    query, tiers=["episodic"], session_id=session_id, limit=limit,
+                    tenant=args.get("tenant"),
+                )
+                by_id = {e.id: e for e in self.episodic._episodes}
+                for hit in hits:
+                    ep = by_id.get(hit["id"])
+                    ep_rows.append({
+                        "id": hit["id"],
+                        "event_type": ep.event_type if ep else hit.get("event_type"),
+                        "content": ep.content if ep else hit.get("text"),
+                        "timestamp": ep.timestamp if ep else hit.get("ts"),
+                        "similarity": hit["score"],
+                    })
+                if ep_rows:
+                    results["backend"] = "turbopuffer"
+            if not ep_rows and not (args.get("tenant") and self._tpuf):
+                ep_results = self.episodic.recall_by_embedding(
+                    query_embedding, limit=limit, min_similarity=min_similarity,
+                    embedder=self._active_embedder_name(),
+                    session_id=session_id,
+                )
+                ep_rows = [
+                    {
+                        "id": ep.id,
+                        "event_type": ep.event_type,
+                        "content": ep.content,
+                        "timestamp": ep.timestamp,
+                        "similarity": score,
+                    }
+                    for ep, score in ep_results
+                ]
+            results["results"]["episodic"] = ep_rows
 
         # Search working memory (compute embeddings on-the-fly)
         if "working" in tiers:
@@ -2837,6 +2983,12 @@ class DistributedMemoryMCP:
                 "working": False,  # ephemeral by design
             },
         }
+
+        # Add turbopuffer index stats if available
+        if self._tpuf:
+            stats["turbopuffer"] = {"available": True, **(await self._tpuf.stats(tenant=args.get("tenant")))}
+        else:
+            stats["turbopuffer"] = {"available": False}
 
         # Add persistent belief store stats if available
         if self._semantic_belief_store:

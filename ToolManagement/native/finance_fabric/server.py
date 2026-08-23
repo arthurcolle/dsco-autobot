@@ -435,28 +435,35 @@ class FinanceFabricMCP(NativeMCPBase):
 
     # --------------------------------------------------------------- dispatch
     async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        args = dict(arguments or {})
+        tenant_id = args.pop("tenant_id", None)
+        args.pop("_tenant_credential", None)
+        args.pop("_credential_envelope", None)
+        args.pop("_pooled_ok", None)
+
         if tool_name.startswith("flow__"):
+            if tenant_id:
+                return self._err(
+                    "TENANT_BYOK_REQUIRED: composed finance flows are disabled until every "
+                    "step has tenant-scoped credentials"
+                )
             name = tool_name[len("flow__"):]
             if name not in FLOWS:
                 return self._err(f"unknown flow: {name}")
-            result = await Composer(REGISTRY_URL, self.SERVICE_ID).run(name, dict(arguments or {}))
+            result = await Composer(REGISTRY_URL, self.SERVICE_ID).run(name, args)
             return self._ok(result, "compose", None)
         route = self._DISPATCH.get(tool_name)
         if route is None:
-            return await super()._execute_tool(tool_name, arguments)
+            return await super()._execute_tool(tool_name, args)
         domain, op, provider = route
         handler = getattr(self, f"_h_{domain}", None)
         if handler is None:
             return self._err(f"no handler for domain {domain}")
-        args = dict(arguments or {})
-        # Optional caller-supplied tenant id for BYOK credential resolution.
-        # Deliberately left IN `args` (not popped, not stored on `self`) so
-        # concurrent requests on this same async server instance can never
-        # race on shared mutable state -- each call's tenant_id travels only
-        # inside its own `args` dict. Handlers that want tenant-aware live
-        # checks read args.get("tenant_id") explicitly (see _h_brokerage).
-        # Absent for every caller today -> None -> byte-identical to prior
-        # behavior for 100% of current traffic.
+        if tenant_id and provider in LIVE_CREDS:
+            return self._err(
+                f"TENANT_BYOK_REQUIRED: {provider} live execution is disabled until its "
+                "adapter consumes tenant-scoped credentials end to end"
+            )
         try:
             return await handler(op, provider, args)
         except Exception as e:  # noqa: BLE001 - surface adapter errors as tool errors

@@ -3,6 +3,7 @@
 Distributed Publish MCP - Native MCP Server
 
 First-class MCP server providing:
+- Draft-first Substack authoring and confirmed publication
 - Webhook management (create, trigger, list)
 - Event publishing and streaming
 - Content syndication
@@ -24,6 +25,7 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -35,12 +37,24 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union, AsyncGenerator
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+from native.base import install_backend_bearer_middleware
+
+try:
+    from tool_management.core.credential_envelope import (
+        CredentialEnvelopeError,
+        open_credential_envelope,
+    )
+except ImportError:
+    CredentialEnvelopeError = ValueError  # type: ignore[assignment]
+    open_credential_envelope = None  # type: ignore[assignment]
 
 try:
     from .substack_client import SubstackClient, SubstackDocument, MarkdownToSubstack
@@ -50,9 +64,13 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_request_substack_client: contextvars.ContextVar[Optional["SubstackClient"]] = (
+    contextvars.ContextVar("request_substack_client", default=None)
+)
+
 # Output guard for enforcing size limits and URL capture
 try:
-    from tool_management.guards.output_guard import guard_mcp_content, OutputGuardConfig
+    from tool_management.guards.output_guard import guard_mcp_content
     OUTPUT_GUARD_AVAILABLE = True
 except ImportError:
     OUTPUT_GUARD_AVAILABLE = False
@@ -194,6 +212,7 @@ class DistributedPublishMCP:
 
         # Substack integration
         self._substack_client: Optional[SubstackClient] = None
+        self._substack_lock = asyncio.Lock()
         self._live_session: Optional[Dict[str, Any]] = None
 
         # Register native tools
@@ -501,12 +520,16 @@ class DistributedPublishMCP:
         )
 
         # =====================================================================
-        # SUBSTACK TOOLS — only registered when credentials are configured
+        # SUBSTACK TOOLS — always advertised as a core feature. Calls fail
+        # closed with a configuration error until credentials are available.
         # =====================================================================
 
-        if not (os.getenv("SUBSTACK_SID") and os.getenv("SUBSTACK_PUBLICATION")):
-            logger.info("Substack tools not registered (SUBSTACK_SID / SUBSTACK_PUBLICATION not set)")
-            return
+        self._tools["substack_connection_status"] = MCPTool(
+            name="substack_connection_status",
+            description="Check Substack feature readiness without exposing credentials.",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=self._execute_substack_connection_status,
+        )
 
         self._tools["substack_create_draft"] = MCPTool(
             name="substack_create_draft",
@@ -514,7 +537,7 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Post title"},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Post title"},
                     "subtitle": {"type": "string", "description": "Post subtitle"},
                     "body": {"type": "string", "description": "Markdown content for the post body"},
                     "audience": {
@@ -524,7 +547,8 @@ class DistributedPublishMCP:
                         "description": "Who can read this post"
                     }
                 },
-                "required": ["title"]
+                "required": ["title"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_create_draft
         )
@@ -535,12 +559,13 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "integer", "description": "Draft ID to update"},
+                    "draft_id": {"type": "integer", "minimum": 1, "description": "Draft ID to update"},
                     "title": {"type": "string", "description": "New title"},
                     "subtitle": {"type": "string", "description": "New subtitle"},
                     "body": {"type": "string", "description": "New markdown content (replaces existing)"}
                 },
-                "required": ["draft_id"]
+                "required": ["draft_id"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_update_draft
         )
@@ -551,12 +576,13 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "integer", "description": "Draft ID"},
-                    "content": {"type": "string", "description": "Markdown content to append"},
+                    "draft_id": {"type": "integer", "minimum": 1, "description": "Draft ID"},
+                    "content": {"type": "string", "minLength": 1, "description": "Markdown content to append"},
                     "section_title": {"type": "string", "description": "Optional section header"},
                     "add_timestamp": {"type": "boolean", "default": True, "description": "Add timestamp"}
                 },
-                "required": ["draft_id", "content"]
+                "required": ["draft_id", "content"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_append_to_draft
         )
@@ -567,13 +593,14 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "integer"},
-                    "code": {"type": "string", "description": "Code content"},
+                    "draft_id": {"type": "integer", "minimum": 1},
+                    "code": {"type": "string", "minLength": 1, "description": "Code content"},
                     "language": {"type": "string", "description": "Programming language"},
                     "filename": {"type": "string", "description": "Optional filename label"},
                     "caption": {"type": "string", "description": "Optional caption/explanation"}
                 },
-                "required": ["draft_id", "code"]
+                "required": ["draft_id", "code"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_add_code_block
         )
@@ -584,40 +611,46 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "integer"},
-                    "url": {"type": "string", "description": "Image URL"},
+                    "draft_id": {"type": "integer", "minimum": 1},
+                    "url": {"type": "string", "format": "uri", "description": "Image URL"},
                     "caption": {"type": "string", "description": "Image caption"},
                     "alt": {"type": "string", "description": "Alt text for accessibility"}
                 },
-                "required": ["draft_id", "url"]
+                "required": ["draft_id", "url"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_add_image
         )
 
         self._tools["substack_publish"] = MCPTool(
             name="substack_publish",
-            description="Publish a Substack draft, optionally emailing subscribers.",
+            description="Publish a reviewed Substack draft. Requires explicit publication confirmation; subscriber email requires a second confirmation.",
             input_schema={
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "integer", "description": "Draft ID to publish"},
-                    "send_email": {"type": "boolean", "default": False, "description": "Email to subscribers"}
+                    "draft_id": {"type": "integer", "minimum": 1, "description": "Draft ID to publish"},
+                    "send_email": {"type": "boolean", "default": False, "description": "Email to subscribers"},
+                    "confirm_publish": {"type": "boolean", "description": "Must be true to make the draft public"},
+                    "confirm_email": {"type": "boolean", "default": False, "description": "Must be true when send_email is true"}
                 },
-                "required": ["draft_id"]
+                "required": ["draft_id", "confirm_publish"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_publish
         )
 
         self._tools["substack_post_note"] = MCPTool(
             name="substack_post_note",
-            description="Post a short note on Substack (like a tweet), with optional link attachment.",
+            description="Post a public short-form Note after explicit confirmation.",
             input_schema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Note content"},
-                    "link_url": {"type": "string", "description": "Optional link to attach"}
+                    "text": {"type": "string", "minLength": 1, "description": "Note content"},
+                    "link_url": {"type": "string", "format": "uri", "description": "Optional link to attach"},
+                    "confirm_post": {"type": "boolean", "description": "Must be true to post publicly"}
                 },
-                "required": ["text"]
+                "required": ["text", "confirm_post"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_post_note
         )
@@ -625,7 +658,7 @@ class DistributedPublishMCP:
         self._tools["substack_get_drafts"] = MCPTool(
             name="substack_get_drafts",
             description="List all Substack draft posts.",
-            input_schema={"type": "object", "properties": {}},
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=self._execute_substack_get_drafts
         )
 
@@ -635,10 +668,43 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "default": 10, "description": "Max posts to return"}
-                }
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Max posts to return"}
+                },
+                "additionalProperties": False,
             },
             handler=self._execute_substack_get_posts
+        )
+
+        self._tools["substack_upload_image"] = MCPTool(
+            name="substack_upload_image",
+            description="Upload an image already staged on the integration server to Substack's CDN.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string", "minLength": 1, "description": "Absolute server-side image path"}
+                },
+                "required": ["image_path"],
+                "additionalProperties": False,
+            },
+            handler=self._execute_substack_upload_image,
+        )
+
+        self._tools["substack_generate_image"] = MCPTool(
+            name="substack_generate_image",
+            description="Generate an image through OpenRouter, upload it to Substack, and optionally append it to a draft. Incurs provider charges and requires explicit confirmation.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "minLength": 1, "description": "Image generation prompt"},
+                    "draft_id": {"type": "integer", "minimum": 1, "description": "Optional draft to receive the image"},
+                    "caption": {"type": "string", "description": "Optional image caption"},
+                    "model": {"type": "string", "default": "google/gemini-2.5-flash-image", "description": "OpenRouter model ID"},
+                    "confirm_generation": {"type": "boolean", "description": "Must be true because generation can incur provider charges"},
+                },
+                "required": ["prompt", "confirm_generation"],
+                "additionalProperties": False,
+            },
+            handler=self._execute_substack_generate_image,
         )
 
         self._tools["substack_live_blog_start"] = MCPTool(
@@ -650,7 +716,8 @@ class DistributedPublishMCP:
                     "title": {"type": "string", "description": "Live blog title"},
                     "subtitle": {"type": "string", "description": "Subtitle"}
                 },
-                "required": ["title"]
+                "required": ["title"],
+                "additionalProperties": False,
             },
             handler=self._execute_substack_live_blog_start
         )
@@ -661,8 +728,10 @@ class DistributedPublishMCP:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "publish": {"type": "boolean", "default": False, "description": "Publish on end"}
-                }
+                    "publish": {"type": "boolean", "default": False, "description": "Publish on end"},
+                    "confirm_publish": {"type": "boolean", "default": False, "description": "Must be true when publish is true"}
+                },
+                "additionalProperties": False,
             },
             handler=self._execute_substack_live_blog_end
         )
@@ -696,17 +765,22 @@ class DistributedPublishMCP:
         substack_pub = os.getenv("SUBSTACK_PUBLICATION", "")
         if substack_sid and substack_pub:
             try:
-                self._substack_client = SubstackClient(substack_sid, substack_pub)
-                if self._substack_client.test_connection():
-                    logger.info(f"Substack connected: {substack_pub}")
+                self._substack_client = SubstackClient(
+                    substack_sid,
+                    substack_pub,
+                    rate_limit=float(os.getenv("SUBSTACK_RATE_LIMIT_SECONDS", "0.5")),
+                    timeout=float(os.getenv("SUBSTACK_REQUEST_TIMEOUT_SECONDS", "30")),
+                )
+                if os.getenv("SUBSTACK_VALIDATE_ON_STARTUP", "0") == "1":
+                    ok = await asyncio.to_thread(self._substack_client.test_connection)
+                    logger.info("Substack startup validation: %s", "ok" if ok else "failed")
                 else:
-                    logger.warning("Substack connection test failed — tools will return errors")
-                    self._substack_client = None
+                    logger.info("Substack credentials loaded for %s", self._substack_client.publication)
             except Exception as e:
-                logger.warning(f"Substack init failed: {e}")
+                logger.warning("Substack init failed: %s", type(e).__name__)
                 self._substack_client = None
         else:
-            logger.info("No SUBSTACK_SID/SUBSTACK_PUBLICATION — Substack tools disabled")
+            logger.info("No SUBSTACK_SID/SUBSTACK_PUBLICATION — Substack calls will fail closed")
 
         # Announce to Tool Management
         await self._announce_to_registry()
@@ -714,6 +788,10 @@ class DistributedPublishMCP:
     async def stop(self):
         """Stop the MCP server."""
         logger.info(f"Stopping {self.SERVICE_NAME}...")
+
+        if self._substack_client:
+            await asyncio.to_thread(self._substack_client.close)
+            self._substack_client = None
 
         if self._client:
             await self._client.aclose()
@@ -740,6 +818,10 @@ class DistributedPublishMCP:
                         "capabilities": list(self._tools.keys()),
                         "tools": self.tools,
                     },
+                    headers=(
+                        {"x-registry-token": os.environ["REGISTRY_ANNOUNCE_TOKEN"]}
+                        if os.getenv("REGISTRY_ANNOUNCE_TOKEN") else {}
+                    ),
                     timeout=15.0,
                 )
                 if response.status_code == 200:
@@ -775,10 +857,9 @@ class DistributedPublishMCP:
                 })
         return {"tools": tools}
 
-    async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-
+    async def _invoke_tool(self, tool_name: Any, raw_arguments: Any) -> Any:
+        """Invoke one tool with request-scoped credential isolation."""
+        arguments = dict(raw_arguments or {})
         tool = self._tools.get(tool_name)
         if not tool:
             raise ValueError(f"Unknown tool: {tool_name}")
@@ -786,7 +867,53 @@ class DistributedPublishMCP:
         if not tool.handler:
             raise ValueError(f"Tool {tool_name} has no handler")
 
-        result = await tool.handler(arguments)
+        # Customer SID values only arrive as authenticated, short-lived,
+        # backend-bound envelopes.  ContextVars isolate concurrent tenants;
+        # no request credential is ever assigned to the process-global client.
+        if "tenant_id" in arguments or "_tenant_credential" in arguments:
+            raise ValueError("raw tenant credentials or tenant_id are not accepted")
+        envelope = arguments.pop("_credential_envelope", None)
+        request_client: Optional[SubstackClient] = None
+        context_token = None
+        if envelope:
+            if not str(tool_name or "").startswith("substack_"):
+                raise ValueError("credential envelope is not valid for this tool")
+            if open_credential_envelope is None:
+                raise ValueError("credential envelope support is unavailable")
+            try:
+                opened = open_credential_envelope(
+                    str(envelope),
+                    expected_backend_id=self.SERVICE_ID,
+                    expected_provider="substack",
+                )
+                bundle = json.loads(opened["credential"])
+                sid = str(bundle.get("sid") or "").strip()
+                publication = str(bundle.get("publication") or "").strip().lower()
+                if not sid or not publication:
+                    raise ValueError("Substack credential bundle is incomplete")
+                request_client = SubstackClient(
+                    sid,
+                    publication,
+                    rate_limit=float(os.getenv("SUBSTACK_RATE_LIMIT_SECONDS", "0.5")),
+                    timeout=float(os.getenv("SUBSTACK_REQUEST_TIMEOUT_SECONDS", "30")),
+                )
+                context_token = _request_substack_client.set(request_client)
+            except (CredentialEnvelopeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(f"credential envelope rejected: {type(exc).__name__}") from exc
+
+        try:
+            result = await tool.handler(arguments)
+        finally:
+            if context_token is not None:
+                _request_substack_client.reset(context_token)
+            if request_client is not None:
+                await asyncio.to_thread(request_client.close)
+
+        return result
+
+    async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        tool_name = params.get("name")
+        result = await self._invoke_tool(tool_name, params.get("arguments", {}))
 
         mcp_result = {
             "content": [
@@ -1271,9 +1398,46 @@ class DistributedPublishMCP:
 
     def _require_substack(self) -> SubstackClient:
         """Return SubstackClient or raise."""
+        request_client = _request_substack_client.get()
+        if request_client is not None:
+            return request_client
+        if not self._substack_client:
+            sid = os.getenv("SUBSTACK_SID", "")
+            publication = os.getenv("SUBSTACK_PUBLICATION", "")
+            if sid and publication:
+                self._substack_client = SubstackClient(
+                    sid,
+                    publication,
+                    rate_limit=float(os.getenv("SUBSTACK_RATE_LIMIT_SECONDS", "0.5")),
+                    timeout=float(os.getenv("SUBSTACK_REQUEST_TIMEOUT_SECONDS", "30")),
+                )
         if not self._substack_client:
             raise ValueError("Substack not configured. Set SUBSTACK_SID and SUBSTACK_PUBLICATION env vars.")
         return self._substack_client
+
+    async def _substack_call(self, function: Callable, *args: Any, **kwargs: Any) -> Any:
+        """Serialize the unofficial API session and keep blocking I/O off the event loop."""
+        async with self._substack_lock:
+            return await asyncio.to_thread(function, *args, **kwargs)
+
+    @staticmethod
+    def _positive_int(args: Dict[str, Any], field: str) -> int:
+        value = args.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{field} must be a positive integer")
+        return value
+
+    @staticmethod
+    def _require_confirmation(args: Dict[str, Any], field: str, action: str) -> None:
+        if args.get(field) is not True:
+            raise ValueError(f"{field}=true is required to {action}")
+
+    @staticmethod
+    def _http_url(value: Any, field: str) -> str:
+        parsed = urlparse(value if isinstance(value, str) else "")
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"{field} must be an absolute HTTP(S) URL")
+        return value
 
     @staticmethod
     def _parse_draft_body(draft_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1291,14 +1455,34 @@ class DistributedPublishMCP:
             raw["content"] = []
         return raw
 
+    async def _execute_substack_connection_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        request_client = _request_substack_client.get()
+        effective_client = request_client or self._substack_client
+        configured = request_client is not None or bool(
+            os.getenv("SUBSTACK_SID") and os.getenv("SUBSTACK_PUBLICATION")
+        )
+        return {
+            "success": True,
+            "configured": configured,
+            "client_initialized": effective_client is not None,
+            "publication": effective_client.publication if effective_client else None,
+            "credential_scope": "tenant_request" if request_client is not None else "worker",
+            "draft_first": True,
+            "public_actions_require_confirmation": True,
+        }
+
     async def _execute_substack_create_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        title = args.get("title", "Untitled")
+        title = str(args.get("title", "")).strip()
+        if not title:
+            raise ValueError("title is required")
         subtitle = args.get("subtitle", "")
         body = args.get("body", "")
         audience = args.get("audience", "everyone")
 
-        draft = sc.create_draft(title=title, subtitle=subtitle, body=body, audience=audience)
+        draft = await self._substack_call(
+            sc.create_draft, title=title, subtitle=subtitle, body=body, audience=audience
+        )
         return {
             "success": True,
             "draft_id": draft.id,
@@ -1308,8 +1492,11 @@ class DistributedPublishMCP:
 
     async def _execute_substack_update_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        draft_id = args["draft_id"]
-        sc.update_draft(
+        draft_id = self._positive_int(args, "draft_id")
+        if not any(args.get(field) is not None for field in ("title", "subtitle", "body")):
+            raise ValueError("at least one of title, subtitle, or body is required")
+        await self._substack_call(
+            sc.update_draft,
             draft_id=draft_id,
             title=args.get("title"),
             subtitle=args.get("subtitle"),
@@ -1319,12 +1506,14 @@ class DistributedPublishMCP:
 
     async def _execute_substack_append_to_draft(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        draft_id = args["draft_id"]
-        content_md = args.get("content", "")
+        draft_id = self._positive_int(args, "draft_id")
+        content_md = str(args.get("content", ""))
+        if not content_md.strip():
+            raise ValueError("content is required")
         section_title = args.get("section_title")
         add_timestamp = args.get("add_timestamp", True)
 
-        draft_data = sc.get_draft(draft_id)
+        draft_data = await self._substack_call(sc.get_draft, draft_id)
         body_json = self._parse_draft_body(draft_data)
 
         new_nodes: List[Dict[str, Any]] = []
@@ -1341,7 +1530,7 @@ class DistributedPublishMCP:
         converted = MarkdownToSubstack.convert(content_md)
         new_nodes.extend(converted.get("content", []))
         body_json["content"].extend(new_nodes)
-        sc.update_draft(draft_id=draft_id, body=body_json)
+        await self._substack_call(sc.update_draft, draft_id=draft_id, body=body_json)
 
         if self._live_session and self._live_session.get("draft_id") == draft_id:
             self._live_session["updates"] = self._live_session.get("updates", 0) + 1
@@ -1355,13 +1544,15 @@ class DistributedPublishMCP:
 
     async def _execute_substack_add_code_block(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        draft_id = args["draft_id"]
-        code = args.get("code", "")
+        draft_id = self._positive_int(args, "draft_id")
+        code = str(args.get("code", ""))
+        if not code:
+            raise ValueError("code is required")
         language = args.get("language", "")
         filename = args.get("filename", "")
         caption = args.get("caption", "")
 
-        draft_data = sc.get_draft(draft_id)
+        draft_data = await self._substack_call(sc.get_draft, draft_id)
         body_json = self._parse_draft_body(draft_data)
 
         if filename:
@@ -1382,7 +1573,7 @@ class DistributedPublishMCP:
                 "content": [{"type": "text", "text": caption, "marks": [{"type": "em"}]}]
             })
 
-        sc.update_draft(draft_id=draft_id, body=body_json)
+        await self._substack_call(sc.update_draft, draft_id=draft_id, body=body_json)
 
         if self._live_session and self._live_session.get("draft_id") == draft_id:
             self._live_session["updates"] = self._live_session.get("updates", 0) + 1
@@ -1391,19 +1582,19 @@ class DistributedPublishMCP:
 
     async def _execute_substack_add_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        draft_id = args["draft_id"]
-        url = args["url"]
+        draft_id = self._positive_int(args, "draft_id")
+        url = self._http_url(args.get("url"), "url")
         caption = args.get("caption", "")
         alt = args.get("alt", "")
 
-        draft_data = sc.get_draft(draft_id)
+        draft_data = await self._substack_call(sc.get_draft, draft_id)
         body_json = self._parse_draft_body(draft_data)
 
         image_doc = SubstackDocument()
         image_doc.image(url, alt=alt, caption=caption)
         body_json["content"].extend(image_doc.build()["content"])
 
-        sc.update_draft(draft_id=draft_id, body=body_json)
+        await self._substack_call(sc.update_draft, draft_id=draft_id, body=body_json)
 
         if self._live_session and self._live_session.get("draft_id") == draft_id:
             self._live_session["updates"] = self._live_session.get("updates", 0) + 1
@@ -1412,10 +1603,13 @@ class DistributedPublishMCP:
 
     async def _execute_substack_publish(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        draft_id = args["draft_id"]
+        draft_id = self._positive_int(args, "draft_id")
+        self._require_confirmation(args, "confirm_publish", "publish a draft")
         send_email = args.get("send_email", False)
+        if send_email:
+            self._require_confirmation(args, "confirm_email", "email subscribers")
 
-        pub_result = sc.publish_draft(draft_id, send_email=send_email)
+        pub_result = await self._substack_call(sc.publish_draft, draft_id, send_email=send_email)
         return {
             "success": True,
             "url": pub_result.get("canonical_url", ""),
@@ -1424,18 +1618,22 @@ class DistributedPublishMCP:
 
     async def _execute_substack_post_note(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        text = args.get("text", "")
+        self._require_confirmation(args, "confirm_post", "post a public Note")
+        text = str(args.get("text", "")).strip()
+        if not text:
+            raise ValueError("text is required")
         link_url = args.get("link_url")
 
         if link_url:
-            result = sc.post_note_with_link(text, link_url)
+            self._http_url(link_url, "link_url")
+            result = await self._substack_call(sc.post_note_with_link, text, link_url)
         else:
-            result = sc.post_note(text)
+            result = await self._substack_call(sc.post_note, text)
         return {"success": True, "note_id": result.get("id"), "message": "Note posted"}
 
     async def _execute_substack_get_drafts(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        drafts = sc.get_drafts()
+        drafts = await self._substack_call(sc.get_drafts)
         return {
             "success": True,
             "drafts": [
@@ -1447,7 +1645,9 @@ class DistributedPublishMCP:
     async def _execute_substack_get_posts(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
         limit = args.get("limit", 10)
-        posts = sc.get_archive(limit=limit)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer from 1 to 100")
+        posts = await self._substack_call(sc.get_archive, limit=limit)
         return {
             "success": True,
             "posts": [
@@ -1456,16 +1656,105 @@ class DistributedPublishMCP:
             ]
         }
 
+    async def _execute_substack_upload_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        sc = self._require_substack()
+        image_path = str(args.get("image_path", "")).strip()
+        if not image_path:
+            raise ValueError("image_path is required")
+        upload = await self._substack_call(sc.upload_image, image_path)
+        return {
+            "success": True,
+            "url": upload["url"],
+            "width": upload.get("width"),
+            "height": upload.get("height"),
+        }
+
+    async def _execute_substack_generate_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        import base64
+        import re
+        import tempfile
+
+        sc = self._require_substack()
+        self._require_confirmation(args, "confirm_generation", "generate a billed image")
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt:
+            raise ValueError("prompt is required")
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY is not configured")
+
+        model = str(args.get("model", "google/gemini-2.5-flash-image")).strip()
+        caption = str(args.get("caption", ""))
+        draft_id = args.get("draft_id")
+        if draft_id is not None:
+            draft_id = self._positive_int(args, "draft_id")
+
+        client = self._client or httpx.AsyncClient(timeout=180.0)
+        owns_client = self._client is None
+        try:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                timeout=180.0,
+            )
+            if response.status_code != 200:
+                raise RuntimeError(f"image provider returned HTTP {response.status_code}")
+            max_response_bytes = int(
+                os.getenv("OPENROUTER_MAX_IMAGE_RESPONSE_BYTES", str(25 * 1024 * 1024))
+            )
+            if len(response.content) > max_response_bytes:
+                raise ValueError("image provider response exceeded the configured size limit")
+            match = re.search(
+                rb"data:image/[^;]+;base64,([A-Za-z0-9+/=]{100,})",
+                response.content,
+            )
+            if not match:
+                raise RuntimeError("image provider response did not contain image data")
+            image_data = base64.b64decode(match.group(1), validate=True)
+        finally:
+            if owns_client:
+                await client.aclose()
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            handle.write(image_data)
+            temp_path = Path(handle.name)
+        try:
+            upload = await self._substack_call(sc.upload_image, str(temp_path))
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        cdn_url = upload["url"]
+        if draft_id is not None:
+            draft_data = await self._substack_call(sc.get_draft, draft_id)
+            body_json = self._parse_draft_body(draft_data)
+            image_doc = SubstackDocument().image(
+                cdn_url,
+                alt=caption or prompt[:160],
+                caption=caption,
+            )
+            body_json["content"].extend(image_doc.build()["content"])
+            await self._substack_call(sc.update_draft, draft_id=draft_id, body=body_json)
+
+        return {
+            "success": True,
+            "url": cdn_url,
+            "draft_id": draft_id,
+            "caption": caption,
+        }
+
     async def _execute_substack_live_blog_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sc = self._require_substack()
-        title = args.get("title", f"Live Blog - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+        title = str(args.get("title", "")).strip()
+        if not title:
+            raise ValueError("title is required")
         subtitle = args.get("subtitle", "")
 
         doc = SubstackDocument()
         doc.paragraph(SubstackDocument.bold("Live Blog Started"), f" - {datetime.now(timezone.utc).strftime('%I:%M %p UTC')}")
         doc.horizontal_rule()
 
-        draft = sc.create_draft(title=title, subtitle=subtitle, body=doc)
+        draft = await self._substack_call(sc.create_draft, title=title, subtitle=subtitle, body=doc)
 
         self._live_session = {
             "draft_id": draft.id,
@@ -1488,20 +1777,22 @@ class DistributedPublishMCP:
 
         draft_id = self._live_session["draft_id"]
         publish = args.get("publish", False)
+        if publish:
+            self._require_confirmation(args, "confirm_publish", "publish the live blog")
 
-        draft_data = sc.get_draft(draft_id)
+        draft_data = await self._substack_call(sc.get_draft, draft_id)
         body_json = self._parse_draft_body(draft_data)
 
         closing = SubstackDocument()
         closing.horizontal_rule()
         closing.paragraph(SubstackDocument.bold("Live Blog Ended"), f" - {datetime.now(timezone.utc).strftime('%I:%M %p UTC')}")
         body_json["content"].extend(closing.build()["content"])
-        sc.update_draft(draft_id=draft_id, body=body_json)
+        await self._substack_call(sc.update_draft, draft_id=draft_id, body=body_json)
 
         result: Dict[str, Any] = {"success": True, "session": self._live_session, "published": False}
 
         if publish:
-            pub_result = sc.publish_draft(draft_id, send_email=False)
+            pub_result = await self._substack_call(sc.publish_draft, draft_id, send_email=False)
             result["published"] = True
             result["url"] = pub_result.get("canonical_url", "")
 
@@ -1595,18 +1886,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Distributed Publish MCP",
-    description="Native MCP server for webhooks, events, and content syndication",
-    version="1.0.0",
+    description="Core MCP integration for draft-first Substack publishing, webhooks, events, and content syndication",
+    version=DistributedPublishMCP.VERSION,
     lifespan=lifespan
 )
 
+_production = os.getenv("ENVIRONMENT", "").lower() in {"prod", "production"}
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "" if _production else "*").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=bool(_cors_origins and _cors_origins != ["*"]),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+install_backend_bearer_middleware(app)
 
 
 # =============================================================================
@@ -1647,11 +1945,13 @@ async def execute_tool(request: ToolCallRequest):
     if not _server:
         raise HTTPException(503, "Server not initialized")
 
-    tool = _server._tools.get(request.name)
-    if not tool:
-        raise HTTPException(404, f"Tool not found: {request.name}")
-
-    result = await tool.handler(request.arguments)
+    # Keep the bespoke endpoint on the identical envelope/context path as MCP.
+    try:
+        result = await _server._invoke_tool(request.name, request.arguments)
+    except ValueError as exc:
+        if str(exc).startswith("Unknown tool:"):
+            raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(422, str(exc)) from exc
     return {"result": result}
 
 
@@ -1724,6 +2024,7 @@ if __name__ == "__main__":
 ║  Protocol: MCP 2024-11-05                                        ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Tools:                                                          ║
+║  • substack_*       - Draft-first, confirmed Substack publishing ║
 ║  • create_webhook    - Register webhook endpoints                ║
 ║  • trigger_webhook   - Manually trigger webhooks                 ║
 ║  • list_webhooks     - List all webhooks                         ║

@@ -36,6 +36,15 @@ from native.integration_fabric.catalog import (
 from native.integration_fabric import tool_space
 
 try:
+    from tool_management.core.credential_envelope import (
+        CredentialEnvelopeError,
+        open_credential_envelope,
+    )
+except Exception:  # noqa: BLE001
+    CredentialEnvelopeError = ValueError  # type: ignore[misc,assignment]
+    open_credential_envelope = None  # type: ignore[assignment]
+
+try:
     # Optional: multi-tenant BYOK credential resolution. Import is best-effort
     # so this fabric still runs standalone/offline without the tool_management
     # package on the path (e.g. isolated test harnesses). When unavailable,
@@ -246,15 +255,27 @@ class IntegrationFabricMCP(NativeMCPBase):
             return await super()._execute_tool(tool_name, arguments)
         category, op, kind, provider = route
         args = dict(arguments or {})
-        # Optional caller-supplied tenant id for BYOK credential resolution.
-        # Not part of the MCP protocol envelope -- carried as a plain key
-        # inside `arguments` so existing callers who never send it get
-        # tenant_id=None and 100% unchanged (sandbox-by-default) behavior.
-        tenant_id = args.pop("tenant_id", None)
-        # Registry-resolved per-user credential for THIS tool's provider.
-        # The registry looks it up in the caller's encrypted vault and passes
-        # it alongside the call, so the fabric needs no shared credential store.
-        passed_credential = args.pop("_tenant_credential", None)
+        # Tenant BYOK secrets arrive only as authenticated, short-lived
+        # envelopes. Raw credentials and raw tenant selectors are rejected so
+        # a public MCP caller cannot query another tenant's vault.
+        if "_tenant_credential" in args or "tenant_id" in args:
+            return self._err("raw tenant credentials or tenant_id are not accepted")
+        envelope = args.pop("_credential_envelope", None)
+        tenant_id = None
+        passed_credential = None
+        if envelope:
+            if open_credential_envelope is None:
+                return self._err("credential envelope support is unavailable")
+            try:
+                opened = open_credential_envelope(
+                    str(envelope),
+                    expected_backend_id="integration-fabric",
+                    expected_provider=provider,
+                )
+                tenant_id = opened["tenant_id"]
+                passed_credential = opened["credential"]
+            except CredentialEnvelopeError as exc:
+                return self._err(f"credential envelope rejected: {exc}")
         # Set by the registry when the caller pays for the managed add-on —
         # only then may a tenant ride the operator's pooled env keys. Callers
         # with no tenant (operator/static tokens) are unrestricted as before.
@@ -405,9 +426,30 @@ class IntegrationFabricMCP(NativeMCPBase):
         return self._ok({"category": "media", "operation": op, "count": len(items),
                          "items": items[:10]}, "live", provider)
 
+    @staticmethod
+    def _openweather_location(args: Dict[str, Any]) -> str:
+        """Translate a friendly location into OpenWeather's city query format.
+
+        OpenWeather does not resolve the common US ``City, ST`` form by itself:
+        ``Washington, DC`` returns 404, while ``Washington, DC, US`` resolves.
+        Keep already country-qualified locations intact and avoid guessing for
+        non-US / non-state input.
+        """
+        raw = str(args.get("id") or (args.get("params") or {}).get("q") or "London").strip()
+        parts = [part.strip() for part in raw.split(",")]
+        if len(parts) == 2 and len(parts[1]) == 2 and parts[1].upper() in {
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "IA",
+            "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO",
+            "MS", "MT", "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY", "OH", "OK",
+            "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VT", "WA", "WI",
+            "WV", "WY", "DC",
+        }:
+            return f"{parts[0]}, {parts[1].upper()}, US"
+        return raw
+
     async def _live_openweather(self, op: str, args: Dict[str, Any],
                                 api_key: Optional[str] = None) -> Dict[str, Any]:
-        loc = str(args.get("id") or (args.get("params") or {}).get("q") or "London")
+        loc = self._openweather_location(args)
         path = "forecast" if op == "forecast" else "weather"
         key = api_key or OPENWEATHER_KEY  # fallback preserves any other direct caller
         async with httpx.AsyncClient(timeout=15.0) as c:
