@@ -8,6 +8,13 @@ def _fresh_store(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_store_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(tool_store_module, "DB_PATH", tmp_path / "tools.duckdb")
     tool_store_module.ToolStore._instance = None
+    old_conn = getattr(tool_store_module.ToolStore, "_conn", None)
+    if old_conn is not None:
+        try:
+            old_conn.close()
+        except Exception:
+            pass
+        tool_store_module.ToolStore._conn = None
     tool_store_module._tool_store = None
     return tool_store_module.ToolStore()
 

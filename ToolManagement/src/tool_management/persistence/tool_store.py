@@ -9,6 +9,7 @@ import os
 import json
 import shutil
 import time
+import random
 import threading
 import uuid
 import duckdb
@@ -65,6 +66,13 @@ class RegisteredTool:
             self.created_at = datetime.utcnow().isoformat()
         if self.updated_at is None:
             self.updated_at = self.created_at
+
+
+_REG_FIELDS = set(RegisteredTool.__dataclass_fields__.keys())
+def _reg_from_dict(data):
+    """Build a RegisteredTool from a row dict, ignoring extra columns (e.g. the
+    Postgres `fts` tsvector) that are not dataclass fields."""
+    return RegisteredTool(**{k: v for k, v in data.items() if k in _REG_FIELDS})
 
 
 def _json_safe_value(value):
@@ -180,21 +188,43 @@ class ToolStore:
         self._initialized = True
         logger.info(f"ToolStore initialized at {self.db_path}")
 
+    @staticmethod
+    def _pg_attach_url() -> Optional[str]:
+        """Neon Postgres URL for the shared catalog, or None to use local DuckDB.
+        Strips channel_binding, which DuckDB's postgres attach rejects."""
+        url = os.getenv("POSTGRES_URL", "").strip()
+        if not url.startswith("postgresql://") or url.startswith("postgresql://redis"):
+            return None
+        for frag in ("&channel_binding=require", "channel_binding=require&", "?channel_binding=require"):
+            url = url.replace(frag, "?" if frag.startswith("?") else "")
+        return url
+
     @contextmanager
     def _get_conn(self, read_only: bool = False):
-        # Serialize every DB operation through ONE long-lived connection.
+        # ONE long-lived connection per process, serialized by a lock.
         #
-        # DuckDB permits only a single read-write connection to a file per
-        # process and its connections are not safe for concurrent use. The
-        # old code called duckdb.connect() on every operation; under the
-        # backends' push-announce flood those concurrent connects collided
-        # ("database already attached"), each retry slept inside an
-        # asyncio.to_thread worker, and the bounded thread pool was exhausted
-        # -- wedging execute/jobs/health and crash-looping the container.
-        # A process-wide lock turns that flood into fast, serialized upserts.
+        # When POSTGRES_URL is set the catalog lives in Neon Postgres: each
+        # container runs its OWN in-memory DuckDB attached to the shared Neon
+        # database (registry schema), so there is no single-writer file lock and
+        # the registry scales horizontally across containers. Without it we fall
+        # back to a local DuckDB file (single-container dev).
         with ToolStore._lock:
             if ToolStore._conn is None:
-                ToolStore._conn = duckdb.connect(self.db_path)
+                pg = self._pg_attach_url()
+                if pg:
+                    try:
+                        c = duckdb.connect(":memory:")
+                        c.execute("INSTALL postgres; LOAD postgres;")
+                        c.execute(f"ATTACH '{pg}' AS pg (TYPE postgres)")
+                        c.execute("CREATE SCHEMA IF NOT EXISTS pg.registry")
+                        c.execute("USE pg.registry")
+                        ToolStore._conn = c
+                        logger.info("ToolStore: attached to Neon Postgres (registry schema) — horizontally scalable")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("ToolStore: Neon attach failed (%s); falling back to local DuckDB", exc)
+                        ToolStore._conn = duckdb.connect(self.db_path)
+                else:
+                    ToolStore._conn = duckdb.connect(self.db_path)
             yield ToolStore._conn
 
     def _close_conn(self):
@@ -238,6 +268,12 @@ class ToolStore:
                 raise
 
     def _create_tables(self):
+        # On Postgres (Neon) the registry.* tables are created natively out of
+        # band — DuckDB's postgres attach can't forward CREATE SEQUENCE and some
+        # DDL — so skip the DuckDB DDL entirely and use the pre-created schema.
+        if self._pg_attach_url():
+            logger.info("ToolStore: using pre-created Neon registry schema (DuckDB DDL skipped)")
+            return
         with self._get_conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tools (
@@ -372,16 +408,16 @@ class ToolStore:
         try:
             now = datetime.utcnow().isoformat()
             with self._get_conn() as conn:
+                # delete-then-insert upsert: the DuckDB->Postgres attach turns a
+                # parametrized UPDATE into UPDATE...FROM a varchar temp table,
+                # which fails against the json `capabilities` column. INSERT binds
+                # json.dumps(...) cleanly. The tool_count contention that made
+                # this path conflict was removed from register_tool, so a plain
+                # delete+insert is both correct and cheap here.
+                conn.execute("DELETE FROM backends WHERE backend_id = ?", [backend_id])
                 conn.execute("""
                     INSERT INTO backends (backend_id, name, url, health_endpoint, mcp_endpoint, capabilities, last_heartbeat)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (backend_id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        url = EXCLUDED.url,
-                        health_endpoint = EXCLUDED.health_endpoint,
-                        mcp_endpoint = EXCLUDED.mcp_endpoint,
-                        capabilities = EXCLUDED.capabilities,
-                        last_heartbeat = EXCLUDED.last_heartbeat
                 """, [backend_id, name, url, health_endpoint, mcp_endpoint, json.dumps(capabilities), now])
             logger.info(f"Registered backend: {backend_id} at {url}")
             return {"backend_id": backend_id, "url": url, "status": "registered"}
@@ -403,8 +439,21 @@ class ToolStore:
 
     def list_backends(self) -> List[Dict]:
         """List all registered backends."""
+        # tool_count is derived here via JOIN rather than maintained as a
+        # column: nothing else writes backends.tool_count, so a stored value
+        # would silently rot to 0 (observed: list_tool_categories reporting
+        # total_tools=0 against a fully-populated store).
         with self._get_conn(read_only=True) as conn:
-            results = conn.execute("SELECT * FROM backends ORDER BY name").fetchall()
+            results = conn.execute("""
+                SELECT b.*, COALESCE(t.cnt, 0) AS tool_count
+                FROM backends b
+                LEFT JOIN (
+                    SELECT backend_id, COUNT(*) AS cnt
+                    FROM tools
+                    GROUP BY backend_id
+                ) t ON t.backend_id = b.backend_id
+                ORDER BY b.name
+            """).fetchall()
             columns = [desc[0] for desc in conn.description]
             return [dict(zip(columns, row)) for row in results]
 
@@ -447,12 +496,9 @@ class ToolStore:
                 created_at, now
             ])
 
-            # Update backend tool count
-            conn.execute("""
-                UPDATE backends SET tool_count = (
-                    SELECT COUNT(*) FROM tools WHERE backend_id = ?
-                ) WHERE backend_id = ?
-            """, [tool.backend_id, tool.backend_id])
+            # Tool count is derived for status/reporting. Avoid updating the
+            # shared backends row for every announced tool: concurrent backend
+            # announcements otherwise serialize/conflict on Neon and stall MCP.
 
         return {"tool_id": tool.tool_id, "status": "registered"}
 
@@ -479,7 +525,7 @@ class ToolStore:
                 data['input_schema'] = json.loads(data['input_schema']) if data['input_schema'] else {}
                 data['output_schema'] = json.loads(data['output_schema']) if data['output_schema'] else {}
                 data['tags'] = json.loads(data['tags']) if data['tags'] else []
-                return RegisteredTool(**data)
+                return _reg_from_dict(data)
         return None
 
     def get_tool_by_name(self, name: str, backend_id: Optional[str] = None) -> Optional[RegisteredTool]:
@@ -496,7 +542,7 @@ class ToolStore:
                     data['input_schema'] = json.loads(data['input_schema']) if data['input_schema'] else {}
                     data['output_schema'] = json.loads(data['output_schema']) if data['output_schema'] else {}
                     data['tags'] = json.loads(data['tags']) if data['tags'] else []
-                    return RegisteredTool(**data)
+                    return _reg_from_dict(data)
 
                 backend_id, name = name.split(":", 1)
 
@@ -515,7 +561,7 @@ class ToolStore:
                 data['input_schema'] = json.loads(data['input_schema']) if data['input_schema'] else {}
                 data['output_schema'] = json.loads(data['output_schema']) if data['output_schema'] else {}
                 data['tags'] = json.loads(data['tags']) if data['tags'] else []
-                return RegisteredTool(**data)
+                return _reg_from_dict(data)
         return None
 
     def list_tools(self, backend_id: Optional[str] = None, category: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[RegisteredTool]:
@@ -541,7 +587,7 @@ class ToolStore:
                 data['input_schema'] = json.loads(data['input_schema']) if data['input_schema'] else {}
                 data['output_schema'] = json.loads(data['output_schema']) if data['output_schema'] else {}
                 data['tags'] = json.loads(data['tags']) if data['tags'] else []
-                tools.append(RegisteredTool(**data))
+                tools.append(_reg_from_dict(data))
 
             return tools
 
@@ -577,12 +623,8 @@ class ToolStore:
             stale = [r[0] for r in rows if r[0] not in keep]
             for tool_id in stale:
                 conn.execute("DELETE FROM tools WHERE tool_id = ?", [tool_id])
-            if stale:
-                conn.execute("""
-                    UPDATE backends SET tool_count = (
-                        SELECT COUNT(*) FROM tools WHERE backend_id = ?
-                    ) WHERE backend_id = ?
-                """, [backend_id, backend_id])
+            # tool_count is derived lazily by status queries; do not contend on
+            # the shared backend row during announcement pruning.
         return len(stale)
 
     def find_backend_for_tool(self, tool_name: str) -> Optional[str]:
@@ -614,6 +656,27 @@ class ToolStore:
 
     # ==================== Advanced Queries ====================
 
+    def catalog_version(self) -> str:
+        """
+        Cheap catalog fingerprint for cache keys / ETags: COUNT(*) plus the most
+        recent updated_at. Changes whenever tools are added, removed, or updated,
+        so callers can cache derived views (e.g. the MCP tools/list pages) and
+        invalidate atomically when the catalog moves. Never raises — a failure
+        degrades to a unique-ish token so callers simply skip the cache.
+        """
+        try:
+            with self._get_conn(read_only=True) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM tools"
+                ).fetchone()
+            count = row[0] if row else 0
+            newest = row[1] if row and len(row) > 1 else ""
+            return f"{count}:{newest}"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("catalog_version failed (%s); using volatile token", exc)
+            import time as _t
+            return f"volatile:{_t.time()}"
+
     def query_tools(
         self,
         search: Optional[str] = None,
@@ -626,6 +689,8 @@ class ToolStore:
         offset: int = 0,
         columns: Optional[List[str]] = None,
         match_any: bool = False,
+        unique_names: bool = False,
+        include_total: bool = True,
     ) -> tuple[List[Dict], int]:
         """
         Advanced tool query with text search, sorting, tag filtering, and column projection.
@@ -642,6 +707,10 @@ class ToolStore:
             limit: Page size
             offset: Page offset
             columns: Which columns to return (None = all). Use for compact responses.
+            unique_names: Return at most one row per public tool name, selecting
+                the most recently updated row. Useful for MCP's name-keyed surface.
+            include_total: Whether to run the matching COUNT query. Set false for
+                callers that only need a bounded result page.
 
         Returns:
             (rows as dicts, total count matching filters)
@@ -684,11 +753,25 @@ class ToolStore:
         where_sql = " AND ".join(where_clauses)
 
         with self._get_conn(read_only=True) as conn:
-            # Count
-            count_result = conn.execute(
-                f"SELECT COUNT(*) FROM tools WHERE {where_sql}", params
-            ).fetchone()
-            total = count_result[0] if count_result else 0
+            # Count. MCP exposes tools by public name, so its catalog query can
+            # request unique_names and count the same logical rows it pages. A
+            # caller that only needs a bounded page can skip this full scan.
+            if include_total:
+                if unique_names:
+                    count_sql = f"""
+                        SELECT COUNT(*) FROM (
+                            SELECT name, ROW_NUMBER() OVER (
+                                PARTITION BY name ORDER BY updated_at DESC, tool_id DESC
+                            ) AS rn
+                            FROM tools WHERE {where_sql}
+                        ) dedup WHERE rn = 1
+                    """
+                else:
+                    count_sql = f"SELECT COUNT(*) FROM tools WHERE {where_sql}"
+                count_result = conn.execute(count_sql, params).fetchone()
+                total = count_result[0] if count_result else 0
+            else:
+                total = -1
 
             # Select
             if columns:
@@ -704,7 +787,23 @@ class ToolStore:
                 select_sql = "*"
                 safe_cols = None
 
-            query = f"SELECT {select_sql} FROM tools WHERE {where_sql} ORDER BY {sort_by} {sort_order} LIMIT {limit} OFFSET {offset}"
+            if unique_names:
+                # Pick the newest row for each public name before applying the
+                # stable name ordering and page window. This makes OFFSET cursors
+                # operate on logical MCP tools, not duplicate backend rows.
+                query = f"""
+                    SELECT {select_sql} FROM (
+                        SELECT {select_sql}, ROW_NUMBER() OVER (
+                            PARTITION BY name ORDER BY updated_at DESC, tool_id DESC
+                        ) AS _dsco_name_rank
+                        FROM tools WHERE {where_sql}
+                    ) dedup
+                    WHERE _dsco_name_rank = 1
+                    ORDER BY {sort_by} {sort_order}
+                    LIMIT {limit} OFFSET {offset}
+                """
+            else:
+                query = f"SELECT {select_sql} FROM tools WHERE {where_sql} ORDER BY {sort_by} {sort_order} LIMIT {limit} OFFSET {offset}"
             results = conn.execute(query, params).fetchall()
             col_names = [desc[0] for desc in conn.description]
 
@@ -719,6 +818,88 @@ class ToolStore:
                 rows.append(d)
 
             return rows, total
+
+    def list_unique_tools_page(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        columns: Optional[List[str]] = None,
+    ) -> tuple[List[Dict], bool]:
+        """Return a bounded, newest-row-per-name catalog page.
+
+        Unlike ``query_tools(unique_names=True)``, this avoids both COUNT(*) and
+        the windowed full-table query on every request. It is intentionally
+        specialized for MCP's immutable-ish, name-keyed discovery surface and
+        returns ``has_more`` by fetching one sentinel row beyond the page.
+        """
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        safe = [c for c in (columns or []) if c in {
+            "tool_id", "name", "backend_id", "backend_url", "description",
+            "input_schema", "output_schema", "tags", "category", "version",
+            "created_at", "updated_at", "call_count", "error_count", "avg_latency_ms"
+        }]
+        if not safe:
+            safe = ["tool_id", "name", "description", "backend_id"]
+        select_sql = ", ".join(safe)
+        with self._get_conn(read_only=True) as conn:
+            query = f"""
+                SELECT {select_sql} FROM (
+                    SELECT {select_sql}, ROW_NUMBER() OVER (
+                        PARTITION BY name ORDER BY updated_at DESC, tool_id DESC
+                    ) AS _dsco_name_rank
+                    FROM tools
+                ) dedup
+                WHERE _dsco_name_rank = 1
+                ORDER BY name ASC
+                LIMIT {limit + 1} OFFSET {offset}
+            """
+            results = conn.execute(query).fetchall()
+            names = [d[0] for d in conn.description]
+        has_more = len(results) > limit
+        rows = []
+        for row in results[:limit]:
+            d = {k: _json_safe_value(v) for k, v in zip(names, row)}
+            for jcol in ("input_schema", "output_schema", "tags"):
+                if jcol in d and isinstance(d[jcol], str):
+                    d[jcol] = json.loads(d[jcol])
+            rows.append(d)
+        return rows, has_more
+
+    def list_unique_tools_snapshot(
+        self,
+        columns: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Load the newest row for every public tool name in one read."""
+        safe = [c for c in (columns or []) if c in {
+            "tool_id", "name", "backend_id", "backend_url", "description",
+            "input_schema", "output_schema", "tags", "category", "version",
+            "created_at", "updated_at", "call_count", "error_count", "avg_latency_ms"
+        }]
+        if not safe:
+            safe = ["tool_id", "name", "description", "backend_id"]
+        select_sql = ", ".join(safe)
+        with self._get_conn(read_only=True) as conn:
+            query = f"""
+                SELECT {select_sql} FROM (
+                    SELECT {select_sql}, ROW_NUMBER() OVER (
+                        PARTITION BY name ORDER BY updated_at DESC, tool_id DESC
+                    ) AS _dsco_name_rank
+                    FROM tools
+                ) dedup
+                WHERE _dsco_name_rank = 1
+                ORDER BY name ASC
+            """
+            results = conn.execute(query).fetchall()
+            names = [d[0] for d in conn.description]
+        rows = []
+        for row in results:
+            d = {k: _json_safe_value(v) for k, v in zip(names, row)}
+            for jcol in ("input_schema", "output_schema", "tags"):
+                if jcol in d and isinstance(d[jcol], str):
+                    d[jcol] = json.loads(d[jcol])
+            rows.append(d)
+        return rows
 
     def get_tools_batch(self, names: List[str]) -> List[Dict]:
         """
@@ -1215,6 +1396,20 @@ class ToolStore:
         payload = json.dumps(metadata or {})
 
         with self._get_conn() as conn:
+            # Read-modify-write upsert (attach-safe; no ON CONFLICT). Merge with
+            # any existing edge: max confidence, summed call_count, kept first_seen.
+            existing = conn.execute(
+                "SELECT confidence, call_count, first_seen_at FROM tool_dependencies "
+                "WHERE source_tool_id=? AND target_tool_id=? AND dependency_type=?",
+                [source_tool_id, target_tool_id, dep_type],
+            ).fetchone()
+            merged_conf = max(confidence, float(existing[0])) if existing else confidence
+            merged_calls = (int(existing[1]) + increment) if existing else increment
+            first_seen = existing[2] if existing else now
+            conn.execute(
+                "DELETE FROM tool_dependencies WHERE source_tool_id=? AND target_tool_id=? AND dependency_type=?",
+                [source_tool_id, target_tool_id, dep_type],
+            )
             conn.execute(
                 """
                 INSERT INTO tool_dependencies (
@@ -1222,25 +1417,9 @@ class ToolStore:
                     call_count, metadata, first_seen_at, last_seen_at, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source_tool_id, target_tool_id, dependency_type) DO UPDATE SET
-                    confidence = GREATEST(tool_dependencies.confidence, EXCLUDED.confidence),
-                    call_count = tool_dependencies.call_count + EXCLUDED.call_count,
-                    metadata = EXCLUDED.metadata,
-                    last_seen_at = EXCLUDED.last_seen_at,
-                    updated_at = EXCLUDED.updated_at
                 """,
-                [
-                    source_tool_id,
-                    target_tool_id,
-                    dep_type,
-                    confidence,
-                    increment,
-                    payload,
-                    now,
-                    now,
-                    now,
-                    now,
-                ],
+                [source_tool_id, target_tool_id, dep_type, merged_conf,
+                 merged_calls, payload, first_seen, now, now, now],
             )
 
         return {
@@ -1364,6 +1543,10 @@ class ToolStore:
                     WHERE tool_id = ?
                 """, [tool_id])
 
+            # Python-generated monotonic id (µs epoch + small rand) instead of a
+            # DB sequence — DuckDB's postgres attach can't nextval() a PG
+            # sequence, and this works identically on the DuckDB-file fallback.
+            call_id = int(time.time() * 1_000_000) * 1000 + random.randint(0, 999)
             conn.execute(
                 """
                 INSERT INTO tool_call_history (
@@ -1371,11 +1554,12 @@ class ToolStore:
                     trace_id, session_id, error_code, error_message, created_at
                 )
                 VALUES (
-                    nextval('tool_call_history_id_seq'),
+                    ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 [
+                    call_id,
                     tool_id,
                     backend_id,
                     bool(success),
@@ -1389,8 +1573,23 @@ class ToolStore:
                 ],
             )
 
+    _stats_cache: Optional[Dict] = None
+    _stats_cache_ts: float = 0.0
+
     def get_stats(self) -> Dict:
-        """Get overall statistics."""
+        """Overall statistics, TTL-cached so cheap callers (e.g. /health) serve
+        process-local counts instead of hitting Neon per request. The periodic
+        refresh doubles as a Neon keepalive (prevents compute autosuspend)."""
+        ttl = float(os.getenv("REGISTRY_STATS_TTL_SECONDS", "45"))
+        now = time.time()
+        if ToolStore._stats_cache is not None and (now - ToolStore._stats_cache_ts) < ttl:
+            return ToolStore._stats_cache
+        stats = self._compute_stats()
+        ToolStore._stats_cache = stats
+        ToolStore._stats_cache_ts = now
+        return stats
+
+    def _compute_stats(self) -> Dict:
         with self._get_conn(read_only=True) as conn:
             tool_count = conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0]
             backend_count = conn.execute("SELECT COUNT(*) FROM backends").fetchone()[0]
