@@ -409,7 +409,24 @@ class FinanceFabricMCP(NativeMCPBase):
     def _err(msg: str) -> Dict[str, Any]:
         return {"content": [{"type": "text", "text": json.dumps({"error": msg})}], "isError": True}
 
+    def _alpaca_mode(self) -> str:
+        """Honest tri-state for the brokerage lane.
+
+        - no credentials          -> "sandbox" (deterministic local ledger)
+        - creds + paper endpoint  -> "paper"   (real Alpaca calls, simulated market)
+        - creds + live endpoint   -> "live"
+
+        Previously any credentials reported "live" while ALPACA_BASE defaulted
+        to https://paper-api.alpaca.markets — i.e. orders routed to a simulated
+        market were labeled live. Mode now reflects the endpoint actually hit.
+        """
+        if not LIVE_CREDS.get("alpaca"):
+            return "sandbox"
+        return "paper" if "paper" in ALPACA_BASE else "live"
+
     def _mode(self, provider: str) -> str:
+        if provider == "alpaca":
+            return self._alpaca_mode()
         return "live" if LIVE_CREDS.get(provider) else "sandbox"
 
     def _alpaca_headers(self) -> Dict[str, str]:
@@ -656,13 +673,17 @@ class FinanceFabricMCP(NativeMCPBase):
     # Left as pure env-var gating (today's unchanged behavior) until that
     # full path is written and verified with pytest.
     async def _h_brokerage(self, op, provider, a):
-        live = provider == "alpaca" and ALPACA_LIVE
+        # "live" = real money-movement endpoint; "paper" = real Alpaca calls
+        # against the simulated market. Both hit the HTTP API; only the
+        # reported mode differs. Sandbox never touches the network.
+        live = provider == "alpaca" and self._alpaca_mode() in ("live", "paper")
+        mode = self._alpaca_mode() if provider == "alpaca" else "sandbox"
         if op == "account":
             if live:
                 async with httpx.AsyncClient(timeout=30.0) as c:
                     r = await c.get(f"{ALPACA_BASE}/v2/account", headers=self._alpaca_headers())
                     r.raise_for_status()
-                    return self._ok(r.json(), "live", provider)
+                    return self._ok(r.json(), mode, provider)
             positions = self.store.list_positions(provider)
             equity = 100000.0 + sum(p["qty"] * p["avg_price"] for p in positions)
             return self._ok({"account_number": f"SANDBOX-{provider}", "status": "ACTIVE",
@@ -683,7 +704,7 @@ class FinanceFabricMCP(NativeMCPBase):
                     r = await c.post(f"{ALPACA_BASE}/v2/orders", json=payload,
                                      headers=self._alpaca_headers())
                     r.raise_for_status()
-                    return self._ok(r.json(), "live", provider)
+                    return self._ok(r.json(), mode, provider)
             price = await self._quote_price(symbol)
             fill = limit_price if otype == "limit" and limit_price else price
             order = self.store.record_order(provider, symbol, side, float(qty),
@@ -704,7 +725,7 @@ class FinanceFabricMCP(NativeMCPBase):
                 async with httpx.AsyncClient(timeout=30.0) as c:
                     r = await c.get(f"{ALPACA_BASE}/v2/positions", headers=self._alpaca_headers())
                     r.raise_for_status()
-                    return self._ok({"positions": r.json()}, "live", provider)
+                    return self._ok({"positions": r.json()}, mode, provider)
             pos = self.store.list_positions(provider)
             return self._ok({"positions": pos, "count": len(pos)}, "sandbox", provider)
         if op == "close_position":
@@ -1141,7 +1162,14 @@ class FinanceFabricMCP(NativeMCPBase):
 
     # ----------------------------------------------------------- standalone
     async def _tool_provider_status(self, args):
+        # Effective mode per provider, not just credential presence: Alpaca
+        # with credentials but paper-api base is "paper", not "live".
         return self._ok({
+            "providers": {
+                k: {"credentials_present": v,
+                    "mode": self._mode(k) if v else "sandbox"}
+                for k, v in LIVE_CREDS.items()
+            },
             "live_providers": {k: v for k, v in LIVE_CREDS.items()},
             "domains": {d: DOMAIN_PROVIDERS[d] for d in DOMAIN_PROVIDERS},
             "tool_count": len(self.TOOLS),
