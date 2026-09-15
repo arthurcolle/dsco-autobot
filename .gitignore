@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Embedded repo (has its own .git); do not commit into this repo
+Completions/
+
+# Local runtime state / secrets
+ToolManagement/.announce_token
+*.db-shm
+*.db-wal
