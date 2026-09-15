@@ -45,10 +45,31 @@ class UserStore:
                     password_hash VARCHAR NOT NULL,
                     salt VARCHAR NOT NULL,
                     api_key VARCHAR NOT NULL UNIQUE,
+                    api_key_hash VARCHAR,
                     created_at TIMESTAMP,
                     last_login_at TIMESTAMP
                 )
                 """
+            )
+            con.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR")
+            rows = con.execute(
+                "SELECT user_id, api_key, api_key_hash FROM users"
+            ).fetchall()
+            for user_id, stored_key, stored_hash in rows:
+                if stored_hash:
+                    continue
+                digest = (
+                    self._hash_api_key(stored_key)
+                    if str(stored_key or "").startswith(API_KEY_PREFIX)
+                    else str(stored_key or "")
+                )
+                con.execute(
+                    "UPDATE users SET api_key = ?, api_key_hash = ? WHERE user_id = ?",
+                    [digest, digest, user_id],
+                )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key_hash "
+                "ON users(api_key_hash)"
             )
 
     @staticmethod
@@ -58,15 +79,21 @@ class UserStore:
         ).hex()
 
     @staticmethod
+    def _hash_api_key(api_key: str) -> str:
+        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _row_to_user(row: tuple, columns: list) -> Dict[str, Any]:
         user = dict(zip(columns, row))
         user.pop("password_hash", None)
         user.pop("salt", None)
+        user.pop("api_key", None)
+        user.pop("api_key_hash", None)
         return user
 
     _COLUMNS = [
         "user_id", "email", "display_name", "password_hash",
-        "salt", "api_key", "created_at", "last_login_at",
+        "salt", "api_key", "api_key_hash", "created_at", "last_login_at",
     ]
 
     def create_user(
@@ -81,6 +108,7 @@ class UserStore:
         user_id = "u_" + secrets.token_hex(12)
         salt = secrets.token_hex(16)
         api_key = API_KEY_PREFIX + secrets.token_urlsafe(24)
+        api_key_hash = self._hash_api_key(api_key)
         now = datetime.now(timezone.utc)
 
         with self._lock, self._connect() as con:
@@ -90,11 +118,16 @@ class UserStore:
             if existing:
                 raise ValueError(f"Account already exists for {email}")
             con.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO users (
+                    user_id, email, display_name, password_hash, salt,
+                    api_key, api_key_hash, created_at, last_login_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 [
                     user_id, email, display_name,
                     self._hash_password(password, salt), salt,
-                    api_key, now, now,
+                    api_key_hash, api_key_hash, now, now,
                 ],
             )
         logger.info(f"Created user {user_id} ({email})")
@@ -128,10 +161,14 @@ class UserStore:
     def get_by_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
         if not api_key or not api_key.startswith(API_KEY_PREFIX):
             return None
+        api_key_hash = self._hash_api_key(api_key)
         with self._lock, self._connect() as con:
             row = con.execute(
-                f"SELECT {', '.join(self._COLUMNS)} FROM users WHERE api_key = ?",
-                [api_key],
+                f"""
+                SELECT {', '.join(self._COLUMNS)} FROM users
+                WHERE api_key_hash = ? OR api_key = ?
+                """,
+                [api_key_hash, api_key_hash],
             ).fetchone()
         return self._row_to_user(row, self._COLUMNS) if row else None
 
@@ -145,16 +182,17 @@ class UserStore:
 
     def rotate_api_key(self, user_id: str) -> Optional[str]:
         new_key = API_KEY_PREFIX + secrets.token_urlsafe(24)
+        new_key_hash = self._hash_api_key(new_key)
         with self._lock, self._connect() as con:
             changed = con.execute(
-                "UPDATE users SET api_key = ? WHERE user_id = ?",
-                [new_key, user_id],
+                "UPDATE users SET api_key = ?, api_key_hash = ? WHERE user_id = ?",
+                [new_key_hash, new_key_hash, user_id],
             ).fetchone()
             _ = changed
             row = con.execute(
-                "SELECT api_key FROM users WHERE user_id = ?", [user_id]
+                "SELECT api_key_hash FROM users WHERE user_id = ?", [user_id]
             ).fetchone()
-        return new_key if row and row[0] == new_key else None
+        return new_key if row and row[0] == new_key_hash else None
 
     def count(self) -> int:
         with self._lock, self._connect() as con:

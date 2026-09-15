@@ -13,17 +13,67 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import heapq
+import ipaddress
 import os
+import socket
 import uuid
 import time
 import json
 import logging
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+
+def validate_callback_url(url: str) -> str:
+    """Validate a public HTTPS webhook target before it enters durable state.
+
+    Every resolved address must be globally routable. This rejects loopback,
+    private, link-local, reserved, multicast, and unspecified targets instead
+    of letting callback delivery become an SSRF path.
+    """
+    candidate = str(url or "").strip()
+    if not candidate or len(candidate) > 2048:
+        raise ValueError("callback URL is missing or too long")
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("callback URL is malformed") from exc
+    if parsed.scheme.lower() != "https":
+        raise ValueError("callback URL must use https")
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ValueError("callback URL must have a host and no embedded credentials")
+    if parsed.fragment:
+        raise ValueError("callback URL fragments are not supported")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        raise ValueError("callback URL host is not public")
+
+    addresses = set()
+    try:
+        addresses.add(ipaddress.ip_address(hostname))
+    except ValueError:
+        try:
+            for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(
+                hostname, port or 443, type=socket.SOCK_STREAM
+            ):
+                if family in (socket.AF_INET, socket.AF_INET6):
+                    addresses.add(ipaddress.ip_address(sockaddr[0]))
+        except OSError as exc:
+            raise ValueError("callback URL host could not be resolved") from exc
+
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("callback URL host is not public")
+
+    # urlsplit lower-cases hostname access but retains the caller's original
+    # netloc and path. Return a normalized scheme with the validated target.
+    return urlunsplit(("https", parsed.netloc, parsed.path or "/", parsed.query, ""))
 
 
 class EventType(str, Enum):
@@ -104,6 +154,7 @@ class StreamingExecution:
     execution_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     tool_name: str = ""
     client_id: Optional[str] = None
+    tenant_id: Optional[str] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
@@ -278,6 +329,7 @@ class StreamingExecutor:
         tool_name: str,
         inputs: Dict[str, Any],
         client_id: str = None,
+        tenant_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         session_id: Optional[str] = None,
         parent_execution_id: Optional[str] = None,
@@ -334,10 +386,11 @@ class StreamingExecutor:
             else (inputs.get("_fanout_budget") if isinstance(inputs, dict) else None)
         )
         effective_dedupe_key = dedupe_key or self._build_dedupe_key(tool_name, inputs)
+        memory_dedupe_key = f"{tenant_id or ''}\0{effective_dedupe_key}"
         dedupe_window_seconds = max(0, int(dedupe_window_seconds))
         if dedupe_window_seconds > 0:
             self._prune_dedupe_index(now, dedupe_window_seconds)
-            existing = self._dedupe_index.get(effective_dedupe_key)
+            existing = self._dedupe_index.get(memory_dedupe_key)
             if existing:
                 existing_id, created_at = existing
                 existing_execution = self._executions.get(existing_id)
@@ -349,11 +402,15 @@ class StreamingExecutor:
                 stored = self._execution_store.find_recent_by_dedupe_key(
                     effective_dedupe_key,
                     now - dedupe_window_seconds,
+                    tenant_id=tenant_id,
                 )
                 if stored:
                     existing_id = stored.get("execution_id")
                     if existing_id:
-                        existing_execution = self._executions.get(existing_id) or self._hydrate_execution(existing_id)
+                        existing_execution = self._executions.get(existing_id) or self._hydrate_execution(
+                            existing_id,
+                            tenant_id=tenant_id,
+                        )
                         if existing_execution and existing_execution.status not in {"error", "cancelled"}:
                             self._mark_execution_reused(existing_execution, reason="dedupe", timestamp=now)
                             return existing_execution
@@ -362,6 +419,7 @@ class StreamingExecutor:
             converged = self._find_convergence_execution(
                 tool_name=tool_name,
                 convergence_key=normalized_convergence_key,
+                tenant_id=tenant_id,
             )
             if converged:
                 self._mark_execution_reused(converged, reason="coalesced", timestamp=now)
@@ -387,6 +445,7 @@ class StreamingExecutor:
                     converged = self._find_convergence_execution(
                         tool_name=tool_name,
                         convergence_key=normalized_convergence_key,
+                        tenant_id=tenant_id,
                     )
                     if converged:
                         self._mark_execution_reused(converged, reason="coalesced", timestamp=now)
@@ -412,6 +471,7 @@ class StreamingExecutor:
         execution = StreamingExecution(
             tool_name=tool_name,
             client_id=client_id,
+            tenant_id=tenant_id,
             trace_id=resolved_trace_id,
             session_id=resolved_session_id,
             parent_execution_id=resolved_parent_execution_id,
@@ -442,7 +502,7 @@ class StreamingExecutor:
 
         self._executions[execution.execution_id] = execution
         if dedupe_window_seconds > 0:
-            self._dedupe_index[effective_dedupe_key] = (execution.execution_id, now)
+            self._dedupe_index[memory_dedupe_key] = (execution.execution_id, now)
         self._persist_execution(execution)
 
         # Queue execution and let scheduler honor priority + concurrency.
@@ -571,6 +631,7 @@ class StreamingExecutor:
                     progress_callback=progress_callback,
                     cancel_event=execution._cancel_event,
                     execution_id=execution.execution_id,
+                    tenant_id=execution.tenant_id,
                 )
             except TypeError as exc:
                 # Backward compatibility for legacy executors that don't accept new kwargs.
@@ -644,12 +705,18 @@ class StreamingExecutor:
                     progress=execution.progress,
                 ))
 
-    def get_execution(self, execution_id: str) -> Optional[StreamingExecution]:
+    def get_execution(
+        self,
+        execution_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[StreamingExecution]:
         """Get an execution by ID."""
         execution = self._executions.get(execution_id)
         if execution:
+            if tenant_id is not None and execution.tenant_id != tenant_id:
+                return None
             return execution
-        return self._hydrate_execution(execution_id)
+        return self._hydrate_execution(execution_id, tenant_id=tenant_id)
 
     def cancel_execution(self, execution_id: str) -> bool:
         """Cancel an execution."""
@@ -901,17 +968,28 @@ class StreamingExecutor:
             "durable_store_enabled": bool(self._execution_store),
         }
 
-    def list_executions(self, status: Optional[str] = None, limit: int = 100) -> List[StreamingExecution]:
+    def list_executions(
+        self,
+        status: Optional[str] = None,
+        limit: int = 100,
+        tenant_id: Optional[str] = None,
+    ) -> List[StreamingExecution]:
         """List executions from memory plus durable storage."""
         merged: Dict[str, StreamingExecution] = {}
         for execution in self._executions.values():
             if status and execution.status != status:
                 continue
+            if tenant_id is not None and execution.tenant_id != tenant_id:
+                continue
             merged[execution.execution_id] = execution
 
         if self._execution_store:
             try:
-                rows = self._execution_store.list_executions(status=status, limit=max(limit, 200))
+                rows = self._execution_store.list_executions(
+                    status=status,
+                    limit=max(limit, 200),
+                    tenant_id=tenant_id,
+                )
                 for row in rows:
                     execution_id = row.get("execution_id")
                     if not execution_id or execution_id in merged:
@@ -1038,6 +1116,7 @@ class StreamingExecutor:
             execution_id=execution.execution_id,
             tool_name=execution.tool_name,
             client_id=execution.client_id,
+            tenant_id=execution.tenant_id,
             trace_id=execution.trace_id,
             session_id=execution.session_id,
             parent_execution_id=execution.parent_execution_id,
@@ -1058,18 +1137,22 @@ class StreamingExecutor:
         self,
         execution_id: str,
         row: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[StreamingExecution]:
         if not self._execution_store:
             return None
         if row is None:
-            row = self._execution_store.get_execution(execution_id)
+            row = self._execution_store.get_execution(execution_id, tenant_id=tenant_id)
         if not row:
+            return None
+        if tenant_id is not None and row.get("tenant_id") != tenant_id:
             return None
 
         execution = StreamingExecution(
             execution_id=row["execution_id"],
             tool_name=row.get("tool_name", ""),
             client_id=row.get("client_id"),
+            tenant_id=row.get("tenant_id"),
             trace_id=row.get("trace_id"),
             session_id=row.get("session_id"),
             parent_execution_id=row.get("parent_execution_id"),
@@ -1357,7 +1440,13 @@ class StreamingExecutor:
                     f"parent={parent_execution_id},active={active_parent},budget={self._fanout_max_active_per_parent}"
                 )
 
-    def _find_convergence_execution(self, *, tool_name: str, convergence_key: str) -> Optional[StreamingExecution]:
+    def _find_convergence_execution(
+        self,
+        *,
+        tool_name: str,
+        convergence_key: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[StreamingExecution]:
         normalized = self._normalize_convergence_key(convergence_key)
         if not normalized:
             return None
@@ -1367,6 +1456,8 @@ class StreamingExecutor:
             if execution.status not in active_statuses:
                 continue
             if execution.tool_name != tool_name:
+                continue
+            if execution.tenant_id != tenant_id:
                 continue
             if self._normalize_convergence_key(execution.control_state.get("convergence_key")) == normalized:
                 return execution
@@ -1425,6 +1516,7 @@ def create_tool_executor_for_jobs():
     """
     import httpx as _httpx
     from uuid import uuid4 as _uuid4
+    from ..api.tools_api import _backend_headers
 
     _shared_client = _httpx.AsyncClient(
         timeout=_httpx.Timeout(None, connect=15.0),
@@ -1481,10 +1573,18 @@ def create_tool_executor_for_jobs():
                 deduped.append(url)
         return deduped
 
-    async def _probe_backend(url: str) -> Optional[float]:
+    async def _probe_backend(
+        url: str,
+        backend_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[float]:
         started = time.time()
         try:
-            response = await _shared_client.get(f"{url}/health", timeout=_health_probe_timeout)
+            response = await _shared_client.get(
+                f"{url}/health",
+                timeout=_health_probe_timeout,
+                headers=_backend_headers(backend_id, tenant_id),
+            )
             if response.status_code == 200:
                 latency_ms = max(1.0, (time.time() - started) * 1000.0)
                 _warm_backend_until[url] = time.time() + _warm_ttl_seconds
@@ -1496,13 +1596,17 @@ def create_tool_executor_for_jobs():
         _backend_failures[url] = int(_backend_failures.get(url, 0)) + 1
         return None
 
-    async def _rank_backend_urls(backend_id: str, primary_url: str) -> List[str]:
+    async def _rank_backend_urls(
+        backend_id: str,
+        primary_url: str,
+        tenant_id: Optional[str] = None,
+    ) -> List[str]:
         now = time.time()
         urls = _candidate_urls(backend_id, primary_url)
         scored: List[tuple[int, float, str]] = []
         for url in urls:
             if now > float(_warm_backend_until.get(url, 0.0)):
-                await _probe_backend(url)
+                await _probe_backend(url, backend_id, tenant_id)
             failures = int(_backend_failures.get(url, 0))
             latency = float(_backend_latency_ms.get(url, 999999.0))
             scored.append((failures, latency, url))
@@ -1542,6 +1646,8 @@ def create_tool_executor_for_jobs():
     async def _stream_backend_execute(
         *,
         base_url: str,
+        backend_id: str,
+        tenant_id: Optional[str],
         resolved_name: str,
         inputs: Dict[str, Any],
         progress_callback: Optional[Callable[..., Awaitable[None]]],
@@ -1549,7 +1655,10 @@ def create_tool_executor_for_jobs():
         execution_id: Optional[str],
     ) -> Optional[Any]:
         stream_url = f"{base_url.rstrip('/')}/execute/stream"
-        headers = {"Accept": "text/event-stream"}
+        headers = {
+            **_backend_headers(backend_id, tenant_id),
+            "Accept": "text/event-stream",
+        }
         call_id: Optional[str] = None
         chunks: List[Any] = []
         done_payload: Optional[Dict[str, Any]] = None
@@ -1610,6 +1719,7 @@ def create_tool_executor_for_jobs():
                             await _shared_client.post(
                                 f"{base_url.rstrip('/')}/api/v1/calls/{call_id}/control",
                                 json={"action": "stop"},
+                                headers=_backend_headers(backend_id, tenant_id),
                                 timeout=2.0,
                             )
                         except Exception:
@@ -1622,6 +1732,7 @@ def create_tool_executor_for_jobs():
                             await _shared_client.post(
                                 f"{base_url.rstrip('/')}/api/v1/calls/{call_id}/control",
                                 json={"action": "stop"},
+                                headers=_backend_headers(backend_id, tenant_id),
                                 timeout=2.0,
                             )
                         except Exception:
@@ -1750,6 +1861,7 @@ def create_tool_executor_for_jobs():
         progress_callback: Callable = None,
         cancel_event: Optional[asyncio.Event] = None,
         execution_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Any:
         from ..persistence import get_tool_store
         from .circuit_breaker import get_backend_circuit_breaker
@@ -1802,7 +1914,7 @@ def create_tool_executor_for_jobs():
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
-        ranked_urls = await _rank_backend_urls(backend_id, backend_url)
+        ranked_urls = await _rank_backend_urls(backend_id, backend_url, tenant_id)
         if not ranked_urls:
             ranked_urls = [backend_url.rstrip("/")]
         selected_backend_url = ranked_urls[0]
@@ -1856,6 +1968,8 @@ def create_tool_executor_for_jobs():
                 if _stream_backend_default:
                     streamed = await _stream_backend_execute(
                         base_url=selected_backend_url,
+                        backend_id=backend_id,
+                        tenant_id=tenant_id,
                         resolved_name=resolved_name,
                         inputs=inputs,
                         progress_callback=progress_callback,
@@ -1881,6 +1995,7 @@ def create_tool_executor_for_jobs():
                         },
                     },
                     timeout=None,
+                    headers=_backend_headers(backend_id, tenant_id),
                 )
 
                 await _emit_stage(

@@ -49,6 +49,27 @@ def resolve_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
         from ..oauth import get_token_identity
 
         identity = get_token_identity(token)
+        if identity and identity.get("token_format") == "zitadel_jwt":
+            requested = request.headers.get("x-dsco-account-id")
+            account_ids = {str(value) for value in identity.get("account_ids") or []}
+            if requested:
+                if requested not in account_ids:
+                    return None
+                account_id = requested
+            else:
+                account_id = identity.get("account_id")
+                if not account_id and len(account_ids) == 1:
+                    account_id = next(iter(account_ids))
+            if not account_id:
+                return None
+            return {
+                "user_id": str(account_id),
+                "account_id": str(account_id),
+                "principal_id": identity.get("principal_id"),
+                "email": identity.get("email"),
+                "display_name": None,
+                "identity_source": "zitadel",
+            }
         if identity and identity.get("user_id"):
             return get_user_store().get_by_id(identity["user_id"])
     except Exception:
@@ -82,6 +103,16 @@ class LoginRequest(BaseModel):
 @router.post("/users/signup", status_code=201)
 async def signup(body: SignupRequest):
     """Create an account. Returns the user's API key — store it; it is the bearer token."""
+    if os.getenv(
+        "UNIFIED_ALLOW_LOCAL_SIGNUP", "0" if os.getenv("ENV") == "production" else "1"
+    ) != "1":
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "local_signup_retired",
+                "issuer": "https://auth.distributed.systems",
+            },
+        )
     try:
         user = get_user_store().create_user(body.email, body.password, body.display_name)
     except ValueError as e:
@@ -98,7 +129,10 @@ async def login(body: LoginRequest):
     user = get_user_store().authenticate(body.email, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return user
+    api_key = get_user_store().rotate_api_key(user["user_id"])
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Unable to issue API key")
+    return {**user, "api_key": api_key}
 
 
 @router.get("/me")
@@ -267,6 +301,14 @@ async def list_connections(request: Request):
 async def add_connection(request: Request, body: ConnectionRequest):
     user = _require_user(request)
     provider = body.provider.strip().lower()
+    if provider == "substack":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "substack_consent_required",
+                "connect_url": f"{public_base_url()}/publish",
+            },
+        )
     if provider not in PROVIDERS:
         raise HTTPException(
             status_code=404,

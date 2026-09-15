@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Request
 from pydantic import BaseModel, Field, create_model
 import httpx
 
@@ -888,6 +888,7 @@ class CompositionExecutionRequest(BaseModel):
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     parent_execution_id: Optional[str] = None
+    execution_profile: Optional[Literal["lingo.v1"]] = None
 
 
 class CompositionExecutionResponse(BaseModel):
@@ -902,6 +903,9 @@ class CompositionExecutionResponse(BaseModel):
     error: Optional[str] = None
     trace_id: Optional[str] = None
     idempotent_replay: bool = False
+    execution_profile: Optional[str] = None
+    request_hash: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 # =============================================================================
@@ -1079,7 +1083,8 @@ async def get_workflow(workflow_id: str):
 @router.post("/execute", response_model=CompositionExecutionResponse)
 async def execute_composition(
     request: CompositionExecutionRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    http_request: Request,
 ):
     """
     Execute a compositional workflow.
@@ -1089,6 +1094,17 @@ async def execute_composition(
     - input → transform (LLM) → validate → store
     - data → map → filter → reduce → output
     """
+    if request.execution_profile == "lingo.v1":
+        from .lingo_composition import execute_profile, strict_json, MAX_REQUEST_BYTES
+        body = await http_request.body()
+        if len(body) > MAX_REQUEST_BYTES:
+            raise HTTPException(413, detail={"error": "lingo_request_too_large"})
+        try:
+            raw = strict_json(body.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, detail={"error": "invalid_lingo_json"}) from None
+        return await execute_profile(raw, http_request, get_execution_store())
+
     _ensure_workflow_registry_loaded()
 
     # Get workflow
@@ -1510,6 +1526,13 @@ async def _execute_workflow(
         "step_results": step_results,
         "duration_ms": duration_ms
     }
+
+
+@router.get("/lingo/keys/{idempotency_key}")
+async def reconcile_lingo_execution(idempotency_key: str, http_request: Request):
+    """Inspect a retained opt-in claim without submitting or resuming work."""
+    from .lingo_composition import reconcile_key
+    return reconcile_key(idempotency_key, http_request, get_execution_store())
 
 
 @router.get("/executions")
@@ -2165,6 +2188,7 @@ async def replay_composition_execution(
 @router.get("/executions/{execution_id}")
 async def get_composition_execution(
     execution_id: str,
+    http_request: Request,
     include_events: bool = Query(default=False, description="Include per-event lineage"),
     include_artifacts: bool = Query(default=False, description="Include stored step artifacts"),
     include_side_effects: bool = Query(default=False, description="Include side-effect journal entries"),
@@ -2186,6 +2210,10 @@ async def get_composition_execution(
     )
     if not execution:
         raise HTTPException(status_code=404, detail=f"Execution not found: {execution_id}")
+    if execution.get("workflow_kind") == "lingo.v1":
+        from .lingo_composition import require_operator, inspection_receipt
+        require_operator(http_request)
+        return inspection_receipt(execution)
     return execution
 
 

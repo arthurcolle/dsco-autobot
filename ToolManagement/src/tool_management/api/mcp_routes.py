@@ -12,14 +12,14 @@ from datetime import datetime
 from typing import Dict, Any, AsyncGenerator, List
 from uuid import uuid4
 
-from fastapi import APIRouter, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 
 from ..registry import get_registry
 from ..queue import get_task_queue
 from ..integrations.mcp_server import MCPServer, MCPRequest, MCPResponse, MCPNotification
-from ..oauth import require_bearer, make_401_response
+from ..oauth import get_token_identity, require_bearer, make_401_response
 from ..persistence import get_tool_store
 
 # Output guard for enforcing size limits and URL capture
@@ -35,6 +35,118 @@ router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 # Global MCP server instance
 _mcp_server: MCPServer | None = None
+
+# Customer MCP clients get the progressive-disclosure surface only. Execution
+# is intercepted below and routed through the tenant-aware canonical tools API;
+# operator/service tokens retain the complete control-plane MCP catalog.
+_CUSTOMER_MCP_TOOLS = {"search_tools", "execute_tool"}
+
+
+def _customer_id_for_request(request: Request, token: str) -> str | None:
+    identity = get_token_identity(token) or {}
+    if identity.get("token_format") == "zitadel_jwt":
+        from ..auth.unified import enforce_audience, select_account_id, verify_token
+
+        claims = verify_token(token)
+        if claims is None or claims.token_format != "zitadel_jwt":
+            raise PermissionError("customer_identity_invalid")
+        enforce_audience(claims, "tools")
+        requested_account_id = request.headers.get("x-dsco-account-id")
+        if claims.is_platform_admin and not requested_account_id:
+            return None
+        return select_account_id(claims, requested_account_id)
+    if identity.get("user_id"):
+        return str(identity["user_id"])
+    try:
+        from .user_routes import resolve_user_from_request
+
+        user = resolve_user_from_request(request)
+    except Exception:
+        user = None
+    if user and user.get("user_id"):
+        return str(user["user_id"])
+    return None
+
+
+def _customer_denied_response(request_id: Any, tool_name: str) -> MCPResponse:
+    return MCPResponse(
+        id=request_id,
+        result={
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "error": "customer_mcp_tool_denied",
+                            "tool": tool_name,
+                            "allowed_tools": sorted(_CUSTOMER_MCP_TOOLS),
+                        }
+                    ),
+                }
+            ],
+            "isError": True,
+        },
+    )
+
+
+async def _handle_customer_execution(
+    mcp_request: MCPRequest, http_request: Request
+) -> MCPResponse:
+    """Execute through the tenant-binding tools API, never the operator loopback."""
+    params = mcp_request.params or {}
+    tool_args = params.get("arguments") or {}
+    target_tool = tool_args.get("tool") or tool_args.get("tool_name")
+    arguments = tool_args.get("arguments") or {}
+    if not target_tool or not isinstance(arguments, dict):
+        return MCPResponse(
+            id=mcp_request.id,
+            result={
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "error": "invalid_customer_tool_call",
+                                "detail": "execute_tool requires tool and object arguments",
+                            }
+                        ),
+                    }
+                ],
+                "isError": True,
+            },
+        )
+
+    from .tools_api import ToolCall, execute_single_tool
+
+    try:
+        timeout_ms = int(tool_args.get("timeout_ms", 60000))
+        call = ToolCall(
+            tool=str(target_tool),
+            arguments=arguments,
+            timeout=max(0.1, min(float(timeout_ms) / 1000.0, 600.0)),
+            idempotency_key=tool_args.get("idempotency_key"),
+            trace_id=tool_args.get("trace_id"),
+            session_id=tool_args.get("session_id"),
+        )
+        result = await execute_single_tool(call, http_request)
+        payload = result.model_dump(mode="json")
+        return MCPResponse(
+            id=mcp_request.id,
+            result={
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "isError": not bool(result.success),
+            },
+        )
+    except HTTPException as exc:
+        detail = exc.detail
+        payload = detail if isinstance(detail, dict) else {"error": str(detail)}
+        return MCPResponse(
+            id=mcp_request.id,
+            result={
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "isError": True,
+            },
+        )
 
 
 async def _fetch_backend_tools(backend_url: str, timeout: float = 5.0) -> List[Dict[str, Any]]:
@@ -192,11 +304,21 @@ async def mcp_jsonrpc(request: Request):
     - resources/read
     - etc.
     """
-    if require_bearer(request) is None:
+    token = require_bearer(request)
+    if token is None:
         return make_401_response(request)
 
     logger.info(f"Received MCP request to {request.url.path} from {request.client}")
     session_id = request.headers.get("X-Session-ID", str(uuid4()))
+    try:
+        customer_id = _customer_id_for_request(request, token)
+    except PermissionError as exc:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "forbidden", "detail": str(exc).split(":", 1)[0]},
+        )
+    if customer_id:
+        session_id = f"customer:{customer_id}:{session_id}"
     mcp_server = get_mcp_server()
 
     body = {}
@@ -214,16 +336,31 @@ async def mcp_jsonrpc(request: Request):
 
             # Special handling for tools/call - actually execute the tool
             if mcp_request.method == "tools/call":
-                response = await _handle_tool_execution(mcp_request, session_id)
+                tool_name = str((mcp_request.params or {}).get("name") or "")
+                if customer_id and tool_name not in _CUSTOMER_MCP_TOOLS:
+                    response = _customer_denied_response(mcp_request.id, tool_name)
+                elif customer_id and tool_name == "execute_tool":
+                    response = await _handle_customer_execution(mcp_request, request)
+                else:
+                    response = await _handle_tool_execution(mcp_request, session_id)
             else:
                 response = await mcp_server.handle_request(mcp_request, session_id)
+                if customer_id and mcp_request.method == "tools/list" and response.result:
+                    tools = response.result.get("tools") or []
+                    response.result = {
+                        "tools": [
+                            tool for tool in tools if tool.get("name") in _CUSTOMER_MCP_TOOLS
+                        ]
+                    }
 
             return response.model_dump(exclude_none=True)
         else:
             # It's a notification
             notification = MCPNotification(**body)
             await mcp_server.handle_notification(notification, session_id)
-            return {"status": "ok"}
+            # Streamable HTTP notifications are accepted without a JSON-RPC body.
+            # Returning 200 + {status: ok} closes strict clients during initialize.
+            return Response(status_code=202)
 
     except Exception as e:
         logger.error(f"Error handling MCP request: {e}")

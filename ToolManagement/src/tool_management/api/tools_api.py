@@ -54,6 +54,7 @@ router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 # tenant or smuggle credentials into a backend call.
 _RESERVED_ARGUMENT_KEYS = frozenset({
     "tenant_id", "_tenant_credential", "_pooled_ok", "_tenant_id",
+    "_dsco_context",
     "_trace_id", "_session_id", "_parent_execution_id", "_timeout",
     "_convergence_key", "_fanout_budget", "_group_reducer",
     "_group_reducer_config",
@@ -101,6 +102,33 @@ def _backend_headers(backend_id: str, tenant_id: Optional[str] = None) -> Dict[s
     return headers
 
 
+async def _mcp_tools_call(
+    url: str,
+    backend_id: str,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    timeout: float,
+    tenant_id: Optional[str] = None,
+) -> tuple[int, Dict[str, Any]]:
+    """Single testable transport seam for native-worker MCP execution."""
+    response = await get_client().post(
+        f"{url}/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": str(uuid4()),
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        },
+        timeout=timeout,
+        headers=_backend_headers(backend_id, tenant_id),
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"_http_text": response.text[:500]}
+    return response.status_code, payload
+
+
 # ==================== Request/Response Models ====================
 
 class ToolCall(BaseModel):
@@ -121,6 +149,7 @@ class ToolCall(BaseModel):
     # Never part of the wire model. The route binds it from the validated bearer
     # identity after Pydantic has rejected caller-supplied extra fields.
     _tenant_id: Optional[str] = PrivateAttr(default=None)
+    _execution_identity: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @property
     def tenant_id(self) -> Optional[str]:
@@ -128,6 +157,11 @@ class ToolCall(BaseModel):
 
     def bind_tenant(self, tenant_id: Optional[str]) -> None:
         self._tenant_id = tenant_id
+
+    def bind_identity(self, identity: Dict[str, Any]) -> None:
+        """Attach server-validated identity metadata outside the wire model."""
+        self._tenant_id = identity.get("tenant_id")
+        self._execution_identity = dict(identity)
 
 
 class BatchRequest(BaseModel):
@@ -284,7 +318,41 @@ def resolve_execution_identity(
         raise HTTPException(status_code=401, detail={"error": "execution_auth_required"})
 
     from .user_routes import resolve_user_from_request
+    from ..auth.unified import enforce_audience, select_account_id, verify_token
     from ..oauth import get_token_identity, require_bearer
+
+    canonical = verify_token(token)
+    if canonical and canonical.token_format == "zitadel_jwt":
+        try:
+            enforce_audience(canonical, "tools")
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403, detail={"error": str(exc).split(":", 1)[0]}
+            ) from exc
+
+        requested_account_id = request.headers.get("x-dsco-account-id")
+        if canonical.is_platform_admin and not requested_account_id:
+            return {
+                "kind": "operator_service",
+                "tenant_id": None,
+                "identity": get_token_identity(token) or {},
+            }
+        try:
+            account_id = select_account_id(canonical, requested_account_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail={"error": str(exc)}) from exc
+        user = {
+            # Compatibility name for billing/credential stores. The value is
+            # now the customer account, never the human principal.
+            "user_id": account_id,
+            "account_id": account_id,
+            "principal_id": canonical.subject,
+            "email": canonical.email,
+            "display_name": None,
+            "identity_source": "zitadel",
+            "identity_issuer": canonical.issuer,
+        }
+        return _customer_execution_identity(user, tool_names)
 
     user = resolve_user_from_request(request)
     if token.startswith("sk-user-"):
@@ -297,40 +365,7 @@ def resolve_execution_identity(
         raise HTTPException(status_code=401, detail={"error": "operator_or_service_identity_invalid"})
 
     if user:
-        from ..persistence.billing_store import get_billing_store
-
-        try:
-            entitled = get_billing_store().has_active_entitlement(user["user_id"])
-        except Exception as exc:
-            logger.warning("Customer entitlement lookup failed: %s", exc)
-            raise HTTPException(
-                status_code=503,
-                detail={"error": "customer_entitlement_unavailable"},
-            ) from exc
-        if not entitled:
-            # Free discovery tier: non-entitled users may still call a small
-            # allowlist of read-only discovery/search tools under a daily
-            # quota, so an agent that just found us can evaluate the gateway
-            # before hitting the paywall. Everything else still 402s.
-            if tool_names and _trial_allows(user["user_id"], tool_names):
-                return {
-                    "kind": "customer_trial",
-                    "tenant_id": user["user_id"],
-                    "user": user,
-                }
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "error": "customer_subscription_required",
-                    "checkout": "/api/v1/me/billing/checkout-session",
-                    "trial": {
-                        "free_tools": sorted(TRIAL_TOOL_ALLOWLIST),
-                        "free_calls_per_day": TRIAL_CALLS_PER_DAY,
-                        "remaining_today": _trial_remaining(user["user_id"]),
-                    },
-                },
-            )
-        return {"kind": "customer", "tenant_id": user["user_id"], "user": user}
+        return _customer_execution_identity(user, tool_names)
 
     identity = get_token_identity(token) or {}
     return {"kind": "operator_service", "tenant_id": None, "identity": identity}
@@ -391,12 +426,49 @@ def _trial_allows(user_id: str, tool_names: List[str]) -> bool:
     return True
 
 
+def _customer_execution_identity(
+    user: Dict[str, Any], tool_names: Optional[List[str]]
+) -> Dict[str, Any]:
+    """Apply billing/trial policy to an already authenticated account."""
+    from ..persistence.billing_store import get_billing_store
+
+    account_id = str(user["account_id"] if user.get("account_id") else user["user_id"])
+    try:
+        entitled = get_billing_store().has_active_entitlement(account_id)
+    except Exception as exc:
+        logger.warning("Customer entitlement lookup failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "customer_entitlement_unavailable"},
+        ) from exc
+    if not entitled:
+        if tool_names and _trial_allows(account_id, tool_names):
+            return {
+                "kind": "customer_trial",
+                "tenant_id": account_id,
+                "user": user,
+            }
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "customer_subscription_required",
+                "checkout": "/api/v1/me/billing/checkout-session",
+                "trial": {
+                    "free_tools": sorted(TRIAL_TOOL_ALLOWLIST),
+                    "free_calls_per_day": TRIAL_CALLS_PER_DAY,
+                    "remaining_today": _trial_remaining(account_id),
+                },
+            },
+        )
+    return {"kind": "customer", "tenant_id": account_id, "user": user}
+
+
 def _bind_customer_identity(request: Request, calls: List[ToolCall]) -> Dict[str, Any]:
     """Validate caller, reject reserved arguments, and bind the server tenant."""
     identity = resolve_execution_identity(request, [c.tool for c in calls])
     for call in calls:
         assert_safe_tool_arguments(call.arguments)
-        call.bind_tenant(identity["tenant_id"])
+        call.bind_identity(identity)
     return identity
 
 
@@ -511,6 +583,46 @@ async def execute_tool(call: ToolCall) -> ToolResult:
         if call.parent_execution_id:
             outbound_arguments.setdefault("_parent_execution_id", call.parent_execution_id)
 
+        # Customer tokens terminate at the Tools boundary. Native workers get
+        # only a short-lived, audience-bound, signed account/principal context.
+        context_backends = {
+            item.strip()
+            for item in os.getenv(
+                "SIGNED_CONTEXT_BACKENDS", "distributed-search-mcp,distributed-search"
+            ).split(",")
+            if item.strip()
+        }
+        if backend_id in context_backends:
+            from ..auth.service_context import sign_service_context
+
+            signing_secret = os.getenv("BACKEND_BEARER_TOKEN", "")
+            if not signing_secret:
+                return ToolResult(
+                    tool=call.tool,
+                    backend=backend_id,
+                    success=False,
+                    error="EXECUTION_CONTEXT_UNAVAILABLE: backend signing secret is not configured",
+                    latency_ms=(time.time() - start) * 1000,
+                )
+            identity_record = call._execution_identity.get("user") or call._execution_identity.get("identity") or {}
+            principal_id = (
+                identity_record.get("principal_id")
+                or identity_record.get("subject")
+                or identity_record.get("sub")
+                or identity_record.get("user_id")
+            )
+            issuer = identity_record.get("identity_issuer") or identity_record.get("issuer")
+            outbound_arguments["_dsco_context"] = sign_service_context(
+                signing_secret,
+                audience=backend_id,
+                account_id=call.tenant_id,
+                principal_id=principal_id,
+                issuer=issuer,
+                identity_kind=str(call._execution_identity.get("kind") or "operator_service"),
+                trace_id=call.trace_id,
+                session_id=call.session_id,
+            )
+
         # Per-user credential injection: resolve the caller's own credential
         # for this tool's provider and pass it to the backend. Users with a
         # paid managed add-on instead get pooled platform credentials.
@@ -529,7 +641,12 @@ async def execute_tool(call: ToolCall) -> ToolResult:
 
                     credential = _tenant_store().get_secret(call.tenant_id, auth_provider)
                     if credential:
-                        if backend_id != "integration-fabric":
+                        credential_envelope_backends = {
+                            "integration-fabric",
+                            "distributed-publish-mcp",
+                            "distributed-publish",
+                        }
+                        if backend_id not in credential_envelope_backends:
                             return ToolResult(
                                 tool=call.tool,
                                 backend=backend_id,
@@ -539,14 +656,34 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                             )
                         from ..core.credential_envelope import seal_credential_envelope
 
+                        credential_payload = credential
+                        if auth_provider == "substack":
+                            metadata = _tenant_store().get_metadata(call.tenant_id, auth_provider)
+                            credential_payload = json.dumps(
+                                {
+                                    "sid": credential,
+                                    "publication": (metadata.label if metadata else None),
+                                },
+                                separators=(",", ":"),
+                            )
                         outbound_arguments["_credential_envelope"] = seal_credential_envelope(
-                            credential,
+                            credential_payload,
                             tenant_id=call.tenant_id,
                             provider=auth_provider,
                             backend_id=backend_id,
                         )
                         auth_connected = True
                     else:
+                        if auth_provider == "substack" and backend_id in {
+                            "distributed-publish-mcp", "distributed-publish"
+                        }:
+                            return ToolResult(
+                                tool=call.tool,
+                                backend=backend_id,
+                                success=False,
+                                error="SUBSTACK_AUTHORIZATION_REQUIRED: connect at /publish",
+                                latency_ms=(time.time() - start) * 1000,
+                            )
                         from ..persistence.billing_store import get_billing_store
 
                         addon_active = auth_provider in get_billing_store().active_addon_providers(
@@ -557,26 +694,18 @@ async def execute_tool(call: ToolCall) -> ToolResult:
         except Exception as e:
             logger.debug(f"Credential injection skipped for {tool_name}: {e}")
 
-        client = get_client()
-        response = await client.post(
-            f"{backend_url}/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": str(uuid4()),
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": outbound_arguments
-                }
-            },
+        response_status, data = await _mcp_tools_call(
+            backend_url,
+            backend_id,
+            tool_name,
+            outbound_arguments,
             timeout=call.timeout,
-            headers=_backend_headers(backend_id, call.tenant_id),
+            tenant_id=call.tenant_id,
         )
 
         latency_ms = (time.time() - start) * 1000
 
-        if response.status_code == 200:
-            data = response.json()
+        if response_status == 200:
 
             if "error" in data:
                 err_obj = data.get("error")
@@ -706,15 +835,15 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 execution_mode="sync",
                 trace_id=call.trace_id,
                 session_id=call.session_id,
-                error_code=f"HTTP_{response.status_code}",
-                error_message=response.text[:500],
+                error_code=f"HTTP_{response_status}",
+                error_message=str(data.get("_http_text") or data)[:500],
             )
-            breaker.record_failure(backend_id, error=f"http {response.status_code}")
+            breaker.record_failure(backend_id, error=f"http {response_status}")
             return ToolResult(
                 tool=call.tool,
                 backend=backend_id,
                 success=False,
-                error=f"HTTP {response.status_code}: {response.text[:200]}",
+                error=f"HTTP {response_status}: {str(data.get('_http_text') or data)[:200]}",
                 latency_ms=latency_ms
             )
 

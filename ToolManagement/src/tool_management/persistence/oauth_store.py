@@ -49,8 +49,22 @@ class OAuthStore:
                     redirect_uris VARCHAR,
                     logo_uri VARCHAR,
                     client_uri VARCHAR,
-                    created_at DOUBLE
+                    created_at DOUBLE,
+                    token_endpoint_auth_method VARCHAR
                 )
+                """
+            )
+            con.execute(
+                "ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS token_endpoint_auth_method VARCHAR"
+            )
+            con.execute(
+                """
+                UPDATE oauth_clients
+                SET token_endpoint_auth_method = CASE
+                    WHEN client_secret IS NULL OR client_secret = '' THEN 'none'
+                    ELSE 'client_secret_post'
+                END
+                WHERE token_endpoint_auth_method IS NULL OR token_endpoint_auth_method = ''
                 """
             )
             con.execute(
@@ -89,7 +103,12 @@ class OAuthStore:
     def save_client(self, client: Dict[str, Any]) -> None:
         with self._lock, self._connect() as con:
             con.execute(
-                "INSERT OR REPLACE INTO oauth_clients VALUES (?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO oauth_clients (
+                    client_id, client_secret, name, redirect_uris, logo_uri,
+                    client_uri, created_at, token_endpoint_auth_method
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 [
                     client["client_id"],
                     client.get("client_secret"),
@@ -98,13 +117,15 @@ class OAuthStore:
                     client.get("logo_uri"),
                     client.get("client_uri"),
                     client.get("created_at", time.time()),
+                    client.get("token_endpoint_auth_method")
+                    or ("client_secret_post" if client.get("client_secret") else "none"),
                 ],
             )
 
     def get_client(self, client_id: str) -> Optional[Dict[str, Any]]:
         with self._lock, self._connect() as con:
             row = con.execute(
-                "SELECT client_id, client_secret, name, redirect_uris, logo_uri, client_uri, created_at "
+                "SELECT client_id, client_secret, name, redirect_uris, logo_uri, client_uri, created_at, token_endpoint_auth_method "
                 "FROM oauth_clients WHERE client_id = ?",
                 [client_id],
             ).fetchone()
@@ -118,6 +139,7 @@ class OAuthStore:
             "logo_uri": row[4],
             "client_uri": row[5],
             "created_at": row[6],
+            "token_endpoint_auth_method": row[7],
         }
 
     # ==================== Grants (consent) ====================
@@ -192,7 +214,9 @@ class OAuthStore:
                 [_hash_token(token), client_id, user_id, scope, time.time() + ttl],
             )
 
-    def consume_refresh_token(self, token: str) -> Optional[Dict[str, Any]]:
+    def consume_refresh_token(
+        self, token: str, expected_client_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """Single-use: return the record and rotate it out."""
         h = _hash_token(token)
         with self._lock, self._connect() as con:
@@ -202,9 +226,12 @@ class OAuthStore:
             ).fetchone()
             if not row:
                 return None
+            if expected_client_id and row[0] != expected_client_id:
+                return None
+            if row[3] < time.time():
+                con.execute("DELETE FROM oauth_refresh_tokens WHERE token_hash = ?", [h])
+                return None
             con.execute("DELETE FROM oauth_refresh_tokens WHERE token_hash = ?", [h])
-        if row[3] < time.time():
-            return None
         return {"client_id": row[0], "user_id": row[1], "scope": row[2]}
 
     # ==================== Revocations ====================

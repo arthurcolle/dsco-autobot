@@ -5,15 +5,22 @@ Wraps the StreamingExecutor to provide a REST API for long-running tool executio
 """
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core.streaming import get_streaming_executor, StreamingExecution, EventType
+from ..core.streaming import (
+    EventType,
+    StreamingExecution,
+    get_streaming_executor,
+    validate_callback_url,
+)
+from .tools_api import assert_safe_tool_arguments, resolve_execution_identity
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +116,53 @@ class JobSubmitResponse(BaseModel):
 
 
 # ==================== Helpers ====================
+
+def _request_identity(request: Request) -> Dict[str, Any]:
+    """Resolve production identity while keeping explicit auth-off local apps usable."""
+    if (
+        os.getenv("REQUIRE_BEARER_AUTH", "0") != "1"
+        and not request.headers.get("authorization")
+    ):
+        return {"kind": "operator_service", "tenant_id": None}
+    return resolve_execution_identity(request)
+
+
+def _identity_tenant(identity: Dict[str, Any]) -> Optional[str]:
+    if identity.get("kind") == "operator_service":
+        return None
+    tenant_id = identity.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail={"error": "customer_identity_invalid"})
+    return str(tenant_id)
+
+def _job_execution(
+    executor: Any,
+    job_id: str,
+    identity: Optional[Dict[str, Any]],
+) -> Optional[StreamingExecution]:
+    """Resolve a job within the authenticated tenant boundary.
+
+    Operator/service identities may inspect across tenants. Customer callers
+    fail closed unless they have a tenant id, and the tenant filter is passed
+    into durable executors instead of filtering only after retrieval.
+    """
+    identity = identity or {}
+    if identity.get("kind") == "operator_service":
+        tenant_id = None
+    else:
+        tenant_id = identity.get("tenant_id")
+        if not tenant_id:
+            return None
+
+    try:
+        return executor.get_execution(job_id, tenant_id=tenant_id)
+    except TypeError:
+        # Compatibility with older in-memory executors while preserving the
+        # customer boundary after lookup.
+        execution = executor.get_execution(job_id)
+        if tenant_id is not None and getattr(execution, "tenant_id", None) != tenant_id:
+            return None
+        return execution
 
 def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
     partial_results = []
@@ -233,7 +287,7 @@ def _execution_to_status(ex: StreamingExecution) -> JobStatusResponse:
 # ==================== Endpoints ====================
 
 @router.post("/submit", response_model=JobSubmitResponse)
-async def submit_job(request: JobSubmitRequest):
+async def submit_job(request: JobSubmitRequest, http_request: Request):
     """
     Submit a long-running tool execution as a background job.
 
@@ -246,6 +300,19 @@ async def submit_job(request: JobSubmitRequest):
             status_code=503,
             detail="Streaming executor not initialized yet",
         )
+
+    identity = _request_identity(http_request)
+    tenant_id = _identity_tenant(identity)
+    assert_safe_tool_arguments(request.arguments)
+    callback_url = request.callback_url
+    if callback_url:
+        try:
+            callback_url = validate_callback_url(callback_url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "unsafe_callback_url"},
+            ) from exc
 
     trace_id = request.trace_id or f"tr_{uuid4().hex}"
     try:
@@ -262,7 +329,8 @@ async def submit_job(request: JobSubmitRequest):
                 "_group_reducer": request.group_reducer,
                 "_group_reducer_config": request.group_reducer_config,
             },
-            client_id=request.client_id,
+            client_id=tenant_id or request.client_id,
+            tenant_id=tenant_id,
             trace_id=trace_id,
             session_id=request.session_id,
             parent_execution_id=request.parent_execution_id,
@@ -273,7 +341,7 @@ async def submit_job(request: JobSubmitRequest):
             fanout_budget=request.fanout_budget,
             group_reducer=request.group_reducer,
             group_reducer_config=request.group_reducer_config,
-            callback_url=request.callback_url,
+            callback_url=callback_url,
             callback_events=request.callback_events,
         )
     except RuntimeError as exc:
@@ -292,7 +360,7 @@ async def submit_job(request: JobSubmitRequest):
         priority=execution.queue_priority,
         poll_url=f"/api/v1/jobs/{execution.execution_id}",
         stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
-        callback_url=request.callback_url,
+        callback_url=callback_url,
         callback_events=request.callback_events,
         trace_id=execution.trace_id,
         session_id=execution.session_id,
@@ -302,6 +370,7 @@ async def submit_job(request: JobSubmitRequest):
 
 @router.get("/analytics")
 async def get_job_analytics(
+    request: Request,
     hours: int = Query(24, ge=1, le=720, description="Lookback window in hours"),
 ):
     """Durable execution analytics sourced from persisted job data."""
@@ -309,6 +378,10 @@ async def get_job_analytics(
         executor = get_streaming_executor()
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
+
+    identity = _request_identity(request)
+    if _identity_tenant(identity) is not None:
+        raise HTTPException(status_code=403, detail={"error": "operator_access_required"})
 
     store = getattr(executor, "_execution_store", None)
     if not store:
@@ -325,14 +398,14 @@ async def get_job_analytics(
 
 
 @router.get("/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
+async def get_job_status(job_id: str, request: Request):
     """Poll the status of a submitted job."""
     try:
         executor = get_streaming_executor()
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
 
-    ex = executor.get_execution(job_id)
+    ex = _job_execution(executor, job_id, _request_identity(request))
     if not ex:
         raise HTTPException(404, f"Job not found: {job_id}")
 
@@ -342,6 +415,7 @@ async def get_job_status(job_id: str):
 @router.get("/{job_id}/stream")
 async def stream_job_events(
     job_id: str,
+    request: Request,
     include_history: bool = Query(True, description="Replay buffered history before live events"),
     since_event_id: Optional[int] = Query(
         default=None,
@@ -360,7 +434,7 @@ async def stream_job_events(
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
 
-    ex = executor.get_execution(job_id)
+    ex = _job_execution(executor, job_id, _request_identity(request))
     if not ex:
         raise HTTPException(404, f"Job not found: {job_id}")
 
@@ -381,14 +455,14 @@ async def stream_job_events(
 
 
 @router.post("/{job_id}/detach")
-async def detach_job(job_id: str):
+async def detach_job(job_id: str, request: Request):
     """Detach a running stream so callers can reconnect later via /jobs/{job_id}/stream."""
     try:
         executor = get_streaming_executor()
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
 
-    ex = executor.get_execution(job_id)
+    ex = _job_execution(executor, job_id, _request_identity(request))
     if not ex:
         raise HTTPException(404, f"Job not found: {job_id}")
 
@@ -406,18 +480,20 @@ async def detach_job(job_id: str):
 
 
 @router.post("/{job_id}/cancel")
-async def cancel_job(job_id: str):
+async def cancel_job(job_id: str, request: Request):
     """Cancel a running job."""
     try:
         executor = get_streaming_executor()
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
 
+    identity = _request_identity(request)
+    ex = _job_execution(executor, job_id, identity)
+    if not ex:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
     cancelled = executor.cancel_execution(job_id)
     if not cancelled:
-        ex = executor.get_execution(job_id)
-        if not ex:
-            raise HTTPException(404, f"Job not found: {job_id}")
         return {"job_id": job_id, "cancelled": False, "reason": f"Job is {ex.status}"}
 
     return {"job_id": job_id, "cancelled": True}
@@ -425,6 +501,7 @@ async def cancel_job(job_id: str):
 
 @router.get("/")
 async def list_jobs(
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -434,10 +511,24 @@ async def list_jobs(
     except ValueError:
         raise HTTPException(503, "Streaming executor not initialized")
 
+    identity = _request_identity(request)
+    tenant_id = _identity_tenant(identity)
     jobs = []
-    executions = executor.list_executions(status=status, limit=limit) if hasattr(executor, "list_executions") else list(executor._executions.values())
+    if hasattr(executor, "list_executions"):
+        try:
+            executions = executor.list_executions(
+                status=status,
+                limit=limit,
+                tenant_id=tenant_id,
+            )
+        except TypeError:
+            executions = executor.list_executions(status=status, limit=limit)
+    else:
+        executions = list(executor._executions.values())
     for ex in executions:
         if status and ex.status != status:
+            continue
+        if tenant_id is not None and getattr(ex, "tenant_id", None) != tenant_id:
             continue
         jobs.append({
             "job_id": ex.execution_id,
@@ -454,7 +545,14 @@ async def list_jobs(
     jobs.sort(key=lambda j: j.get("started_at") or 0, reverse=True)
     jobs = jobs[:limit]
 
-    stats = executor.get_stats()
+    if tenant_id is None:
+        stats = executor.get_stats()
+    else:
+        by_status: Dict[str, int] = {}
+        for job in jobs:
+            job_status = str(job["status"])
+            by_status[job_status] = by_status.get(job_status, 0) + 1
+        stats = {"total_executions": len(jobs), "by_status": by_status}
 
     return {
         "jobs": jobs,

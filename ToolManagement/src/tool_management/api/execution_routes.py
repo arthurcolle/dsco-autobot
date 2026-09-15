@@ -43,6 +43,9 @@ BatchExecutionMode = Literal["parallel", "sequential"]
 BatchOverflowPolicy = Literal["reject", "truncate"]
 ControlAction = Literal["stop", "pause", "resume", "detach", "priority", "narrow"]
 
+_TERMINAL_EXECUTION_STATUSES = {"completed", "error", "cancelled"}
+_TERMINAL_EVENT_TYPES = {EventType.COMPLETED, EventType.ERROR, EventType.CANCELLED}
+
 
 class EarlyStopConfig(BaseModel):
     enabled: bool = True
@@ -1585,6 +1588,10 @@ async def _submit_job(
             callback_url=callback_url,
             callback_events=callback_events,
         )
+        try:
+            setattr(execution, "_dsco_streaming_executor", executor)
+        except Exception:
+            pass
     except RuntimeError as exc:
         message = str(exc)
         if message.startswith("FANOUT_LIMIT_EXCEEDED:"):
@@ -1694,6 +1701,206 @@ def _to_collected_response(
         parent_execution_id=parent_execution_id,
         policy_decision=policy_decision,
     )
+
+
+def _execution_control_state(execution: Any) -> Dict[str, Any]:
+    control_state = getattr(execution, "control_state", None)
+    return control_state if isinstance(control_state, dict) else {}
+
+
+def _execution_latency_ms(execution: Any) -> float:
+    started_at = getattr(execution, "started_at", None) or getattr(execution, "queued_at", None)
+    completed_at = getattr(execution, "completed_at", None)
+    if isinstance(started_at, (int, float)) and isinstance(completed_at, (int, float)):
+        return max(0.0, (float(completed_at) - float(started_at)) * 1000.0)
+    return 0.0
+
+
+def _latest_terminal_event(execution: Any) -> Optional[Any]:
+    events = getattr(execution, "events", None)
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if getattr(event, "type", None) in _TERMINAL_EVENT_TYPES:
+            return event
+    return None
+
+
+def _execution_reuse_flags(execution: Any) -> Dict[str, Any]:
+    control_state = _execution_control_state(execution)
+    submit_count = int(control_state.get("submit_count", 1))
+    coalesced_requests = int(control_state.get("coalesced_requests", 0))
+    return {
+        "deduplicated": submit_count > 1,
+        "coalesced": coalesced_requests > 0,
+        "coalesced_requests": coalesced_requests,
+    }
+
+
+def _job_response_from_execution(
+    *,
+    tool_name: str,
+    execution: Any,
+    request: ExecuteRequest,
+    trace_id: Optional[str],
+    session_id: Optional[str],
+    parent_execution_id: Optional[str],
+    policy_decision: Optional[Dict[str, Any]],
+    estimated_cost_cents: Optional[int],
+    status: str = "submitted",
+    error: Optional[Dict[str, Any]] = None,
+) -> ExecuteResponse:
+    execution_id = getattr(execution, "execution_id", None)
+    execution_trace_id = getattr(execution, "trace_id", None) or trace_id
+    execution_session_id = getattr(execution, "session_id", None) or session_id
+    execution_parent_id = getattr(execution, "parent_execution_id", None) or parent_execution_id
+    return ExecuteResponse(
+        status=status,
+        tool=tool_name,
+        execution_mode="job",
+        estimated_cost_cents=estimated_cost_cents,
+        call_id=execution_id,
+        job_id=execution_id,
+        **_execution_reuse_flags(execution),
+        priority=getattr(execution, "queue_priority", None),
+        poll_url=f"/api/v1/jobs/{execution_id}" if execution_id else None,
+        stream_url=f"/api/v1/jobs/{execution_id}/stream" if execution_id else None,
+        callback_url=request.callback_url,
+        callback_events=request.callback_events,
+        trace_id=execution_trace_id,
+        session_id=execution_session_id,
+        parent_execution_id=execution_parent_id,
+        error=error,
+        policy_decision=policy_decision,
+    )
+
+
+def _collected_response_from_execution(
+    *,
+    tool_name: str,
+    execution: Any,
+    terminal_event: Optional[Any],
+    trace_id: Optional[str],
+    session_id: Optional[str],
+    parent_execution_id: Optional[str],
+    policy_decision: Optional[Dict[str, Any]],
+    estimated_cost_cents: Optional[int],
+) -> ExecuteResponse:
+    execution_id = getattr(execution, "execution_id", None)
+    execution_trace_id = getattr(execution, "trace_id", None) or trace_id
+    execution_session_id = getattr(execution, "session_id", None) or session_id
+    execution_parent_id = getattr(execution, "parent_execution_id", None) or parent_execution_id
+    event_type = getattr(terminal_event, "type", None)
+    execution_status = str(getattr(execution, "status", "") or "")
+    latency_ms = _execution_latency_ms(execution)
+    flags = _execution_reuse_flags(execution)
+
+    if event_type == EventType.COMPLETED or execution_status == "completed":
+        result = getattr(terminal_event, "data", None)
+        if terminal_event is None:
+            events = getattr(execution, "events", None)
+            if isinstance(events, list):
+                for event in reversed(events):
+                    if getattr(event, "type", None) == EventType.COMPLETED:
+                        result = getattr(event, "data", None)
+                        break
+        return ExecuteResponse(
+            status="completed",
+            tool=tool_name,
+            execution_mode="sync",
+            estimated_cost_cents=estimated_cost_cents,
+            call_id=execution_id,
+            result=result,
+            latency_ms=latency_ms,
+            **flags,
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
+            policy_decision=policy_decision,
+        )
+
+    if event_type == EventType.CANCELLED or execution_status == "cancelled":
+        return ExecuteResponse(
+            status="cancelled",
+            tool=tool_name,
+            execution_mode="sync",
+            estimated_cost_cents=estimated_cost_cents,
+            call_id=execution_id,
+            error=_structured_error(
+                "EXECUTION_CANCELLED",
+                getattr(terminal_event, "message", None) or "Execution cancelled",
+                category="cancelled",
+                retryable=False,
+            ),
+            latency_ms=latency_ms,
+            **flags,
+            trace_id=execution_trace_id,
+            session_id=execution_session_id,
+            parent_execution_id=execution_parent_id,
+            policy_decision=policy_decision,
+        )
+
+    return ExecuteResponse(
+        status="error",
+        tool=tool_name,
+        execution_mode="sync",
+        estimated_cost_cents=estimated_cost_cents,
+        call_id=execution_id,
+        error=_structured_error(
+            "TOOL_EXECUTION_FAILED",
+            getattr(terminal_event, "error", None)
+            or getattr(terminal_event, "message", None)
+            or "Tool execution failed",
+            retryable=True,
+        ),
+        latency_ms=latency_ms,
+        **flags,
+        trace_id=execution_trace_id,
+        session_id=execution_session_id,
+        parent_execution_id=execution_parent_id,
+        policy_decision=policy_decision,
+    )
+
+
+async def _wait_for_execution_terminal(
+    execution: Any,
+    timeout_ms: int,
+) -> Optional[Any]:
+    if str(getattr(execution, "status", "") or "") in _TERMINAL_EXECUTION_STATUSES:
+        return _latest_terminal_event(execution)
+
+    executor = getattr(execution, "_dsco_streaming_executor", None)
+    if executor is None:
+        try:
+            executor = get_streaming_executor()
+        except ValueError:
+            return None
+
+    execution_id = getattr(execution, "execution_id", None)
+    if not execution_id:
+        return None
+
+    async def _consume_until_terminal() -> Optional[Any]:
+        terminal = _latest_terminal_event(execution)
+        if terminal is not None:
+            return terminal
+        async for event in executor.stream_events(execution_id, include_history=True):
+            if getattr(event, "type", None) in _TERMINAL_EVENT_TYPES:
+                return event
+            terminal = _latest_terminal_event(execution)
+            if terminal is not None:
+                return terminal
+            if str(getattr(execution, "status", "") or "") in _TERMINAL_EXECUTION_STATUSES:
+                return _latest_terminal_event(execution)
+        return _latest_terminal_event(execution)
+
+    try:
+        return await asyncio.wait_for(
+            _consume_until_terminal(),
+            timeout=max(0.001, timeout_ms / 1000.0),
+        )
+    except asyncio.TimeoutError:
+        return None
 
 
 async def _stream_execution(
@@ -1872,15 +2079,28 @@ async def execute(request: ExecuteRequest):
 
     selected_mode = str(policy_decision.get("selected_mode") or "sync")
     auto_requested = request.execution_mode == "auto" and not request.stream
+    job_fallback_allowed = bool(constraints.allow_job)
 
-    # Non-streaming clients cannot consume SSE directly; degrade stream to job handle.
+    # Non-streaming clients cannot consume SSE directly. Auto collected calls can
+    # still use the durable executor internally and wait briefly for a terminal
+    # result; explicit stream calls keep the existing job-handle behavior.
     if selected_mode == "stream" and not request.stream:
-        selected_mode = "job"
-        _update_policy_decision(
-            decision_payload=policy_decision,
-            selected_mode="job",
-            reason="stream_selected_but_client_requested_collected_response",
-        )
+        if auto_requested and job_fallback_allowed:
+            pass
+        elif job_fallback_allowed:
+            selected_mode = "job"
+            _update_policy_decision(
+                decision_payload=policy_decision,
+                selected_mode="job",
+                reason="stream_selected_but_client_requested_collected_response",
+            )
+        else:
+            selected_mode = "sync"
+            _update_policy_decision(
+                decision_payload=policy_decision,
+                selected_mode="sync",
+                reason="stream_selected_but_client_requested_collected_response_and_jobs_disallowed",
+            )
 
     latency_class = str(policy_decision.get("latency_class") or _latency_class_for_tool(tool_name))
     estimated_cost_cents = _estimate_execution_cost_cents(
@@ -1936,34 +2156,98 @@ async def execute(request: ExecuteRequest):
             decision_payload=policy_decision,
             execution_id=execution.execution_id,
         )
-        execution_trace_id = execution.trace_id or trace_id
-        execution_session_id = execution.session_id or session_id
-        execution_parent_id = execution.parent_execution_id or parent_execution_id
-        control_state = execution.control_state if isinstance(getattr(execution, "control_state", None), dict) else {}
-        submit_count = int(control_state.get("submit_count", 1))
-        deduplicated = submit_count > 1
-        coalesced_requests = int(control_state.get("coalesced_requests", 0))
-        return ExecuteResponse(
-            status=status,
-            tool=tool_name,
-            execution_mode="job",
+        return _job_response_from_execution(
+            tool_name=tool_name,
+            execution=execution,
+            request=request,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+            policy_decision=policy_decision,
             estimated_cost_cents=estimated_cost_cents,
-            call_id=execution.execution_id,
-            job_id=execution.execution_id,
-            deduplicated=deduplicated,
-            coalesced=coalesced_requests > 0,
-            coalesced_requests=coalesced_requests,
-            priority=execution.queue_priority,
-            poll_url=f"/api/v1/jobs/{execution.execution_id}",
-            stream_url=f"/api/v1/jobs/{execution.execution_id}/stream",
+            status=status,
+            error=error,
+        )
+
+    async def submit_collected_auto_response() -> ExecuteResponse:
+        execution = await _submit_job(
+            tool_name=tool_name,
+            arguments=request.arguments,
+            timeout_ms=request.timeout_ms,
+            priority=request.priority,
+            dedupe_window_seconds=request.dedupe_window_seconds,
+            dedupe_key=request.dedupe_key,
+            convergence_key=request.convergence_key,
+            fanout_budget=request.fanout_budget,
+            group_reducer=request.group_reducer,
+            group_reducer_config=request.group_reducer_config,
             callback_url=request.callback_url,
             callback_events=request.callback_events,
-            trace_id=execution_trace_id,
-            session_id=execution_session_id,
-            parent_execution_id=execution_parent_id,
-            error=error,
-            policy_decision=policy_decision,
+            client_id=request.client_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
         )
+        _update_policy_decision(
+            decision_payload=policy_decision,
+            execution_id=execution.execution_id,
+        )
+        terminal_event = await _wait_for_execution_terminal(
+            execution,
+            timeout_ms=request.sync_timeout_ms,
+        )
+        if terminal_event is not None or str(getattr(execution, "status", "") or "") in _TERMINAL_EXECUTION_STATUSES:
+            if selected_mode != "sync":
+                terminal_type = getattr(terminal_event, "type", None)
+                terminal_status = str(getattr(execution, "status", "") or "")
+                terminal_reason = "auto_collected_completed_within_timeout"
+                if terminal_type == EventType.ERROR or terminal_status == "error":
+                    terminal_reason = "auto_collected_error_within_timeout"
+                elif terminal_type == EventType.CANCELLED or terminal_status == "cancelled":
+                    terminal_reason = "auto_collected_cancelled_within_timeout"
+                _update_policy_decision(
+                    decision_payload=policy_decision,
+                    selected_mode="sync",
+                    reason=terminal_reason,
+                )
+            return _collected_response_from_execution(
+                tool_name=tool_name,
+                execution=execution,
+                terminal_event=terminal_event,
+                trace_id=trace_id,
+                session_id=session_id,
+                parent_execution_id=parent_execution_id,
+                policy_decision=policy_decision,
+                estimated_cost_cents=estimated_cost_cents,
+            )
+
+        _update_policy_decision(
+            decision_payload=policy_decision,
+            selected_mode="job",
+            reason="auto_collected_timeout_returned_existing_job",
+        )
+        return _job_response_from_execution(
+            tool_name=tool_name,
+            execution=execution,
+            request=request,
+            trace_id=trace_id,
+            session_id=session_id,
+            parent_execution_id=parent_execution_id,
+            policy_decision=policy_decision,
+            estimated_cost_cents=estimated_cost_cents,
+            status="submitted",
+            error=_structured_error(
+                "SYNC_TIMEOUT_ESCALATED",
+                (
+                    f"Sync execution exceeded {request.sync_timeout_ms}ms; "
+                    "returning the existing durable job"
+                ),
+                retryable=False,
+            ),
+        )
+
+    if auto_requested and selected_mode in {"sync", "stream"} and job_fallback_allowed:
+        return await submit_collected_auto_response()
 
     if selected_mode == "stream":
         execution = await _submit_job(
@@ -2066,6 +2350,26 @@ async def execute(request: ExecuteRequest):
                 estimated_cost_cents=estimated_cost_cents,
             )
         except asyncio.TimeoutError:
+            if not job_fallback_allowed:
+                _update_policy_decision(
+                    decision_payload=policy_decision,
+                    reason="sync_timeout_jobs_disallowed",
+                )
+                return ExecuteResponse(
+                    status="error",
+                    tool=tool_name,
+                    execution_mode="sync",
+                    estimated_cost_cents=estimated_cost_cents,
+                    error=_structured_error(
+                        "SYNC_TIMEOUT",
+                        f"Sync execution exceeded {request.sync_timeout_ms}ms and job fallback is disabled",
+                        retryable=True,
+                    ),
+                    trace_id=trace_id,
+                    session_id=session_id,
+                    parent_execution_id=parent_execution_id,
+                    policy_decision=policy_decision,
+                )
             _update_policy_decision(
                 decision_payload=policy_decision,
                 selected_mode="job",

@@ -44,6 +44,10 @@ ToolManagement/
 
 ## Quick Start
 
+For Codex, use the [on-demand Tool Management MCP client](docs/LAZY_CODEX_MCP.md)
+to discover and execute integrations through the hosted API without connecting
+to each integration at startup.
+
 ### Local Development
 
 1. Install dependencies:

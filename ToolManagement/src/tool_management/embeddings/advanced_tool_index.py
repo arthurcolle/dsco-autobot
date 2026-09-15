@@ -9,17 +9,21 @@ from __future__ import annotations
 import os
 import json
 import logging
+import re
 import sqlite3
+import time
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from threading import RLock
 import numpy as np
 
 from .openrouter_embeddings import get_embedding_service, cosine_similarity
 
 logger = logging.getLogger(__name__)
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 # Use DATA_DIR from environment (set to /data on Modal volume)
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
@@ -67,6 +71,71 @@ class QueryIntent:
     confidence: float
 
 
+@dataclass(frozen=True)
+class _CachedToolRow:
+    """Search metadata cached alongside normalized embedding matrices."""
+
+    tool_id: str
+    name: str
+    backend: str
+    tool: Dict[str, Any]
+    capabilities: Tuple[str, ...]
+    call_count: int
+    success_count: int
+    lexical_terms: frozenset[str]
+    normalized_name: str
+    identifier_forms: frozenset[str]
+    name_identifier_forms: frozenset[str]
+
+
+@dataclass
+class _SearchMatrixCacheEntry:
+    """A freshness-bounded snapshot of rows and normalized facet vectors."""
+
+    backend_filter: Optional[str]
+    fingerprint: Tuple[Any, ...]
+    checked_at: float
+    built_at: float
+    rows: List[_CachedToolRow]
+    purpose: np.ndarray
+    inputs: np.ndarray
+    outputs: np.ndarray
+    examples: np.ndarray
+    byte_size: int
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _tokens(text: Any) -> List[str]:
+    return _TOKEN_RE.findall(str(text or "").lower())
+
+
+def _normalized_text(text: Any) -> str:
+    return " ".join(_tokens(text))
+
+
+def _identifier_forms(text: Any) -> Set[str]:
+    raw = str(text or "").strip().lower()
+    tokens = _tokens(raw)
+    forms = {raw} if raw else set()
+    if tokens:
+        forms.add(" ".join(tokens))
+        forms.add("".join(tokens))
+    return forms
+
+
 class AdvancedToolIndex:
     """
     Sophisticated tool index with multi-faceted embeddings and intelligent retrieval.
@@ -109,6 +178,21 @@ class AdvancedToolIndex:
         self._facets_cache: Dict[str, ToolFacets] = {}
         self._composition_graph: Dict[str, Set[str]] = defaultdict(set)
         self._reverse_graph: Dict[str, Set[str]] = defaultdict(set)
+        self._matrix_cache: OrderedDict[Optional[str], _SearchMatrixCacheEntry] = OrderedDict()
+        self._matrix_cache_lock = RLock()
+        self._matrix_cache_total_bytes = 0
+        self._matrix_cache_ttl_seconds = max(
+            0.0,
+            _env_float("ADVANCED_TOOL_INDEX_MATRIX_CACHE_TTL_SECONDS", 5.0),
+        )
+        self._matrix_cache_max_entries = max(
+            0,
+            _env_int("ADVANCED_TOOL_INDEX_MATRIX_CACHE_MAX_ENTRIES", 8),
+        )
+        self._matrix_cache_max_bytes = max(
+            0,
+            _env_int("ADVANCED_TOOL_INDEX_MATRIX_CACHE_MAX_BYTES", 256 * 1024 * 1024),
+        )
 
     def _init_db(self):
         """Initialize the advanced index database."""
@@ -234,6 +318,7 @@ class AdvancedToolIndex:
 
         conn.commit()
         conn.close()
+        self._invalidate_matrix_cache()
 
         logger.debug(f"Indexed tool with facets: {tool_id}")
         return tool_id
@@ -296,6 +381,7 @@ class AdvancedToolIndex:
 
         conn.commit()
         conn.close()
+        self._invalidate_matrix_cache()
 
         # Build composition graph based on type compatibility
         await self._build_composition_graph(tool_info)
@@ -318,50 +404,49 @@ class AdvancedToolIndex:
               + intent_weight * intent_match_score
               + usage_weight * usage_score
         """
-        # Parse query intent
+        # Parse query intent and retain an explicit lexical signal. Semantic
+        # similarity alone can rank an integration action containing one query
+        # verb above an exact built-in match (for example, a comment action
+        # above ``add`` for "add two numbers").
         intent = self._classify_intent(query)
+        query_terms = set(_tokens(query))
+        normalized_query = _normalized_text(query)
+        query_identifier_forms = _identifier_forms(query)
 
         # Generate query embedding
         query_embeddings = await self.embedding_service.embed([query])
-        query_embedding = query_embeddings[0]
-
-        # Search database
-        conn = sqlite3.connect(str(self.db_path))
-
-        if backend_filter:
-            cursor = conn.execute("""
-                SELECT tool_id, name, backend, tool_data,
-                       purpose_embedding, input_embedding, output_embedding, example_embedding,
-                       capabilities, call_count, success_count, total_latency_ms
-                FROM tool_facets WHERE backend = ?
-            """, (backend_filter,))
-        else:
-            cursor = conn.execute("""
-                SELECT tool_id, name, backend, tool_data,
-                       purpose_embedding, input_embedding, output_embedding, example_embedding,
-                       capabilities, call_count, success_count, total_latency_ms
-                FROM tool_facets
-            """)
+        query_embedding = np.asarray(query_embeddings[0], dtype=np.float64)
 
         results = []
         semantic_weight = 1.0 - intent_weight - usage_weight
 
-        for row in cursor:
-            (tool_id, name, backend, tool_data_json,
-             purpose_bytes, input_bytes, output_bytes, example_bytes,
-             capabilities_json, call_count, success_count, total_latency) = row
+        corpus = self._get_search_matrix_cache(backend_filter)
+        if not corpus.rows:
+            return []
 
-            # Reconstruct embeddings
-            purpose_emb = np.frombuffer(purpose_bytes, dtype=np.float64)
-            input_emb = np.frombuffer(input_bytes, dtype=np.float64)
-            output_emb = np.frombuffer(output_bytes, dtype=np.float64)
-            example_emb = np.frombuffer(example_bytes, dtype=np.float64)
+        query_norm = self._normalize_vector(query_embedding)
+        if corpus.purpose.shape[1] != query_norm.shape[0]:
+            logger.warning(
+                "Skipping advanced tool search: query embedding dim %s does not match corpus dim %s",
+                query_norm.shape[0],
+                corpus.purpose.shape[1],
+            )
+            self._invalidate_matrix_cache()
+            return []
 
-            # Multi-facet semantic similarity (weighted combination)
-            purpose_sim = cosine_similarity(query_embedding, purpose_emb)
-            input_sim = cosine_similarity(query_embedding, input_emb)
-            output_sim = cosine_similarity(query_embedding, output_emb)
-            example_sim = cosine_similarity(query_embedding, example_emb)
+        # Multi-facet semantic similarity (weighted combination), batched over
+        # the cached normalized corpus so repeated queries avoid vector
+        # reconstruction and per-row cosine calls.
+        purpose_sims = corpus.purpose @ query_norm
+        input_sims = corpus.inputs @ query_norm
+        output_sims = corpus.outputs @ query_norm
+        example_sims = corpus.examples @ query_norm
+
+        for idx, cached in enumerate(corpus.rows):
+            purpose_sim = float(purpose_sims[idx])
+            input_sim = float(input_sims[idx])
+            output_sim = float(output_sims[idx])
+            example_sim = float(example_sims[idx])
 
             # Weight purpose highest, then examples, then I/O
             semantic_score = (
@@ -372,29 +457,57 @@ class AdvancedToolIndex:
             )
 
             # Intent match score
-            capabilities = json.loads(capabilities_json) if capabilities_json else []
-            intent_score = self._compute_intent_match(intent, capabilities, name)
+            capabilities = list(cached.capabilities)
+            intent_score = self._compute_intent_match(intent, capabilities, cached.name)
 
             # Usage score (success-weighted call count)
-            success_rate = success_count / max(call_count, 1)
-            usage_score = min(1.0, (call_count / 100) * success_rate)
+            success_rate = cached.success_count / max(cached.call_count, 1)
+            usage_score = min(1.0, (cached.call_count / 100) * success_rate)
 
-            # Combined score
-            final_score = (
+            base_score = (
                 semantic_weight * semantic_score +
                 intent_weight * intent_score +
                 usage_weight * usage_score
             )
 
-            tool_data = json.loads(tool_data_json)
+            lexical_score = (
+                len(query_terms & cached.lexical_terms) / len(query_terms)
+                if query_terms else 0.0
+            )
+            exact_name_match = (
+                bool(cached.normalized_name)
+                and cached.normalized_name == normalized_query
+            )
+            name_phrase_match = (
+                bool(cached.normalized_name)
+                and f" {cached.normalized_name} " in f" {normalized_query} "
+            )
+            identifier_rank = self._identifier_match_rank(
+                query_identifier_forms,
+                cached,
+            )
+            if identifier_rank:
+                lexical_score = 1.0
+            elif name_phrase_match:
+                lexical_score = max(lexical_score, 0.95)
+
+            final_score = 0.75 * base_score + 0.25 * lexical_score
+            if identifier_rank:
+                final_score = max(final_score, 1.0)
+            elif exact_name_match:
+                final_score = max(final_score, 0.99)
+
             results.append({
-                "tool_id": tool_id,
-                "tool": tool_data,
-                "backend": backend,
+                "tool_id": cached.tool_id,
+                "tool": dict(cached.tool),
+                "backend": cached.backend,
                 "score": float(final_score),
                 "semantic_score": float(semantic_score),
                 "intent_score": float(intent_score),
                 "usage_score": float(usage_score),
+                "lexical_score": float(lexical_score),
+                "identifier_score": float(1.0 if identifier_rank else 0.0),
+                "_identifier_rank": identifier_rank,
                 "facet_scores": {
                     "purpose": float(purpose_sim),
                     "input": float(input_sim),
@@ -408,12 +521,356 @@ class AdvancedToolIndex:
                 }
             })
 
-        conn.close()
-
-        # Sort by final score
-        results.sort(key=lambda x: x["score"], reverse=True)
+        # Exact identifiers sort before fuzzy ranking. Ties retain SQLite row
+        # order through Python's stable sort.
+        results.sort(
+            key=lambda x: (x["_identifier_rank"], x["score"]),
+            reverse=True,
+        )
+        for result in results:
+            result.pop("_identifier_rank", None)
 
         return results[:limit]
+
+    def _get_search_matrix_cache(
+        self,
+        backend_filter: Optional[str],
+    ) -> _SearchMatrixCacheEntry:
+        """Return a fresh-enough normalized matrix snapshot for search."""
+        cache_key = backend_filter or None
+        now = time.monotonic()
+
+        with self._matrix_cache_lock:
+            cached = self._matrix_cache.get(cache_key)
+            if cached is not None:
+                if now - cached.checked_at <= self._matrix_cache_ttl_seconds:
+                    self._matrix_cache.move_to_end(cache_key)
+                    return cached
+
+                fingerprint = self._search_corpus_fingerprint(cache_key)
+                if fingerprint == cached.fingerprint:
+                    cached.checked_at = time.monotonic()
+                    self._matrix_cache.move_to_end(cache_key)
+                    return cached
+
+                self._drop_matrix_cache_entry(cache_key)
+
+            fresh = self._load_search_matrix_cache(cache_key)
+            self._store_matrix_cache_entry(cache_key, fresh)
+            return fresh
+
+    def _load_search_matrix_cache(
+        self,
+        backend_filter: Optional[str],
+    ) -> _SearchMatrixCacheEntry:
+        rows = self._fetch_search_rows(backend_filter)
+        fingerprint = self._fingerprint_from_rows(rows)
+        now = time.monotonic()
+
+        cached_rows: List[_CachedToolRow] = []
+        purpose_vectors: List[np.ndarray] = []
+        input_vectors: List[np.ndarray] = []
+        output_vectors: List[np.ndarray] = []
+        example_vectors: List[np.ndarray] = []
+
+        for row in rows:
+            (
+                tool_id,
+                name,
+                backend,
+                tool_data_json,
+                purpose_bytes,
+                input_bytes,
+                output_bytes,
+                example_bytes,
+                capabilities_json,
+                call_count,
+                success_count,
+                _total_latency,
+                _updated_at,
+            ) = row
+
+            try:
+                vectors = (
+                    np.frombuffer(purpose_bytes, dtype=np.float64),
+                    np.frombuffer(input_bytes, dtype=np.float64),
+                    np.frombuffer(output_bytes, dtype=np.float64),
+                    np.frombuffer(example_bytes, dtype=np.float64),
+                )
+                if (
+                    not vectors[0].size
+                    or vectors[1].shape != vectors[0].shape
+                    or vectors[2].shape != vectors[0].shape
+                    or vectors[3].shape != vectors[0].shape
+                ):
+                    logger.warning("Skipping tool with inconsistent embeddings: %s", tool_id)
+                    continue
+
+                tool_data = json.loads(tool_data_json)
+                capabilities = tuple(json.loads(capabilities_json) if capabilities_json else [])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Skipping malformed indexed tool %s: %s", tool_id, exc)
+                continue
+
+            cached_rows.append(
+                _CachedToolRow(
+                    tool_id=tool_id,
+                    name=name,
+                    backend=backend,
+                    tool=tool_data,
+                    capabilities=capabilities,
+                    call_count=int(call_count or 0),
+                    success_count=int(success_count or 0),
+                    lexical_terms=self._lexical_terms(tool_id, name, backend, tool_data),
+                    normalized_name=_normalized_text(name),
+                    identifier_forms=self._tool_identifier_forms(tool_id, name, backend, tool_data),
+                    name_identifier_forms=frozenset(
+                        _identifier_forms(name) | _identifier_forms(tool_data.get("name"))
+                    ),
+                )
+            )
+            purpose_vectors.append(vectors[0])
+            input_vectors.append(vectors[1])
+            output_vectors.append(vectors[2])
+            example_vectors.append(vectors[3])
+
+        purpose = self._normalize_matrix(purpose_vectors)
+        inputs = self._normalize_matrix(input_vectors)
+        outputs = self._normalize_matrix(output_vectors)
+        examples = self._normalize_matrix(example_vectors)
+        metadata_bytes = sum(
+            len(str(row[0] or ""))
+            + len(str(row[1] or ""))
+            + len(str(row[2] or ""))
+            + len(row[3] or "")
+            + len(row[8] or "")
+            for row in rows
+        )
+        byte_size = (
+            purpose.nbytes
+            + inputs.nbytes
+            + outputs.nbytes
+            + examples.nbytes
+            + metadata_bytes
+        )
+
+        return _SearchMatrixCacheEntry(
+            backend_filter=backend_filter,
+            fingerprint=fingerprint,
+            checked_at=now,
+            built_at=now,
+            rows=cached_rows,
+            purpose=purpose,
+            inputs=inputs,
+            outputs=outputs,
+            examples=examples,
+            byte_size=byte_size,
+        )
+
+    def _fetch_search_rows(self, backend_filter: Optional[str]) -> List[Tuple[Any, ...]]:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            if backend_filter:
+                cursor = conn.execute("""
+                    SELECT tool_id, name, backend, tool_data,
+                           purpose_embedding, input_embedding, output_embedding, example_embedding,
+                           capabilities, call_count, success_count, total_latency_ms, updated_at
+                    FROM tool_facets WHERE backend = ?
+                """, (backend_filter,))
+            else:
+                cursor = conn.execute("""
+                    SELECT tool_id, name, backend, tool_data,
+                           purpose_embedding, input_embedding, output_embedding, example_embedding,
+                           capabilities, call_count, success_count, total_latency_ms, updated_at
+                    FROM tool_facets
+                """)
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def _search_corpus_fingerprint(
+        self,
+        backend_filter: Optional[str],
+    ) -> Tuple[Any, ...]:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            where = "WHERE backend = ?" if backend_filter else ""
+            sql = f"""
+                SELECT
+                    COUNT(*),
+                    COALESCE(MAX(updated_at), ''),
+                    COALESCE(SUM(
+                        COALESCE(LENGTH(purpose_embedding), 0) +
+                        COALESCE(LENGTH(input_embedding), 0) +
+                        COALESCE(LENGTH(output_embedding), 0) +
+                        COALESCE(LENGTH(example_embedding), 0)
+                    ), 0),
+                    COALESCE(SUM(call_count), 0),
+                    COALESCE(SUM(success_count), 0),
+                    COALESCE(SUM(total_latency_ms), 0),
+                    COALESCE(SUM(LENGTH(tool_data)), 0),
+                    COALESCE(SUM(LENGTH(capabilities)), 0)
+                FROM tool_facets
+                {where}
+            """
+            params = (backend_filter,) if backend_filter else ()
+            row = conn.execute(sql, params).fetchone()
+            return self._fingerprint_tuple(row)
+        finally:
+            conn.close()
+
+    def _fingerprint_from_rows(self, rows: List[Tuple[Any, ...]]) -> Tuple[Any, ...]:
+        if not rows:
+            return self._fingerprint_tuple((0, "", 0, 0, 0, 0.0, 0, 0))
+
+        max_updated_at = max(str(row[12] or "") for row in rows)
+        embedding_bytes = sum(
+            sum(len(blob or b"") for blob in row[4:8])
+            for row in rows
+        )
+        call_count_sum = sum(int(row[9] or 0) for row in rows)
+        success_count_sum = sum(int(row[10] or 0) for row in rows)
+        latency_sum = sum(float(row[11] or 0.0) for row in rows)
+        tool_data_bytes = sum(len(row[3] or "") for row in rows)
+        capabilities_bytes = sum(len(row[8] or "") for row in rows)
+        return self._fingerprint_tuple((
+            len(rows),
+            max_updated_at,
+            embedding_bytes,
+            call_count_sum,
+            success_count_sum,
+            latency_sum,
+            tool_data_bytes,
+            capabilities_bytes,
+        ))
+
+    @staticmethod
+    def _fingerprint_tuple(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
+        return (
+            int(row[0] or 0),
+            str(row[1] or ""),
+            int(row[2] or 0),
+            int(row[3] or 0),
+            int(row[4] or 0),
+            round(float(row[5] or 0.0), 6),
+            int(row[6] or 0),
+            int(row[7] or 0),
+        )
+
+    def _store_matrix_cache_entry(
+        self,
+        cache_key: Optional[str],
+        entry: _SearchMatrixCacheEntry,
+    ):
+        if (
+            self._matrix_cache_max_entries <= 0
+            or self._matrix_cache_max_bytes <= 0
+            or entry.byte_size > self._matrix_cache_max_bytes
+        ):
+            return
+
+        self._drop_matrix_cache_entry(cache_key)
+        self._matrix_cache[cache_key] = entry
+        self._matrix_cache_total_bytes += entry.byte_size
+        self._matrix_cache.move_to_end(cache_key)
+
+        while (
+            len(self._matrix_cache) > self._matrix_cache_max_entries
+            or self._matrix_cache_total_bytes > self._matrix_cache_max_bytes
+        ):
+            _, evicted = self._matrix_cache.popitem(last=False)
+            self._matrix_cache_total_bytes = max(
+                0,
+                self._matrix_cache_total_bytes - evicted.byte_size,
+            )
+
+    def _drop_matrix_cache_entry(self, cache_key: Optional[str]):
+        evicted = self._matrix_cache.pop(cache_key, None)
+        if evicted is not None:
+            self._matrix_cache_total_bytes = max(
+                0,
+                self._matrix_cache_total_bytes - evicted.byte_size,
+            )
+
+    def _invalidate_matrix_cache(self):
+        with self._matrix_cache_lock:
+            self._matrix_cache.clear()
+            self._matrix_cache_total_bytes = 0
+
+    @staticmethod
+    def _normalize_matrix(vectors: List[np.ndarray]) -> np.ndarray:
+        if not vectors:
+            return np.empty((0, 0), dtype=np.float64)
+        matrix = np.vstack(vectors).astype(np.float64, copy=False)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        return np.divide(
+            matrix,
+            norms,
+            out=np.zeros_like(matrix, dtype=np.float64),
+            where=norms != 0,
+        )
+
+    @staticmethod
+    def _normalize_vector(vector: np.ndarray) -> np.ndarray:
+        vector = np.asarray(vector, dtype=np.float64).reshape(-1)
+        norm = np.linalg.norm(vector)
+        if norm == 0:
+            return np.zeros_like(vector, dtype=np.float64)
+        return vector / norm
+
+    @staticmethod
+    def _lexical_terms(
+        tool_id: str,
+        name: str,
+        backend: str,
+        tool_data: Dict[str, Any],
+    ) -> frozenset[str]:
+        annotations = tool_data.get("annotations") or {}
+        tags = tool_data.get("tags") or []
+        parts = [
+            tool_id,
+            name,
+            backend,
+            tool_data.get("description"),
+            tool_data.get("category"),
+            tool_data.get("source"),
+            tool_data.get("backend"),
+            tool_data.get("provider"),
+            annotations.get("backend"),
+            " ".join(str(tag) for tag in tags),
+        ]
+        return frozenset(term for part in parts for term in _tokens(part))
+
+    @staticmethod
+    def _tool_identifier_forms(
+        tool_id: str,
+        name: str,
+        backend: str,
+        tool_data: Dict[str, Any],
+    ) -> frozenset[str]:
+        forms: Set[str] = set()
+        for value in (
+            tool_id,
+            f"{backend}:{name}",
+            name,
+            tool_data.get("id"),
+            tool_data.get("name"),
+        ):
+            forms.update(_identifier_forms(value))
+        return frozenset(forms)
+
+    @staticmethod
+    def _identifier_match_rank(
+        query_forms: Set[str],
+        cached: _CachedToolRow,
+    ) -> int:
+        if not query_forms:
+            return 0
+        if query_forms & cached.name_identifier_forms:
+            return 2
+        if query_forms & cached.identifier_forms:
+            return 3
+        return 0
 
     async def find_composable_tools(
         self,
@@ -501,6 +958,7 @@ class AdvancedToolIndex:
 
         conn.commit()
         conn.close()
+        self._invalidate_matrix_cache()
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive index statistics."""

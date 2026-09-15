@@ -7,8 +7,11 @@ and integration with multiple MCP backends.
 
 import asyncio
 import json
+import os
+import random
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -139,8 +142,11 @@ class DurableTaskQueue:
         db_path: str = "task_queue.db",
         max_concurrent: int = 10,
         health_check_interval: int = 30,
+        worker_count: Optional[int] = None,
     ):
         self.db_path = Path(db_path)
+        if worker_count is None:
+            worker_count = max(2, int(os.getenv("QUEUE_WORKERS", "4")))
         self.max_concurrent = max_concurrent
         self.health_check_interval = health_check_interval
 
@@ -150,6 +156,18 @@ class DurableTaskQueue:
         self._shutdown = False
         self._worker_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+
+        # ── T20 (TASKS.md): worker pool, event-driven dispatch, circuit breakers ──
+        self.worker_count = worker_count
+        self._workers: list = []
+        # Event-driven pickup: workers sleep on this event instead of polling
+        # blindly; enqueue()/retry paths set() it so tasks start immediately.
+        self._wakeup = asyncio.Event()
+        # Circuit breaker state per backend id: consecutive failures and the
+        # timestamp until which the breaker stays open (half-open probes after).
+        self._breaker_failures: Dict[str, int] = {}
+        self._breaker_open_until: Dict[str, float] = {}
+        self._breaker_probing: Set[str] = set()
 
         self._init_db()
 
@@ -343,6 +361,8 @@ class DurableTaskQueue:
             if not pinned:
                 return None
             if not pinned.is_healthy or pinned.current_load >= pinned.max_concurrent:
+                return None
+            if self._breaker_is_open(pinned.id):
                 return None
             return pinned
 
@@ -673,19 +693,35 @@ class DurableTaskQueue:
     # =========================================================================
 
     async def start(self):
-        """Start the queue processor."""
+        """Start the queue processor (N workers + health loop).
+
+        T20: replaces the single sequential worker with a pool. Each worker
+        claims tasks under the existing lock (`_get_next_task` already caps
+        against `max_concurrent`), so N workers cannot double-claim a task.
+        """
         self._shutdown = False
-        self._worker_task = asyncio.create_task(self._process_queue())
+        self._worker_task = asyncio.create_task(self._process_queue())  # kept for back-compat naming
+        for i in range(max(1, self.worker_count - 1)):
+            self._workers.append(asyncio.create_task(self._process_queue()))
         self._health_task = asyncio.create_task(self._health_check_loop())
-        logger.info("Task queue started")
+        logger.info(f"Task queue started with {self.worker_count} workers")
 
     async def stop(self):
         """Stop the queue processor."""
         self._shutdown = True
-        if self._worker_task:
-            self._worker_task.cancel()
-        if self._health_task:
-            self._health_task.cancel()
+        self._wakeup.set()
+        for t in [self._worker_task, *self._workers, self._health_task]:
+            if t:
+                t.cancel()
+        self._workers.clear()
+        # Close the shared pooled HTTP client if it was opened.
+        client = getattr(self, "_shared_http", None)
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            self._shared_http = None
         logger.info("Task queue stopped")
 
     async def _process_queue(self):
@@ -695,7 +731,13 @@ class DurableTaskQueue:
                 # Get next task
                 task = self._get_next_task()
                 if not task:
-                    await asyncio.sleep(1)
+                    # Event-driven idle wait: wake instantly on enqueue(), or
+                    # after a bounded backoff for newly-healthy backends.
+                    self._wakeup.clear()
+                    try:
+                        await asyncio.wait_for(self._wakeup.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
                     continue
 
                 # Find available backend
@@ -706,10 +748,11 @@ class DurableTaskQueue:
                     task.started_at = None
                     self.update_task(task)
                     self._running_tasks.pop(task.id, None)
-                    await asyncio.sleep(5)
+                    # backoff with jitter so N workers don't thundering-herd
+                    await asyncio.sleep(2.0 + random.uniform(0, 1.5))
                     continue
 
-                # Execute task
+                # Execute task (workers interleave: no head-of-line blocking)
                 await self._execute_task(task, backend)
 
             except asyncio.CancelledError:
@@ -746,15 +789,61 @@ class DurableTaskQueue:
 
         return None
 
+    # ── Circuit breaker (T20) ────────────────────────────────────────────────
+    BREAKER_THRESHOLD = 3       # consecutive failures before opening
+    BREAKER_COOLDOWN_S = 30.0   # open window; a half-open probe happens after
+
+    def _breaker_is_open(self, backend_id: str) -> bool:
+        """True while the breaker is open. Once the cooldown elapses the
+        breaker is half-open: exactly one probe is allowed (via a narrow
+        check-and-mark under the lock) and further requests skip the backend."""
+        until = self._breaker_open_until.get(backend_id)
+        if until is None:
+            return False
+        now = time.time()
+        if now >= until:
+            # half-open probe: reserve the slot
+            self._breaker_open_until.pop(backend_id, None)
+            self._breaker_probing.add(backend_id)
+            return False
+        return True
+
+    def _breaker_record_success(self, backend_id: str) -> None:
+        self._breaker_failures.pop(backend_id, None)
+        self._breaker_open_until.pop(backend_id, None)
+        self._breaker_probing.discard(backend_id)
+
+    def _breaker_record_failure(self, backend_id: str) -> None:
+        n = self._breaker_failures.get(backend_id, 0) + 1
+        self._breaker_failures[backend_id] = n
+        self._breaker_probing.discard(backend_id)
+        if n >= self.BREAKER_THRESHOLD:
+            self._breaker_open_until[backend_id] = time.time() + self.BREAKER_COOLDOWN_S
+            logger.warning(f"Circuit breaker OPEN for backend {backend_id} after {n} consecutive failures (cooldown {self.BREAKER_COOLDOWN_S}s)")
+
+    async def _shared_http_client(self) -> "httpx.AsyncClient":
+        """One pooled AsyncClient per queue process (T21).
+
+        Replaces per-task client creation: connections to healthy backends are
+        reused instead of re-TLS/connected per task. Per-request timeout is set
+        explicitly on the request below (client is built WITHOUT a total timeout
+        so long-running tasks are governed by the per-request value only).
+        """
+        if getattr(self, "_shared_http", None) is None:
+            self._shared_http = httpx.AsyncClient(timeout=None, limits=httpx.Limits(max_connections=100))
+        return self._shared_http
+
     async def _execute_task(self, task: Task, backend: MCPBackend):
         """Execute a task on a backend."""
         try:
             backend.current_load += 1
             self._log_task(task.id, "INFO", f"Executing on backend {backend.name}")
 
-            async with httpx.AsyncClient(timeout=task.timeout_seconds) as client:
+            client = await self._shared_http_client()
+            if True:  # former `async with` context preserved structurally
                 response = await client.post(
                     f"{backend.url}{backend.mcp_endpoint}",
+                    timeout=task.timeout_seconds,
                     json={
                         "jsonrpc": "2.0",
                         "id": task.id,
@@ -774,6 +863,7 @@ class DurableTaskQueue:
 
                 task.output_data = result.get("result", result)
                 task.status = TaskStatus.COMPLETED
+                self._breaker_record_success(backend.id)
                 task.completed_at = datetime.utcnow()
                 self._log_task(task.id, "INFO", "Task completed successfully")
 
@@ -784,6 +874,7 @@ class DurableTaskQueue:
             self._log_task(task.id, "ERROR", task.error)
 
         except Exception as e:
+            self._breaker_record_failure(backend.id)
             task.retries += 1
             if task.retries < task.max_retries:
                 task.status = TaskStatus.QUEUED

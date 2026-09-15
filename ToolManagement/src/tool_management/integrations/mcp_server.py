@@ -10,8 +10,11 @@ Protocol Version: DRAFT-2025-v3
 import os
 import json
 import asyncio
+import copy
 import logging
-from typing import Dict, List, Any, Optional, Union, Callable
+import threading
+import time
+from typing import Dict, List, Any, Optional, Union, Callable, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,6 +25,91 @@ from pydantic import BaseModel, Field
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+_TOOLS_LIST_CACHE: Dict[tuple, Dict[str, Any]] = {}
+_TOOLS_LIST_CACHE_LOCK = threading.RLock()
+_TOOLS_LIST_CACHE_MAX_ENTRIES = 64
+_CUSTOMER_MCP_META_TOOLS = {"search_tools", "execute_tool"}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _tools_list_cache_ttl_seconds() -> float:
+    try:
+        ttl_ms = float(os.getenv("MCP_TOOLS_LIST_CACHE_TTL_MS", "1000"))
+    except ValueError:
+        ttl_ms = 1000.0
+    return max(0.0, min(ttl_ms / 1000.0, 60.0))
+
+
+def _store_cache_identity(store: Any) -> Tuple[Any, ...]:
+    db_path = getattr(store, "db_path", None)
+    if db_path:
+        return ("db", os.path.abspath(str(db_path)))
+    rows = getattr(store, "rows", None)
+    try:
+        rows_len = len(rows) if rows is not None else None
+    except TypeError:
+        rows_len = None
+    return (
+        "object",
+        store.__class__.__module__,
+        store.__class__.__qualname__,
+        id(store),
+        rows_len,
+    )
+
+
+def _read_catalog_version(store: Any) -> Optional[str]:
+    try:
+        catalog_version = getattr(store, "catalog_version", None)
+        if not callable(catalog_version):
+            return None
+        return str(catalog_version())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP tools/list catalog version check failed: %s", exc)
+        return None
+
+
+def _cached_tools_list(cache_key: tuple, now: float, ttl_seconds: float) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    with _TOOLS_LIST_CACHE_LOCK:
+        entry = _TOOLS_LIST_CACHE.get(cache_key)
+        if entry is None:
+            return None, None
+        if ttl_seconds > 0 and now - float(entry.get("checked_at", 0.0)) < ttl_seconds:
+            return copy.deepcopy(entry["result"]), copy.deepcopy(entry)
+        return None, copy.deepcopy(entry)
+
+
+def _touch_tools_list_cache(cache_key: tuple, now: float, version: Optional[str]) -> None:
+    with _TOOLS_LIST_CACHE_LOCK:
+        entry = _TOOLS_LIST_CACHE.get(cache_key)
+        if entry is not None:
+            entry["checked_at"] = now
+            entry["version"] = version
+
+
+def _store_tools_list_cache(cache_key: tuple, result: Dict[str, Any], version: Optional[str], now: float) -> None:
+    with _TOOLS_LIST_CACHE_LOCK:
+        if len(_TOOLS_LIST_CACHE) >= _TOOLS_LIST_CACHE_MAX_ENTRIES:
+            _TOOLS_LIST_CACHE.clear()
+        _TOOLS_LIST_CACHE[cache_key] = {
+            "result": copy.deepcopy(result),
+            "version": version,
+            "checked_at": now,
+        }
+
+
+def warm_tools_list_snapshot() -> None:
+    """Invalidate cached MCP catalog pages after an explicit registry refresh."""
+    with _TOOLS_LIST_CACHE_LOCK:
+        _TOOLS_LIST_CACHE.clear()
 
 
 def _get_tool_store():
@@ -237,6 +325,7 @@ class MCPToolAdapter:
             } if tool.get("output_schema") else None,
             "annotations": {
                 "title": tool.get("name"),
+                "tool_id": tool.get("tool_id"),
                 "category": tool.get("category"),
                 "tags": tool.get("tags", []),
                 "version": tool.get("version", "1.0.0"),
@@ -1129,24 +1218,164 @@ class MCPServer:
             }
         ]
 
-        # Handle pagination (though we only have a few meta-tools)
-        page_size = 100
+        # Advertise the durable catalog in bounded pages. Meta-tools ride on
+        # page one so clients keep discovery/composition controls without the
+        # durable tool surface disappearing behind an implementation detail.
+        try:
+            page_size = int(os.getenv("MCP_TOOLS_LIST_PAGE_SIZE", "200"))
+        except ValueError:
+            page_size = 200
         start = 0
         if cursor:
             try:
-                start = int(cursor)
+                start = max(0, int(cursor))
             except (ValueError, TypeError):
                 start = 0
 
-        end = min(start + page_size, len(meta_tools))
-        tools_page = meta_tools[start:end]
+        try:
+            read_batch_size = max(
+                1,
+                min(int(os.getenv("MCP_CATALOG_READ_BATCH_SIZE", "1000")), 5000),
+            )
+        except ValueError:
+            read_batch_size = 1000
 
-        result = {"tools": tools_page}
+        store = _get_tool_store()
+        cache_enabled = _env_bool("MCP_TOOLS_LIST_CACHE", True)
+        cache_ttl_seconds = _tools_list_cache_ttl_seconds()
+        cache_key = (_store_cache_identity(store), page_size, read_batch_size, start)
+        now = time.monotonic()
+        cached_entry: Optional[Dict[str, Any]] = None
+        catalog_version: Optional[str] = None
+        if cache_enabled:
+            cached_result, cached_entry = _cached_tools_list(cache_key, now, cache_ttl_seconds)
+            if cached_result is not None:
+                return cached_result
+            if cached_entry is not None:
+                catalog_version = _read_catalog_version(store)
+                if catalog_version is None or catalog_version == cached_entry.get("version"):
+                    _touch_tools_list_cache(cache_key, now, catalog_version)
+                    return copy.deepcopy(cached_entry["result"])
+            else:
+                catalog_version = _read_catalog_version(store)
 
-        if end < len(meta_tools):
-            result["nextCursor"] = str(end)
+        columns = [
+            "tool_id",
+            "name",
+            "description",
+            "input_schema",
+            "output_schema",
+            "category",
+            "tags",
+            "backend_id",
+            "version",
+        ]
+        rows: List[Dict[str, Any]] = []
+        has_more = False
+        next_offset = start
 
+        try:
+            if page_size <= 0:
+                offset = 0
+                total = None
+                while total is None or offset < total:
+                    batch, reported_total = store.query_tools(
+                        limit=read_batch_size,
+                        offset=offset,
+                        columns=columns,
+                        unique_names=True,
+                        include_total=True,
+                    )
+                    rows.extend(batch)
+                    offset += len(batch)
+                    total = max(0, int(reported_total))
+                    if not batch or len(batch) < read_batch_size:
+                        break
+            else:
+                bounded_size = max(1, min(page_size, 1000))
+                rows, total = store.query_tools(
+                    limit=bounded_size,
+                    offset=start,
+                    columns=columns,
+                    unique_names=True,
+                    include_total=True,
+                )
+                next_offset = start + len(rows)
+                has_more = next_offset < max(0, int(total))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP tools/list catalog refresh failed: %s", exc)
+            if cache_enabled and cached_entry is not None:
+                _touch_tools_list_cache(cache_key, now, cached_entry.get("version"))
+                return copy.deepcopy(cached_entry["result"])
+            return {"tools": meta_tools if start == 0 else []}
+
+        meta_names = {tool["name"] for tool in meta_tools}
+        catalog_tools = [
+            MCPToolAdapter.to_mcp_tool(row)
+            for row in rows
+            if row.get("name") and row.get("name") not in meta_names
+        ]
+        tools_page = (meta_tools if start == 0 else []) + catalog_tools
+        result: Dict[str, Any] = {"tools": tools_page}
+        if page_size > 0 and has_more and next_offset > start:
+            result["nextCursor"] = str(next_offset)
+
+        if cache_enabled:
+            _store_tools_list_cache(cache_key, result, catalog_version, now)
         return result
+
+    def _customer_tool_denied_result(self, tool_name: str, json_module) -> Dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json_module.dumps(
+                        {
+                            "error": "customer_mcp_tool_denied",
+                            "tool": tool_name,
+                            "allowed_tools": sorted(_CUSTOMER_MCP_META_TOOLS),
+                        }
+                    ),
+                }
+            ],
+            "isError": True,
+        }
+
+    def _is_known_catalog_tool(self, tool_name: str) -> bool:
+        if not tool_name:
+            return False
+        try:
+            store = _get_tool_store()
+            get_by_name = getattr(store, "get_tool_by_name", None)
+            if callable(get_by_name) and get_by_name(tool_name):
+                return True
+            get_by_id = getattr(store, "get_tool", None)
+            return bool(callable(get_by_id) and get_by_id(tool_name))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP direct catalog lookup failed for %s: %s", tool_name, exc)
+            return False
+
+    async def _handle_direct_catalog_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        session_id: str,
+        json_module,
+    ) -> Optional[Dict[str, Any]]:
+        if str(session_id).startswith("customer:"):
+            return self._customer_tool_denied_result(tool_name, json_module)
+        if not self._is_known_catalog_tool(tool_name):
+            return None
+        return await self._handle_tools_call(
+            {
+                "name": "execute_tool",
+                "arguments": {
+                    "tool_name": tool_name,
+                    "arguments": tool_args if isinstance(tool_args, dict) else {},
+                },
+            },
+            session_id,
+        )
 
     async def _handle_tools_call(self, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
         """Handle tools/call request - routes meta-tools to appropriate endpoints"""
@@ -1155,6 +1384,29 @@ class MCPServer:
 
         tool_name = params.get("name")
         tool_args = params.get("arguments", {})
+        tool_name_text = str(tool_name or "")
+
+        if str(session_id).startswith("customer:"):
+            if tool_name_text not in _CUSTOMER_MCP_META_TOOLS:
+                return self._customer_tool_denied_result(tool_name_text, json_module)
+            if tool_name_text == "execute_tool":
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json_module.dumps(
+                                {
+                                    "error": "customer_mcp_route_required",
+                                    "detail": (
+                                        "customer execute_tool calls must be handled "
+                                        "by the authenticated tenant-aware MCP route"
+                                    ),
+                                }
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                }
 
         # Route meta-tools to appropriate endpoints
         if tool_name == "search_tools":
@@ -2730,6 +2982,15 @@ class MCPServer:
                     }, indent=2)}],
                     "isError": True,
                 }
+
+        direct_result = await self._handle_direct_catalog_tool_call(
+            str(tool_name or ""),
+            tool_args if isinstance(tool_args, dict) else {},
+            session_id,
+            json_module,
+        )
+        if direct_result is not None:
+            return direct_result
 
         # Unknown meta-tool
         return {

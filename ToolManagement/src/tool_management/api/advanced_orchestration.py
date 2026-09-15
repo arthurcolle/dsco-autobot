@@ -23,7 +23,7 @@ from collections import defaultdict
 import json
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..embeddings.semantic_tool_store import get_tool_store
 
@@ -1113,10 +1113,39 @@ def get_orchestrator() -> IntelligentOrchestrator:
 
 class RecommendRequest(BaseModel):
     """Request for tool recommendations"""
-    intent: WorkflowIntent
+    intent: Optional[WorkflowIntent] = None
     query: str
     available_data: Dict[str, Any] = Field(default_factory=dict)
     max_steps: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("intent", mode="before")
+    @classmethod
+    def normalize_optional_intent(cls, value):
+        # Older clients, including dsco-cli, send an empty string when
+        # --intent is omitted. Treat that as unspecified instead of rejecting
+        # the entire request with a 422.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
+
+def _infer_workflow_intent(query: str) -> WorkflowIntent:
+    """Choose a conservative intent for clients that omit one."""
+    words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
+    if words & {"publish", "post", "release", "syndicate"}:
+        return WorkflowIntent.PUBLISH
+    if words & {"remember", "memory", "recall", "store", "save"}:
+        return WorkflowIntent.REMEMBER
+    if words & {"notify", "send", "email", "alert", "webhook"}:
+        return WorkflowIntent.NOTIFY
+    if words & {
+        "transform", "convert", "parse", "format", "extract", "calculate",
+        "compute", "add", "subtract", "multiply", "divide",
+    }:
+        return WorkflowIntent.TRANSFORM
+    if words & {"research", "search", "find", "investigate", "discover"}:
+        return WorkflowIntent.RESEARCH
+    return WorkflowIntent.ANALYZE
 
 
 class ExecuteWorkflowRequest(BaseModel):
@@ -1145,11 +1174,12 @@ async def recommend_workflow(request: RecommendRequest):
     """
     orchestrator = get_orchestrator()
 
+    effective_intent = request.intent or _infer_workflow_intent(request.query)
     data = dict(request.available_data)
     data.setdefault("_query", request.query)
 
     context = WorkflowContext(
-        intent=request.intent,
+        intent=effective_intent,
         user_query=request.query,
         available_data=data
     )
@@ -1160,7 +1190,7 @@ async def recommend_workflow(request: RecommendRequest):
     )
 
     return {
-        "intent": request.intent.value,
+        "intent": effective_intent.value,
         "query": request.query,
         "recommendations": [
             {

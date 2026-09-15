@@ -35,6 +35,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -48,9 +49,34 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from native.base import install_backend_bearer_middleware
+from .gateway import (
+    CURRENT_EMBED_MODEL,
+    CURRENT_RERANK_MODEL,
+    RETRIEVAL_CONTRACT_VERSION,
+    apply_rerank,
+    build_retrieval_plan,
+    compact_evidence,
+    fuse_search_results,
+    select_domain_diverse,
+)
+from .request_store import PostgresSearchRequestStore
+from .router_client import RouterSynthesisClient, RouterSynthesisError
+from tool_management.auth.service_context import (
+    ServiceContextError,
+    context_scope_id,
+    verify_service_context,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_current_execution_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "distributed_search_execution_context", default=None
+)
+
+
+def current_execution_context() -> Optional[Dict[str, Any]]:
+    return _current_execution_context.get()
 
 # URL Queue integration - import with fallback for standalone mode
 try:
@@ -199,7 +225,11 @@ def _shrink_to_budget(obj: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
 # =============================================================================
 
 class SearchRequestStore:
-    """Durable store for full search payloads; responses stay compact."""
+    """Local SQLite store used for single-process development and tests."""
+
+    backend = "sqlite"
+    durable = False
+    ready = True
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = Path(
@@ -213,6 +243,9 @@ class SearchRequestStore:
                 CREATE TABLE IF NOT EXISTS requests (
                     request_id TEXT PRIMARY KEY,
                     response_id TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT '__system__',
+                    principal_id TEXT,
+                    trace_id TEXT,
                     tool TEXT,
                     arguments_json TEXT,
                     summary TEXT,
@@ -222,6 +255,17 @@ class SearchRequestStore:
                     created_at TEXT
                 )
                 """
+            )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(requests)")}
+            for name, definition in (
+                ("tenant_id", "TEXT NOT NULL DEFAULT '__system__'"),
+                ("principal_id", "TEXT"),
+                ("trace_id", "TEXT"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE requests ADD COLUMN {name} {definition}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_requests_tenant_created ON requests(tenant_id, created_at DESC)"
             )
             conn.commit()
 
@@ -235,13 +279,25 @@ class SearchRequestStore:
         full_result: Any,
         sources: Any = None,
         status: str = "ok",
+        tenant_id: str = "__system__",
+        principal_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> None:
         with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO requests VALUES (?,?,?,?,?,?,?,?,?)",
+                """
+                INSERT OR REPLACE INTO requests (
+                    request_id, response_id, tenant_id, principal_id, trace_id,
+                    tool, arguments_json, summary, full_result_json, sources_json,
+                    status, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
                 (
                     request_id,
                     response_id,
+                    tenant_id,
+                    principal_id,
+                    trace_id,
                     tool,
                     json.dumps(arguments, default=str),
                     summary,
@@ -257,41 +313,50 @@ class SearchRequestStore:
         self,
         request_id: Optional[str] = None,
         response_id: Optional[str] = None,
+        tenant_id: str = "__system__",
     ) -> Optional[Dict[str, Any]]:
         if not request_id and not response_id:
             return None
-        query = "SELECT request_id, response_id, tool, arguments_json, summary, full_result_json, sources_json, status, created_at FROM requests WHERE "
+        query = "SELECT request_id, response_id, tenant_id, principal_id, trace_id, tool, arguments_json, summary, full_result_json, sources_json, status, created_at FROM requests WHERE "
         if request_id:
-            query += "request_id = ?"
+            query += "request_id = ? AND tenant_id = ?"
             param = request_id
         else:
-            query += "response_id = ?"
+            query += "response_id = ? AND tenant_id = ?"
             param = response_id
         with self._lock, sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(query, (param,)).fetchone()
+            row = conn.execute(query, (param, tenant_id)).fetchone()
         if not row:
             return None
         record = {
             "request_id": row[0],
             "response_id": row[1],
-            "tool": row[2],
-            "summary": row[4],
-            "status": row[7],
-            "created_at": row[8],
+            "tenant_id": row[2],
+            "principal_id": row[3],
+            "trace_id": row[4],
+            "tool": row[5],
+            "summary": row[7],
+            "status": row[10],
+            "created_at": row[11],
         }
-        for key, raw in (("arguments", row[3]), ("full_result", row[5]), ("sources", row[6])):
+        for key, raw in (("arguments", row[6]), ("full_result", row[8]), ("sources", row[9])):
             try:
                 record[key] = json.loads(raw) if raw else None
             except (json.JSONDecodeError, TypeError):
                 record[key] = raw
         return record
 
-    def list(self, limit: int = 20, tool: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list(
+        self,
+        limit: int = 20,
+        tool: Optional[str] = None,
+        tenant_id: str = "__system__",
+    ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 20), 200))
-        sql = "SELECT request_id, response_id, tool, summary, status, created_at FROM requests"
-        params: List[Any] = []
+        sql = "SELECT request_id, response_id, tool, summary, status, created_at, trace_id FROM requests WHERE tenant_id = ?"
+        params: List[Any] = [tenant_id]
         if tool:
-            sql += " WHERE tool = ?"
+            sql += " AND tool = ?"
             params.append(tool)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -305,9 +370,34 @@ class SearchRequestStore:
                 "summary": r[3],
                 "status": r[4],
                 "created_at": r[5],
+                "trace_id": r[6],
             }
             for r in rows
         ]
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "durable": self.durable,
+            "ready": self.ready,
+            "db_path": str(self.db_path),
+        }
+
+
+def create_request_store():
+    """Use shared Postgres in production and SQLite for local development."""
+    postgres_url = os.getenv("SEARCH_POSTGRES_URL") or os.getenv("POSTGRES_URL")
+    require_durable = os.getenv("SEARCH_REQUIRE_DURABLE_STORE", "0") == "1"
+    if postgres_url:
+        try:
+            return PostgresSearchRequestStore(postgres_url)
+        except Exception as exc:
+            if require_durable:
+                raise RuntimeError(f"durable search store unavailable: {exc}") from exc
+            logger.warning("Postgres search store unavailable; using local SQLite: %s", exc)
+    if require_durable:
+        raise RuntimeError("SEARCH_REQUIRE_DURABLE_STORE=1 but POSTGRES_URL is unavailable")
+    return SearchRequestStore()
 
 
 # =============================================================================
@@ -388,7 +478,7 @@ class DistributedSearchMCP:
 
     SERVICE_ID = "distributed-search-mcp"
     SERVICE_NAME = "Distributed Search MCP"
-    VERSION = "2.2.0"
+    VERSION = "3.1.0"
 
     # Jina API endpoints. Env-overridable so the EU data-residency hosts
     # (eu.api.jina.ai, eu.r.jina.ai, eu.s.jina.ai) can be swapped in.
@@ -420,7 +510,12 @@ class DistributedSearchMCP:
         self._state = ConnectionState()
 
         # Durable store for full search payloads
-        self._store = SearchRequestStore()
+        self._store = create_request_store()
+        self._router = RouterSynthesisClient(
+            os.getenv("ROUTER_URL", "https://router.distributed.systems"),
+            os.getenv("DSCO_ROUTER_API_KEY", ""),
+            timeout_seconds=float(os.getenv("SEARCH_ROUTER_TIMEOUT_SECONDS", "120")),
+        )
 
         # Register native tools
         self._register_tools()
@@ -487,6 +582,135 @@ class DistributedSearchMCP:
                 "required": ["query"]
             },
             handler=self._execute_search
+        )
+
+        # Opinionated front door. Low-level primitives remain available for
+        # compatibility; retrieve is the default search capability for agents.
+        self._tools["retrieve"] = MCPTool(
+            name="retrieve",
+            description=(
+                "Primary Distributed Search gateway. Plans fast/balanced/thorough "
+                "retrieval, fans out useful query variants, deduplicates URLs, reranks "
+                "with Jina's flagship reranker, enforces domain diversity, and optionally "
+                "reads the best pages. Returns a stable evidence contract with provenance, "
+                "quality signals, timings, and a durable request_id."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Question or search objective"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "fast", "balanced", "thorough"],
+                        "default": "auto",
+                        "description": "Latency/quality profile; auto selects from query intent",
+                    },
+                    "max_results": {
+                        "type": "integer", "minimum": 1, "maximum": 20, "default": 8,
+                    },
+                    "include_content": {
+                        "type": "boolean",
+                        "description": "Read top pages and include grounded content previews",
+                    },
+                    "rerank": {
+                        "type": "boolean",
+                        "description": "Override the mode-selected reranking choice",
+                    },
+                    "rerank_model": {"type": "string", "default": CURRENT_RERANK_MODEL},
+                    "query_variants": {
+                        "type": "array", "items": {"type": "string"}, "maxItems": 3,
+                        "description": "Optional alternate queries; results are deduplicated",
+                    },
+                    "allow_domains": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Only return these domains or their subdomains",
+                    },
+                    "block_domains": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Exclude these domains and their subdomains",
+                    },
+                    "prefer_domains": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Promote preferred or primary domains",
+                    },
+                    "country": {"type": "string", "description": "Two-letter result country"},
+                    "language": {"type": "string", "description": "Two-letter result language"},
+                    "location": {"type": "string", "description": "City-level search origin"},
+                    "reader_engine": {
+                        "type": "string",
+                        "enum": ["browser", "direct", "cf-browser-rendering"],
+                        "description": "Override the mode-selected Reader engine",
+                    },
+                    "page_token_budget": {
+                        "type": "integer",
+                        "description": "Optional Jina Reader token ceiling per hydrated page",
+                    },
+                    "max_output_chars": {
+                        "type": "integer", "default": 8000,
+                        "description": "Compact response limit; full evidence remains durable",
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=self._execute_retrieve,
+        )
+
+        self._tools["answer"] = MCPTool(
+            name="answer",
+            description=(
+                "Authenticated research answer pipeline: retrieve and ground evidence with "
+                "Distributed Search, then synthesize a cited answer through the managed DSCO "
+                "Router. The caller's auth token terminates at tools.distributed.systems; "
+                "stored evidence remains isolated to the selected customer account."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Question to research and answer"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fast", "balanced", "thorough"],
+                        "default": "balanced",
+                    },
+                    "max_results": {
+                        "type": "integer", "minimum": 2, "maximum": 12, "default": 8,
+                    },
+                    "model": {
+                        "type": "string",
+                        "default": "auto",
+                        "description": "DSCO Router model or auto routing policy",
+                    },
+                    "max_tokens": {
+                        "type": "integer", "minimum": 128, "maximum": 4096, "default": 1200,
+                    },
+                    "max_evidence_chars": {
+                        "type": "integer",
+                        "minimum": 4000,
+                        "maximum": 24000,
+                        "default": 8000,
+                        "description": "Router evidence budget after retrieval; bounds synthesis cost",
+                    },
+                    "allow_domains": {"type": "array", "items": {"type": "string"}},
+                    "block_domains": {"type": "array", "items": {"type": "string"}},
+                    "prefer_domains": {"type": "array", "items": {"type": "string"}},
+                    "country": {"type": "string"},
+                    "language": {"type": "string"},
+                    "location": {"type": "string"},
+                    "max_output_chars": {"type": "integer", "default": 12000},
+                },
+                "required": ["query"],
+            },
+            handler=self._execute_answer,
+        )
+
+        self._tools["platform_status"] = MCPTool(
+            name="platform_status",
+            description=(
+                "Inspect the live Auth, Tools, Search, and Router dependency chain and the "
+                "current signed tenant-context boundary without exposing credentials."
+            ),
+            input_schema={"type": "object", "properties": {}},
+            handler=self._execute_platform_status,
         )
 
         # Read URL
@@ -573,14 +797,25 @@ class DistributedSearchMCP:
         # Fact check
         self._tools["verify"] = MCPTool(
             name="verify",
-            description="Verify a claim or statement against web sources.",
+            description=(
+                "Build a ranked, diverse evidence bundle for a claim, or use depth=deep "
+                "for a cited DeepSearch assessment. Never labels a claim true merely "
+                "because matching search results exist."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "statement": {
                         "type": "string",
                         "description": "Statement to fact-check"
-                    }
+                    },
+                    "depth": {
+                        "type": "string",
+                        "enum": ["evidence", "deep"],
+                        "default": "evidence",
+                    },
+                    "prefer_domains": {"type": "array", "items": {"type": "string"}},
+                    "max_output_chars": {"type": "integer", "default": 8000},
                 },
                 "required": ["statement"]
             },
@@ -619,8 +854,8 @@ class DistributedSearchMCP:
                     },
                     "model": {
                         "type": "string",
-                        "description": "Reranker model (jina-reranker-v3, jina-reranker-v2-base-multilingual, jina-reranker-m0 for multimodal, jina-colbert-v2)",
-                        "default": "jina-reranker-v2-base-multilingual"
+                        "description": "Reranker model (jina-reranker-v3.5 default; jina-reranker-m0 for visual documents)",
+                        "default": CURRENT_RERANK_MODEL
                     },
                     "return_documents": {"type": "boolean"},
                     "return_embeddings": {"type": "boolean"},
@@ -662,7 +897,9 @@ class DistributedSearchMCP:
                                  "properties": {
                                      "text": {"type": "string"},
                                      "image": {"type": "string", "description": "Image URL or base64"},
-                                     "pdf": {"type": "string", "description": "PDF URL or base64 (v4)"}
+                                     "pdf": {"type": "string", "description": "PDF URL or base64"},
+                                     "audio": {"type": "string", "description": "Audio URL or base64 (v5-omni)"},
+                                     "video": {"type": "string", "description": "Video URL or base64 (v5-omni)"}
                                  }}
                             ]
                         },
@@ -670,8 +907,8 @@ class DistributedSearchMCP:
                     },
                     "model": {
                         "type": "string",
-                        "description": "Embedding model (jina-embeddings-v3, v4, v5-text-small, v5-omni-small, jina-clip-v2, jina-colbert-v2, jina-code-embeddings-1.5b, ...)",
-                        "default": "jina-embeddings-v3"
+                        "description": "Embedding model (v5-text-small default; v5-omni-small for text/image/audio/video/PDF)",
+                        "default": CURRENT_EMBED_MODEL
                     },
                     "task": {
                         "type": "string",
@@ -798,7 +1035,7 @@ class DistributedSearchMCP:
                     },
                     "model": {
                         "type": "string",
-                        "default": "jina-embeddings-v3"
+                        "default": CURRENT_EMBED_MODEL
                     },
                     "classifier_id": {
                         "type": "string",
@@ -878,7 +1115,7 @@ class DistributedSearchMCP:
                                      "properties": {"text": {"type": "string"},
                                                     "label": {"type": "string"}}},
                            "description": "Labeled examples [{text, label}]"},
-              "model": {"type": "string", "default": "jina-embeddings-v3"},
+              "model": {"type": "string", "default": CURRENT_EMBED_MODEL},
               "classifier_id": {"type": "string",
                                 "description": "Existing classifier to update"},
               "num_iters": {"type": "integer"},
@@ -1217,7 +1454,24 @@ class DistributedSearchMCP:
     async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle tools/call request."""
         tool_name = params.get("name")
-        arguments = params.get("arguments", {})
+        raw_arguments = params.get("arguments", {})
+        if not isinstance(raw_arguments, dict):
+            raise ValueError("tool arguments must be an object")
+        arguments = dict(raw_arguments)
+
+        envelope = arguments.pop("_dsco_context", None)
+        context = None
+        if envelope is not None:
+            try:
+                context = verify_service_context(
+                    envelope,
+                    os.getenv("BACKEND_BEARER_TOKEN", ""),
+                    audience=self.SERVICE_ID,
+                )
+            except ServiceContextError as exc:
+                raise ValueError(f"invalid delegated execution context: {exc}") from exc
+        elif os.getenv("SEARCH_REQUIRE_SIGNED_CONTEXT", "0") == "1":
+            raise ValueError("signed delegated execution context is required")
 
         tool = self._tools.get(tool_name)
         if not tool:
@@ -1226,7 +1480,11 @@ class DistributedSearchMCP:
         if not tool.handler:
             raise ValueError(f"Tool {tool_name} has no handler")
 
-        result = await tool.handler(arguments)
+        context_token = _current_execution_context.set(context)
+        try:
+            result = await tool.handler(arguments)
+        finally:
+            _current_execution_context.reset(context_token)
 
         mcp_result = {
             "content": [
@@ -1306,6 +1564,7 @@ class DistributedSearchMCP:
         """Persist the full payload; return (request_id, response_id)."""
         request_id = str(uuid.uuid4())
         response_id = str(uuid.uuid4())
+        execution_context = current_execution_context()
         try:
             self._store.save(
                 request_id=request_id,
@@ -1316,8 +1575,13 @@ class DistributedSearchMCP:
                 full_result=full_result,
                 sources=sources,
                 status=status,
+                tenant_id=context_scope_id(execution_context),
+                principal_id=(execution_context or {}).get("principal_id"),
+                trace_id=(execution_context or {}).get("trace_id") or (execution_context or {}).get("invocation_id"),
             )
         except Exception as e:
+            if os.getenv("SEARCH_REQUIRE_DURABLE_STORE", "0") == "1":
+                raise RuntimeError(f"failed to persist {tool} result in durable store") from e
             logger.warning(f"Failed to persist {tool} request: {e}")
         return request_id, response_id
 
@@ -1459,6 +1723,420 @@ class DistributedSearchMCP:
             compact["error"] = raw.get("error")
         compact["hint"] = "Full payload: get_search_result {request_id}"
         return _shrink_to_budget(compact, max_out)
+
+    async def _read_for_retrieval(
+        self,
+        url: str,
+        *,
+        engine: str,
+        token_budget: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Read one selected result without creating a separate durable request."""
+        headers = {
+            "Accept": "application/json",
+            "X-Engine": engine,
+            "X-Return-Format": "markdown",
+            "X-Retain-Images": "none",
+        }
+        if token_budget is not None:
+            headers["X-Token-Budget"] = str(max(100, int(token_budget)))
+        try:
+            response = await self._client.get(
+                f"{self.JINA_READ_URL}/{url}", headers=headers, timeout=60.0
+            )
+            if response.status_code != 200:
+                return {
+                    "url": url,
+                    "success": False,
+                    "error": f"HTTP {response.status_code}: {_snip(response.text, 200)}",
+                }
+            data = response.json()
+            inner = data.get("data", {}) if isinstance(data.get("data"), dict) else data
+            return {
+                "url": url,
+                "title": inner.get("title", ""),
+                "content": inner.get("content", ""),
+                "published_at": inner.get("publishedTime") or inner.get("published_at"),
+                "success": True,
+            }
+        except Exception as exc:
+            return {
+                "url": url,
+                "success": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    async def _execute_retrieve(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the high-level retrieval gateway and return ranked evidence."""
+        query = args.get("query")
+        max_results = max(1, min(int(args.get("max_results") or 8), 20))
+        max_out = max(1000, min(int(args.get("max_output_chars") or 8000), 32_000))
+        started = time.perf_counter()
+
+        plan = build_retrieval_plan(
+            query,
+            mode=args.get("mode", "auto"),
+            max_results=max_results,
+            include_content=args.get("include_content"),
+            rerank=args.get("rerank"),
+            query_variants=args.get("query_variants"),
+        )
+
+        def domain_list(name: str) -> List[str]:
+            value = args.get(name) or []
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, list):
+                raise ValueError(f"{name} must be an array of domain names")
+            return [str(item).strip() for item in value if str(item).strip()][:20]
+
+        allow_domains = domain_list("allow_domains")
+        block_domains = domain_list("block_domains")
+        prefer_domains = domain_list("prefer_domains")
+
+        # Multiple allowlisted domains become bounded, explicit provider calls.
+        # This avoids relying on undocumented search-query syntax for filtering.
+        search_jobs: List[tuple[str, Optional[str]]] = []
+        if allow_domains:
+            for planned_query in plan.queries:
+                for domain in allow_domains[:3]:
+                    search_jobs.append((planned_query, domain))
+                    if len(search_jobs) >= 6:
+                        break
+                if len(search_jobs) >= 6:
+                    break
+        else:
+            search_jobs = [(planned_query, None) for planned_query in plan.queries]
+
+        async def search_one(planned_query: str, site: Optional[str]) -> tuple[str, Dict[str, Any]]:
+            source_query = f"{planned_query} [site:{site}]" if site else planned_query
+            result = await self._jina_search_raw(
+                planned_query,
+                plan.search_width,
+                site=site,
+                country=args.get("country"),
+                language=args.get("language"),
+                location=args.get("location"),
+                serp_only=True,
+            )
+            return source_query, result
+
+        search_pairs = await asyncio.gather(*(search_one(q, site) for q, site in search_jobs))
+        search_ms = round((time.perf_counter() - started) * 1000, 2)
+        successful_sets = [
+            (source_query, result.get("results") or [])
+            for source_query, result in search_pairs
+            if result.get("success")
+        ]
+        raw_hit_count = sum(len(results) for _, results in successful_sets)
+        candidates = fuse_search_results(
+            successful_sets,
+            allow_domains=allow_domains,
+            block_domains=block_domains,
+        )
+
+        warnings: List[str] = []
+        failed_searches = [
+            f"{source_query}: {_snip(result.get('error'), 160)}"
+            for source_query, result in search_pairs
+            if not result.get("success")
+        ]
+        if failed_searches:
+            warnings.append(f"{len(failed_searches)} search request(s) failed")
+
+        rerank_payload: Optional[Dict[str, Any]] = None
+        rerank_ms = 0.0
+        if plan.rerank and candidates:
+            rerank_started = time.perf_counter()
+            documents = [
+                "\n".join(
+                    part for part in (
+                        str(item.get("title") or ""),
+                        str(item.get("snippet") or ""),
+                        str(item.get("content") or "")[:3000],
+                    ) if part
+                )
+                for item in candidates
+            ]
+            rerank_payload = await self._execute_rerank({
+                "query": query,
+                "documents": documents,
+                "top_k": len(documents),
+                "model": args.get("rerank_model") or CURRENT_RERANK_MODEL,
+                "return_documents": False,
+            })
+            rerank_ms = round((time.perf_counter() - rerank_started) * 1000, 2)
+            if rerank_payload.get("success"):
+                candidates = apply_rerank(candidates, rerank_payload.get("results") or [])
+            else:
+                warnings.append("Reranker unavailable; using reciprocal-rank fusion order")
+
+        selected = select_domain_diverse(
+            candidates,
+            limit=max_results,
+            max_per_domain=plan.max_per_domain,
+            prefer_domains=prefer_domains,
+        )
+
+        read_started = time.perf_counter()
+        read_payloads: Dict[str, Dict[str, Any]] = {}
+        reader_engine = args.get("reader_engine") or plan.reader_engine
+        hydrate = [item for item in selected[:plan.hydrate_pages] if len(str(item.get("content") or "")) < 500]
+        semaphore = asyncio.Semaphore(4)
+
+        async def hydrate_one(item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+            async with semaphore:
+                payload = await self._read_for_retrieval(
+                    item["url"],
+                    engine=reader_engine,
+                    token_budget=args.get("page_token_budget"),
+                )
+                return item["url"], payload
+
+        if hydrate:
+            read_pairs = await asyncio.gather(*(hydrate_one(item) for item in hydrate))
+            read_payloads = dict(read_pairs)
+            for item in selected:
+                payload = read_payloads.get(item["url"])
+                if not payload or not payload.get("success"):
+                    continue
+                if payload.get("title") and not item.get("title"):
+                    item["title"] = payload["title"]
+                item["content"] = payload.get("content") or item.get("content") or ""
+                item["published_at"] = payload.get("published_at") or item.get("published_at")
+        read_ms = round((time.perf_counter() - read_started) * 1000, 2)
+
+        read_failures = [payload for payload in read_payloads.values() if not payload.get("success")]
+        if read_failures:
+            warnings.append(f"{len(read_failures)} selected page(s) could not be read")
+        if candidates and len({item.get("domain") for item in selected}) < min(3, len(selected)):
+            warnings.append("Source diversity is limited for this query")
+
+        queued_count = 0
+        if selected:
+            queued_count = await self._queue_search_urls(
+                results=selected,
+                query=str(query),
+                user_id=args.get("user_id"),
+                session_id=args.get("session_id") or self._state.session_id,
+            )
+
+        total_ms = round((time.perf_counter() - started) * 1000, 2)
+        full_payload = {
+            "contract_version": RETRIEVAL_CONTRACT_VERSION,
+            "query": query,
+            "plan": plan.to_dict(),
+            "searches": {source_query: result for source_query, result in search_pairs},
+            "rerank": rerank_payload,
+            "reads": read_payloads,
+            "results": selected,
+            "warnings": warnings,
+        }
+        summary = (
+            f"retrieve '{_snip(query, 80)}': {len(selected)} results from "
+            f"{len({item.get('domain') for item in selected})} domains in {total_ms}ms"
+        )
+        request_id, response_id = self._record_request(
+            "retrieve",
+            args,
+            full_payload,
+            summary,
+            sources=[item["url"] for item in selected],
+            status="ok" if selected else "error",
+        )
+
+        compact: Dict[str, Any] = {
+            "contract_version": RETRIEVAL_CONTRACT_VERSION,
+            "request_id": request_id,
+            "response_id": response_id,
+            "query": query,
+            "mode": plan.mode,
+            "success": bool(selected),
+            "count": len(selected),
+            "results": [compact_evidence(item) for item in selected],
+            "quality": {
+                "queries_planned": len(search_jobs),
+                "queries_succeeded": len(successful_sets),
+                "raw_hits": raw_hit_count,
+                "unique_candidates": len(candidates),
+                "duplicate_hits_removed": max(0, raw_hit_count - len(candidates)),
+                "unique_domains": len({item.get("domain") for item in selected}),
+                "reranked": bool(rerank_payload and rerank_payload.get("success")),
+                "pages_hydrated": sum(1 for payload in read_payloads.values() if payload.get("success")),
+            },
+            "strategy": plan.to_dict(),
+            "models": {
+                "reranker": args.get("rerank_model") or CURRENT_RERANK_MODEL,
+                "default_embedding": CURRENT_EMBED_MODEL,
+            },
+            "timings_ms": {
+                "search": search_ms,
+                "rerank": rerank_ms,
+                "read": read_ms,
+                "total": total_ms,
+            },
+            "hint": "Full provider payload and evidence: get_search_result {request_id}",
+        }
+        if queued_count:
+            compact["urls_queued"] = queued_count
+        if warnings:
+            compact["warnings"] = warnings
+        if failed_searches:
+            compact["failures"] = failed_searches
+        if not selected:
+            compact["error"] = "No results survived provider calls and domain policy"
+        return _shrink_to_budget(compact, max_out)
+
+    async def _execute_answer(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Retrieve grounded evidence, then synthesize through DSCO Router."""
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        if not self._router.configured:
+            raise RouterSynthesisError("managed Router synthesis is not configured")
+
+        retrieval_args = {
+            "query": query,
+            "mode": args.get("mode") or "balanced",
+            "max_results": max(2, min(int(args.get("max_results", 8)), 12)),
+            "include_content": True,
+            "allow_domains": args.get("allow_domains") or [],
+            "block_domains": args.get("block_domains") or [],
+            "prefer_domains": args.get("prefer_domains") or [],
+            "country": args.get("country"),
+            "language": args.get("language"),
+            "location": args.get("location"),
+            "max_output_chars": 12_000,
+        }
+        retrieval = await self._execute_retrieve(retrieval_args)
+        if not retrieval.get("success"):
+            return {
+                "success": False,
+                "query": query,
+                "error": "insufficient evidence for synthesis",
+                "retrieval": retrieval,
+            }
+
+        context = current_execution_context()
+        stored = self._store.get(
+            request_id=retrieval["request_id"],
+            tenant_id=context_scope_id(context),
+        )
+        full_retrieval = (stored or {}).get("full_result") or {}
+        evidence = full_retrieval.get("results") or retrieval.get("results") or []
+        router_trace_id = (
+            (context or {}).get("trace_id")
+            or (context or {}).get("invocation_id")
+            or f"search-{uuid.uuid4()}"
+        )
+        synthesis_started = time.perf_counter()
+        synthesis = await self._router.synthesize(
+            question=query,
+            evidence=evidence,
+            model=str(args.get("model") or "auto"),
+            max_tokens=int(args.get("max_tokens", 1200)),
+            max_evidence_chars=int(args.get("max_evidence_chars", 8_000)),
+            trace_id=f"{router_trace_id}:answer",
+        )
+        synthesis_ms = round((time.perf_counter() - synthesis_started) * 1000, 2)
+        sources = [
+            {"citation": index, "title": item.get("title"), "url": item.get("url")}
+            for index, item in enumerate(evidence, start=1)
+            if item.get("url")
+        ]
+        full_payload = {
+            "query": query,
+            "answer": synthesis["answer"],
+            "sources": sources,
+            "retrieval_request_id": retrieval["request_id"],
+            "router": synthesis,
+            "quality": retrieval.get("quality") or {},
+        }
+        request_id, response_id = self._record_request(
+            "answer",
+            {key: value for key, value in args.items() if key != "max_output_chars"},
+            full_payload,
+            f"answer '{_snip(query, 80)}' from {len(sources)} sources",
+            sources=[item["url"] for item in sources],
+        )
+        return _shrink_to_budget(
+            {
+                "success": True,
+                "contract_version": RETRIEVAL_CONTRACT_VERSION,
+                "request_id": request_id,
+                "response_id": response_id,
+                "retrieval_request_id": retrieval["request_id"],
+                "router_request_id": synthesis.get("router_request_id"),
+                "query": query,
+                "answer": synthesis["answer"],
+                "sources": sources,
+                "quality": retrieval.get("quality") or {},
+                "route": synthesis.get("route"),
+                "usage": synthesis.get("usage") or {},
+                "timings_ms": {
+                    "retrieval": (retrieval.get("timings_ms") or {}).get("total"),
+                    "synthesis": synthesis_ms,
+                },
+                "tenant_scoped": bool((context or {}).get("account_id")),
+                "hint": "Full answer lineage: get_search_result {request_id}",
+            },
+            max(2000, min(int(args.get("max_output_chars", 12000)), 32_000)),
+        )
+
+    async def _execute_platform_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Probe the public liveness surfaces for the platform dependency chain."""
+        del args
+        targets = {
+            "auth": "https://auth.distributed.systems/.well-known/openid-configuration",
+            "tools": f"{_registry_base_url()}/health",
+            "router": f"{self._router.base_url}/health",
+        }
+
+        async def probe(name: str, url: str) -> tuple[str, Dict[str, Any]]:
+            started = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(url)
+                payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+                detail: Dict[str, Any] = {
+                    "ready": response.status_code == 200,
+                    "status_code": response.status_code,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+                if name == "auth":
+                    detail["issuer"] = payload.get("issuer")
+                    detail["jwks_configured"] = bool(payload.get("jwks_uri"))
+                else:
+                    detail["service"] = payload.get("service")
+                    detail["version"] = payload.get("version")
+                return name, detail
+            except Exception as exc:
+                return name, {
+                    "ready": False,
+                    "error": type(exc).__name__,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+
+        statuses = dict(await asyncio.gather(*(probe(name, url) for name, url in targets.items())))
+        context = current_execution_context()
+        statuses["search"] = {
+            "ready": bool(self.is_connected and self.api_key),
+            "service": self.SERVICE_ID,
+            "version": self.VERSION,
+            "durable_store": self._store.get_status(),
+            "router_synthesis_configured": self._router.configured,
+        }
+        return {
+            "success": all(item.get("ready") for item in statuses.values()),
+            "planes": statuses,
+            "identity_context": {
+                "signed": context is not None,
+                "tenant_scoped": bool((context or {}).get("account_id")),
+                "principal_present": bool((context or {}).get("principal_id")),
+                "issuer": (context or {}).get("iss"),
+                "trace_id": (context or {}).get("trace_id") or (context or {}).get("invocation_id"),
+            },
+        }
 
     async def _queue_search_urls(
         self,
@@ -1619,22 +2297,47 @@ class DistributedSearchMCP:
         return _shrink_to_budget(compact, max_out)
 
     async def _execute_verify(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Fact-check a statement."""
+        """Build evidence for a statement or request a cited deep assessment."""
         statement = args.get("statement") or args.get("claim")
         if not statement:
             raise ValueError("statement (or claim) is required")
 
-        # Search for evidence
-        search_result = await self._execute_search({
-            "query": f"fact check: {statement}",
-            "num_results": 5
-        })
+        if args.get("depth", "evidence") == "deep":
+            assessment = await self._execute_deepsearch({
+                "query": (
+                    "Assess this claim. Explicitly distinguish supporting evidence, "
+                    "contradicting evidence, uncertainty, and the final verdict. Cite "
+                    f"primary sources wherever possible. Claim: {statement}"
+                ),
+                "reasoning_effort": "high",
+                "no_direct_answer": True,
+                "max_output_chars": args.get("max_output_chars", 8000),
+            })
+            return {
+                "statement": statement,
+                "depth": "deep",
+                "assessment": assessment,
+                "success": assessment.get("success", False),
+            }
 
+        evidence = await self._execute_retrieve({
+            "query": statement,
+            "mode": "balanced",
+            "max_results": 8,
+            "include_content": True,
+            "query_variants": [f"{statement} evidence", f"{statement} false"],
+            "prefer_domains": args.get("prefer_domains") or [],
+            "max_output_chars": args.get("max_output_chars", 8000),
+        })
         return {
             "statement": statement,
-            "sources": search_result.get("results", []),
-            "note": "Review sources to verify claim",
-            "success": search_result.get("success", False)
+            "depth": "evidence",
+            "status": "evidence_found" if evidence.get("count") else "insufficient_evidence",
+            "evidence": evidence.get("results", []),
+            "quality": evidence.get("quality", {}),
+            "request_id": evidence.get("request_id"),
+            "note": "Evidence mode does not infer a truth verdict; use depth=deep for a cited assessment.",
+            "success": evidence.get("success", False),
         }
 
     async def _execute_rerank(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1654,7 +2357,7 @@ class DistributedSearchMCP:
 
         try:
             rerank_body: Dict[str, Any] = {
-                "model": args.get("model", "jina-reranker-v2-base-multilingual"),
+                "model": args.get("model", CURRENT_RERANK_MODEL),
                 "query": query,
                 "documents": documents,
                 "top_n": top_k,
@@ -1698,7 +2401,7 @@ class DistributedSearchMCP:
             if not texts:
                 raise ValueError("text, texts, or inputs is required")
             input_list = [str(t) for t in texts][:100]
-        model = args.get("model", "jina-embeddings-v3")
+        model = args.get("model", CURRENT_EMBED_MODEL)
 
         if not self.api_key:
             return {
@@ -1857,7 +2560,7 @@ class DistributedSearchMCP:
             if classifier_id:
                 classify_body["classifier_id"] = classifier_id
             else:
-                classify_body["model"] = args.get("model", "jina-embeddings-v3")
+                classify_body["model"] = args.get("model", CURRENT_EMBED_MODEL)
             response = await self._client.post(
                 self.JINA_CLASSIFY_URL,
                 json=classify_body,
@@ -2013,7 +2716,7 @@ class DistributedSearchMCP:
         if not examples:
             raise ValueError("examples is required")
         body: Dict[str, Any] = {
-            "model": args.get("model", "jina-embeddings-v3"),
+            "model": args.get("model", CURRENT_EMBED_MODEL),
             "input": examples,
         }
         for key in ("classifier_id", "num_iters", "access"):
@@ -2349,7 +3052,11 @@ class DistributedSearchMCP:
         if not request_id and not response_id:
             raise ValueError("request_id or response_id is required")
 
-        record = self._store.get(request_id=request_id, response_id=response_id)
+        record = self._store.get(
+            request_id=request_id,
+            response_id=response_id,
+            tenant_id=context_scope_id(current_execution_context()),
+        )
         if not record:
             return {
                 "success": False,
@@ -2362,7 +3069,11 @@ class DistributedSearchMCP:
         """List recent stored search request metadata."""
         limit = args.get("limit", 20)
         tool = args.get("tool")
-        rows = self._store.list(limit=limit, tool=tool)
+        rows = self._store.list(
+            limit=limit,
+            tool=tool,
+            tenant_id=context_scope_id(current_execution_context()),
+        )
         return {"success": True, "count": len(rows), "requests": rows}
 
     async def _execute_connectivity_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2472,6 +3183,20 @@ class DistributedSearchMCP:
             "session_id": self._state.session_id,
             "tools_count": len([t for t in self._tools if not t.startswith("_")]),
             "api_key_configured": bool(self.api_key),
+            "provider_ready": bool(self.api_key and self.is_connected),
+            "retrieval_contract_version": RETRIEVAL_CONTRACT_VERSION,
+            "default_models": {
+                "embedding": CURRENT_EMBED_MODEL,
+                "reranker": CURRENT_RERANK_MODEL,
+            },
+            "request_store": self._store.get_status(),
+            "platform": {
+                "identity_issuer": "https://auth.distributed.systems",
+                "tools_registry": _registry_base_url(),
+                "router": self._router.base_url,
+                "router_synthesis_configured": self._router.configured,
+                "signed_context_required": os.getenv("SEARCH_REQUIRE_SIGNED_CONTEXT", "0") == "1",
+            },
         }
 
 
@@ -2568,10 +3293,50 @@ async def root():
 async def health():
     """Health check."""
     if _server and _server.is_connected:
-        return {"status": "healthy", "service": DistributedSearchMCP.SERVICE_ID}
+        return {
+            "status": "healthy",
+            "service": DistributedSearchMCP.SERVICE_ID,
+            "version": DistributedSearchMCP.VERSION,
+            "provider_ready": bool(_server.api_key),
+            "tools_count": len(_server.tools),
+            "request_store": _server._store.get_status(),
+            "platform": {
+                "identity_issuer": "https://auth.distributed.systems",
+                "tools_registry": _registry_base_url(),
+                "router": _server._router.base_url,
+                "router_synthesis_configured": _server._router.configured,
+                "signed_context_required": os.getenv("SEARCH_REQUIRE_SIGNED_CONTEXT", "0") == "1",
+            },
+        }
     return JSONResponse(
         status_code=503,
         content={"status": "unhealthy", "service": DistributedSearchMCP.SERVICE_ID}
+    )
+
+
+@app.get("/ready")
+async def ready():
+    """Provider readiness; unlike liveness, this requires a usable Jina key."""
+    store_status = _server._store.get_status() if _server else {"ready": False}
+    durable_required = os.getenv("SEARCH_REQUIRE_DURABLE_STORE", "0") == "1"
+    store_ready = bool(store_status.get("ready")) and (
+        bool(store_status.get("durable")) or not durable_required
+    )
+    if _server and _server.is_connected and _server.api_key and store_ready:
+        return {
+            "status": "ready",
+            "service": DistributedSearchMCP.SERVICE_ID,
+            "provider": "jina",
+            "request_store": store_status,
+        }
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "not_ready",
+            "service": DistributedSearchMCP.SERVICE_ID,
+            "reason": "Jina provider or durable request store is unavailable",
+            "request_store": store_status,
+        },
     )
 
 
@@ -2599,14 +3364,15 @@ async def execute_tool(request: ToolCallRequest):
     if not _server:
         raise HTTPException(503, "Server not initialized")
 
-    tool = _server._tools.get(request.name)
-    if not tool:
-        raise HTTPException(404, f"Tool not found: {request.name}")
-
-    if not tool.handler:
-        raise HTTPException(500, f"Tool {request.name} has no handler")
-
-    result = await tool.handler(request.arguments)
+    mcp_result = await _server.handle_tools_call(
+        {"name": request.name, "arguments": request.arguments}
+    )
+    content = mcp_result.get("content") or []
+    text = content[0].get("text") if content and isinstance(content[0], dict) else None
+    try:
+        result = json.loads(text) if isinstance(text, str) else text
+    except json.JSONDecodeError:
+        result = text
     return {"result": result}
 
 
@@ -2651,7 +3417,15 @@ async def execute_tool_stream(request: ToolCallRequest, raw_request: Request):
         )
 
         try:
-            result = await tool.handler(request.arguments)
+            mcp_result = await _server.handle_tools_call(
+                {"name": request.name, "arguments": request.arguments}
+            )
+            content = mcp_result.get("content") or []
+            text = content[0].get("text") if content and isinstance(content[0], dict) else None
+            try:
+                result = json.loads(text) if isinstance(text, str) else text
+            except json.JSONDecodeError:
+                result = text
             chunks = _extract_stream_chunks(result)
             total = max(1, len(chunks))
             sufficiency_sent = False

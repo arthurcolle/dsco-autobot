@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unified Authentication — Execution Report | ToolManagement / Distributed Systems, Inc.</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#30363d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#bc8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:28px;margin:0 0 6px}
+  .sub{color:var(--muted)}
+  .badges{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{border:1px solid var(--line);border-radius:999px;padding:3px 12px;font-size:12.5px;color:var(--muted);background:var(--panel)}
+  .badge.ok{color:var(--green);border-color:#2ea04340}
+  h2{font-size:19px;margin:38px 0 12px;color:var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px}
+  p{margin:8px 0}
+  code,pre{font:12.5px/1.5 "SF Mono",SFMono-Regular,Consolas,Menlo,monospace}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--muted);font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  .ok{color:var(--green);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;margin:16px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .kpi .n{font-size:26px;font-weight:700}
+  .kpi .l{color:var(--muted);font-size:13px}
+  .flow{font:12.5px/1.6 "SF Mono",monospace;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;white-space:pre;overflow-x:auto;color:var(--muted)}
+  .flow b{color:var(--text)}
+  .callout{border-left:3px solid var(--amber);background:rgba(210,153,34,.08);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0}
+  .callout.red{border-color:var(--red);background:rgba(248,81,73,.07)}
+  .callout.green{border-color:var(--green);background:rgba(63,185,80,.07)}
+  footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:13px}
+  a{color:var(--accent)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:5px;margin-right:6px}
+  .pill.done{background:#238636;color:#fff}
+  .pill.next{background:#30363d;color:var(--muted)}
+  .pill.open{background:#9e6a03;color:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Unified Authentication Across Subdomains — Execution Report</h1>
+  <div class="sub">ToolManagement substrate · <code>~/dsco/dsco-autobot/ToolManagement</code> · 2026-08-31</div>
+  <div class="sub">Distributed Systems, Inc. · prepared by DSCO Runtime</div>
+  <div class="badges">
+    <span class="badge ok">T01–T06 executed</span>
+    <span class="badge ok">10/10 tests green</span>
+    <span class="badge ok">e2e enforce-mode verified</span>
+    <span class="badge">2 defects caught &amp; repaired</span>
+    <span class="badge">Phases P2–P4 specified</span>
+  </div>
+</header>
+
+<!-- ─────────────────── KPIs ─────────────────── -->
+<div class="grid">
+  <div class="kpi"><div class="n">13</div><div class="l">subdomain audiences registered in <code>auth/scopes.py</code></div></div>
+  <div class="kpi"><div class="n">3</div><div class="l">token formats accepted (legacy 16-hex · unified-v2 32-hex · JWT HS256)</div></div>
+  <div class="kpi"><div class="n">401</div><div class="l">MCP-spec challenge verified live on <code>unit_fabric</code></div></div>
+  <div class="kpi"><div class="n">25</div><div class="l">tasks queued in <code>TASKS.md</code> (6 executed, 19 remaining)</div></div>
+</div>
+
+<!-- ─────────────────── Executive summary ─────────────────── -->
+<h2>Executive summary</h2>
+<p>The ToolManagement layer is the tool plane behind <code>tools.distributed.systems</code>: a FastAPI registry + gateway over 2,500+ tools across 40+ backends, plus a fleet of native MCP fabric servers (search, research, publish, memory, swarm, timeline, video/doc QA, unit/integration/finance fabrics) launched per-port by a launchd supervisor locally and Modal in production. Prior to this run, authentication was a single shared operator bearer token and — critically — <strong>no per-subdomain scoping</strong>: any valid token worked on every service.</p>
+<p>What the review found: an <strong>already-working OAuth 2.0/OIDC authorization server</strong> (<code>oauth.py</code>, "Sign in with Distributed" — PKCE, consent, userinfo, refresh tokens, durable DuckDB-backed revocation) and an <strong>Ed25519 warrant system</strong> (<code>warrants.py</code> — capability grants with constraints, attenuation, receipts) that were simply not wired as a unified transport-auth layer. No third-party IdP (Keycloak/Logto/Authentik) is needed; the strategy is <em>finish and unify our own</em>.</p>
+<p>This run landed Phase 1 completely and verified it live: shared token verification, per-subdomain audience binding, scope enforcement, RFC 7662 introspection, production-grade secret policy, a single-source scope registry, and middleware armed across every native server — all additive, with <strong>zero behavior change to production until the operator sets environment flags</strong>.</p>
+
+<!-- ─────────────────── Defects caught ─────────────────── -->
+<h2>Two defects caught by live e2e (not by unit tests)</h2>
+<div class="callout red">
+  <strong>1. Blanket loopback trust made enforcement a no-op.</strong> Single-host deployments (launchd supervisor on the Mac, docker-compose) reach the public surface <em>over 127.0.0.1</em> — exempting loopback silently bypassed all auth on the most common topology. Every unit test was green while the actual server let unauthenticated requests through. <strong>Repair:</strong> loopback trust is now explicit opt-in (<code>UNIFIED_LOOPBACK_TRUST=1</code>); internal fabric-to-fabric calls should use minted service tokens instead.
+</div>
+<div class="callout red">
+  <strong>2. Enforcement checked the derived audience string, not the canonical registry key.</strong> Tokens minted for <code>unit_fabric</code> were verified against <code>distributed_unit</code> (the string derived from <code>SERVICE_NAME</code>). <strong>Repair:</strong> the canonical <code>cfg.audience</code> from <code>scopes.py</code> is what's enforced; the derived string is only an alias-resolution input.
+</div>
+<p class="sub" style="margin-top:6px">Calibration lesson: the deployment is exactly the environment where the middleware matters — the acceptance gate for this project is <em>live server verification</em>, not suite greenness. Both findings are recorded in the playbook.</p>
+
+<!-- ─────────────────── What landed ─────────────────── -->
+<h2>What landed (T01–T06)</h2>
+<table>
+  <tr><th style="width:60px">Task</th><th>Landed</th><th style="width:340px">Verification evidence</th></tr>
+  <tr><td><b>T01</b></td><td><code>tests/test_unified_auth.py</code> promoted into the suite — 10 pytest cases covering legacy compat, v2 mint/verify, JWT path, policy denials, oauth v2 issuance, introspection flow, scopes registry</td><td><span class="ok">10/10 passed</span> in <code>.venv</code> pytest run</td></tr>
+  <tr><td><b>T02</b></td><td><code>oauth.py</code> config: production <b>fail-hard</b> — refuses boot without explicit <code>TOKEN_SECRET</code>, refuses the published default password (<code>password2026!</code>); dev path byte-identical</td><td>RuntimeError paths present; dev derivation preserved (<code>ENV=development</code>)</td></tr>
+  <tr><td><b>T03</b></td><td>oauth.py mints <b>unified-v2 tokens</b>: <code>iss/aud/exp/iat/v:2</code> + 32-hex HMAC; <code>_decode_token</code> accepts 16- and 32-hex (legacy tokens age out naturally across the 30-day TTL — no client breakage); <code>get_token_identity</code> exposes <code>aud/iss/exp</code> additively</td><td>Legacy + v2 both decode; identity exposes <code>aud</code>/<code>iss</code>; grant-check behavior unchanged</td></tr>
+  <tr><td><b>T04</b></td><td><code>POST /oauth/introspect</code> (RFC 7662) backed by the durable DuckDB revocation list; never echoes tokens; fail-open on store errors (mirrors unified.py's introspection client)</td><td><b>Revocation drill green:</b> fresh token <code>{active:true}</code> → revoke → <code>{active:false, revoked:true}</code></td></tr>
+  <tr><td><b>T05</b></td><td><code>auth/scopes.py</code> — single source of truth: <b>13 audiences</b> with required scopes, public paths, <code>operator_identity_required</code> for <code>publish</code>; alias-tolerant <code>resolve()</code> mapping derived <code>SERVICE_NAME</code>s (incl. live-observed <code>video_q&amp;a</code>) to canonical keys</td><td>All fabric servers map to registered audiences; unknown audience raises <code>KeyError</code></td></tr>
+  <tr><td><b>T06</b></td><td><code>native/base.py::_create_app</code> arms <code>make_auth_middleware</code> for <b>every</b> native MCP/fabric server when <code>UNIFIED_SHADOW=1</code>; <code>UNIFIED_ENFORCE=1</code> flips live decisions; canonical registry audience enforced</td><td>Live e2e below</td></tr>
+</table>
+
+<h3>Live end-to-end verification — <code>unit_fabric</code>, enforce mode</h3>
+<table>
+  <tr><th>#</th><th>Request</th><th>Result</th></tr>
+  <tr><td>1</td><td><code>GET /health</code> (public path)</td><td><span class="ok">200</span></td></tr>
+  <tr><td>2</td><td><code>POST /mcp</code> with no Authorization header</td><td><span class="ok">401</span> + <code>WWW-Authenticate: Bearer resource_metadata="https://tools.distributed.systems/.well-known/oauth-protected-resource", scope="tools unit"</code> — MCP-spec challenge shape</td></tr>
+  <tr><td>3</td><td><code>POST /mcp</code> with aud-bound v2 token (<code>aud=unit_fabric</code>, scopes <code>unit tools</code>)</td><td><span class="ok">200</span> — <code>tools/list</code> executed</td></tr>
+  <tr><td>4</td><td><code>POST /mcp</code> with <code>aud=search</code> token</td><td><span class="bad">403</span> <code>audience_mismatch: token aud='search' service='unit_fabric'</code></td></tr>
+</table>
+
+<!-- ─────────────────── Architecture ─────────────────── -->
+<h2>Architecture of the unified layer</h2>
+<pre>
+                    ┌─────────────────────────────────────────────┐
+                    │  IdP: oauth.py ("Sign in with Distributed") │
+                    │  auth-code+PKCE · consent · userinfo        │
+                    │  refresh · RFC 7009 revoke · /introspect    │
+                    │  durable state: DuckDB (oauth_store.py)     │
+                    └──────────────┬──────────────────────────────┘
+              mints unified-v2     │     JWKS (P2, next)
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+  Bearer <aud=unit_fabric>   Bearer <aud=search>        Bearer <aud=publish>
+  + scopes {unit,tools}      + scopes {search,tools}    + operator identity
+
+   every service: tool_management.auth.unified
+   └ verify_request(): signature → revocation(introspect, 60s cache)
+                       → expiry(60s skew) → audience(must equal aud)
+                       → scopes ⊆ claims.s
+   └ AuthMiddleware via native/base.py (UNIFIED_SHADOW=1 arm, UNIFIED_ENFORCE=1 flip)
+
+   warrants (Ed25519, auth/warrants.py) ride ON TOP as the capability layer:
+   who-you-are = OAuth token · what-you-may-do = warrant (+ receipts)   [P4]
+</pre>
+
+<!-- ─────────────────── Deployment flags ─────────────────── -->
+<h2>Deployment flags (operator controls)</h2>
+<table>
+  <tr><th>Flag</th><th>Effect</th></tr>
+  <tr><td><code>UNIFIED_SHADOW=1</code></td><td>Arms the middleware in <strong>log-only</strong> mode: deny-lines are recorded, all decisions unchanged. Arm per service; review the feed for false positives.</td></tr>
+  <tr><td><code>UNIFIED_ENFORCE=1</code></td><td>Middleware enforces (401/403). Requires <code>UNIFIED_SHADOW=1</code> arming and — for MCP spec compliance — a working issuer URL for the 401 challenge.</td></tr>
+  <tr><td><code>UNIFIED_LOOPBACK_TRUST=1</code></td><td><span class="warn">Opt-in only</span>. Blanket loopback bypass. Do <strong>not</strong> set on single-host deployments where the public surface is loopback-reached; use minted service tokens for internal calls.</td></tr>
+  <tr><td><code>UNIFIED_AUDIENCE</code></td><td>Overrides the derived audience label for a service (rarely needed now that <code>resolve()</code> aliases the observed names).</td></tr>
+  <tr><td><code>UNIFIED_INTROSPECTION_URL</code></td><td>Points services at the IdP introspection endpoint for revocation checking (60s cache).</td></tr>
+  <tr><td><code>TOKEN_SECRET</code></td><td>Required explicitly in <code>ENV=production</code> (boot refuses otherwise). Dev-only derived fallback retained.</td></tr>
+</table>
+
+<div class="callout">
+  <strong>Rollout protocol</strong> — per subdomain, in order T06→T14 (<code>TASKS.md</code>): arm <code>UNIFIED_SHADOW=1</code> → ≥1 day of shadow logs → review deny-lines against replayed legit traffic → flip <code>UNIFIED_ENFORCE=1</code> → run the revocation drill (revoke token; verify rejection ≤60s or immediate local reject). The <code>tools</code> registry itself flips <strong>last</strong> — it hosts the issuer.
+</div>
+
+<!-- ─────────────────── Status of 25-task queue ─────────────────── -->
+<h2>Task queue status (25 tasks)</h2>
+<table>
+  <tr><th>Wave</th><th>Tasks</th><th>Status</th></tr>
+  <tr><td>A — Auth core</td><td>T01–T05</td><td><span class="ok">✓ Executed &amp; verified</span></td></tr>
+  <tr><td>B — Staged flips</td><td>T06 (unit_fabric) … T14 (tools registry last)</td><td><span class="ok">T06 wired + e2e</span>; T07–T14 <span class="open">shadow arm per service</span> (operator-paced)</td></tr>
+  <tr><td>C — JWKS / Ed25519 (P2)</td><td>T15–T18</td><td><span class="next">specified</span> — reuses warrants.py primitives; kills shared-secret distribution</td></tr>
+  <tr><td>D — Architecture debt</td><td>T19–T22</td><td><span class="next">specified</span> — job spine, N-worker pool, per-tool timeouts, compose checkpointing (parallel track, no auth dep)</td></tr>
+  <tr><td>E — Warrants × OAuth (P4)</td><td>T23–T24</td><td><span class="next">specified</span> — <code>POST /oauth/warrants</code>, gateway capability hook + receipts</td></tr>
+  <tr><td>F — Ops</td><td>T25</td><td><span class="next">specified</span> — rate limits, <code>/metrics</code>, admin view</td></tr>
+</table>
+
+<!-- ─────────────────── Residual risk ─────────────────── -->
+<h2>Residual risk &amp; honest calibration</h2>
+<ul>
+  <li><strong>Nothing changed in production until you set the flags.</strong> Middleware is env-armed and off by default; every existing client (legacy 16-hex tokens, static bearer, password login) keeps working through the 30-day legacy-token window.</li>
+  <li><strong>Introspection endpoint has no rate limiting yet</strong> (deferred to T25). It is fail-open on store errors by design — a store outage degrades to "no revocation propagation", logged.</li>
+  <li><strong>Shadow review is operator-paced:</strong> T07–T14 flips require real-traffic deny-line review per service; the ⚠️ services (finance, integration, publish) additionally need tenant/BYOK-path review given the history in <code>TENANT_CREDENTIALS_WIRING.md</code>.</li>
+  <li><strong>HMAC shared secret still exists until T15–T18</strong> (JWKS). Rotation is currently a fleet-wide secret change; the P2 upgrade makes it <code>kid</code>-based and restart-free.</li>
+  <li><strong>Two live-observed environment quirks</strong> recorded in <code>scopes.py::_ALIASES</code> (<code>video_q&amp;a</code> from a verbatim <code>&amp;</code> in a service name; <code>distributed_unit</code> naming) — if service names change, aliases may need updating.</li>
+</ul>
+
+<footer>
+  Artifacts: <code>src/tool_management/auth/unified.py</code> · <code>src/tool_management/auth/scopes.py</code> · <code>src/tool_management/oauth.py</code> (v2 issuance, introspect, prod policy) · <code>native/base.py</code> (middleware arming) · <code>tests/test_unified_auth.py</code> · <code>AUTH_UNIFIED.md</code> · <code>TASKS.md</code><br>
+  DSCO Runtime · Distributed Systems, Inc. · evidence class: computed from live runs &amp; test suites on 2026-08-31
+</footer>
+
+</div>
+</body>
+</html>

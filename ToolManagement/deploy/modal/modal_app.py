@@ -58,6 +58,8 @@ image = (
         "fastapi-mcp>=0.1.0",
         # Cryptography (Ed25519 for warrants)
         "cryptography>=41.0.0",
+        # Canonical ZITADEL access-token validation (RS256/JWKS)
+        "PyJWT[crypto]==2.9.0",
         # Base58 encoding (Solana addresses)
         "base58>=2.1.0",
         # Secp256k1 (wallet auth)
@@ -90,21 +92,26 @@ if CODEX_SNAPSHOT_DIR.exists():
 data_volume = modal.Volume.from_name("tool-registry-data", create_if_missing=True)
 
 
-@app.function(
-    image=image,
-    volumes={"/data": data_volume},
-    timeout=600,
-    min_containers=1,
-    max_containers=1,
-    scaledown_window=120,
-)
-@modal.concurrent(max_inputs=20, target_inputs=5)
-# Custom domain: tools.distributed.systems
-# Register at: https://modal.com/settings/custom-domains
-# DNS CNAME: tools.distributed.systems -> arthurcolle--tool-registry-web.modal.run
-@modal.asgi_app(custom_domains=["tools.distributed.systems"])
-def web():
-    """Serve the Tool Management API."""
+registry_volumes = {"/data": data_volume}
+registry_secrets = [
+        modal.Secret.from_name("tool-registry-oauth-core"),
+        modal.Secret.from_name("tool-registry-secrets"),
+        modal.Secret.from_name("tool-registry-security"),
+        modal.Secret.from_name("tool-registry-codex-apps-vault"),
+    ]
+
+# Non-secret settings shared by serving and explicit private reconciliation.
+PRODUCTION_ENV = {
+    "DATA_DIR": "/data",
+    "DSCO_DEPLOYMENT_MODE": "production",
+    "GRAPH_SUBSTRATE": "graphsub",
+    "SYNC_ON_STARTUP": "0",
+    "ENABLE_ANNOUNCE_EMBED_SYNC": "0",
+    "ENABLE_ANNOUNCE_GRAPH_PROJECTION": "1",
+}
+
+
+def _configure_production_environment():
     import sys
     import os
 
@@ -124,9 +131,17 @@ def web():
     os.environ["ANNOUNCE_MIN_INTERVAL_SECONDS"] = "900"  # Ignore frequent heartbeat re-announces (15 min)
     os.environ["REQUIRE_BEARER_AUTH"] = "1"  # Enforce bearer auth on non-public routes
     os.environ["ALLOW_ANON_ANNOUNCE"] = "1"  # Let native MCPs keep push-announcing without auth header changes
-    os.environ["DEFAULT_BEARER_TOKEN"] = "sk-arthur-234"  # Static token for probe/smoke testing
-    os.environ["INTERNAL_API_BEARER_TOKEN"] = "sk-arthur-234"  # For MCP meta-tool self-calls to /api/v1/*
-    os.environ["MCP_PASSWORD"] = "sk-arthur-234"  # OAuth login page password
+
+    # Canonical customer identity authority. Legacy ToolManagement tokens stay
+    # enabled during account migration, but can no longer be mistaken for
+    # ZITADEL identities.
+    os.environ["ENV"] = "production"
+    os.environ["UNIFIED_ISSUER_URL"] = "https://auth.distributed.systems"
+    os.environ["UNIFIED_JWKS_URL"] = "https://auth.distributed.systems/oauth/v2/keys"
+    os.environ["UNIFIED_ALLOW_LEGACY"] = "1"
+    os.environ["UNIFIED_ALLOW_HS256"] = "1"
+    os.environ["UNIFIED_LEGACY_SUBJECT_IS_ACCOUNT"] = "1"
+    os.environ["INTERNAL_API_BEARER_TOKEN"] = os.environ["DEFAULT_BEARER_TOKEN"]
 
     # API Base URL for meta-tools (points to self)
     os.environ["API_BASE_URL"] = "https://tools.distributed.systems"
@@ -149,18 +164,53 @@ def web():
     os.environ["NEO4J_URL"] = "https://arthurcolle--graph-management-neo4j-serve.modal.run"
 
     # API keys for external services
-    os.environ["JINA_API_KEY"] = "jina_c6997e7c38a240cabdd77d13dbfd4e40bP6-IWJ__OX8bSG51488ro0g6sQQ"
-    os.environ["PARALLEL_API_KEY"] = "TevoujRFhKoBwb5uqGit5SuajxiePU8pQHLF-uCJ"
 
     # Stable master keys so encrypted credential vaults on /data survive
     # container cycles (unset would derive an unstable machine-specific key).
     os.environ.setdefault("TENANT_VAULT_MASTER_KEY", "kvSntPK3p6NxZ6O0-1DCiaYvOKjOmvBvCY4KpRhtHv8")
     os.environ.setdefault("CODEX_VAULT_MASTER_KEY", "KZn_zkzjLYuWY3sPo-Dfda8ndE4TSNpPaimk2TcT9s4")
 
+    os.environ.update(PRODUCTION_ENV)
+
+
+@app.function(
+    image=image,
+    volumes=registry_volumes,
+    secrets=registry_secrets,
+    timeout=600,
+    min_containers=1,
+    max_containers=1,
+    scaledown_window=120,
+)
+@modal.concurrent(max_inputs=20, target_inputs=5)
+# Custom domain: tools.distributed.systems
+# Register at: https://modal.com/settings/custom-domains
+# DNS CNAME: tools.distributed.systems -> arthurcolle--tool-registry-web.modal.run
+@modal.asgi_app(custom_domains=["tools.distributed.systems"])
+def web():
+    """Serve the Tool Management API."""
+    _configure_production_environment()
+
     # Import and return the FastAPI app
     from tool_management.app import create_app
 
     return create_app()
+
+
+@app.function(image=image, volumes=registry_volumes, secrets=registry_secrets, timeout=600)
+async def reconcile_graphsub_projection():
+    """Explicit private repair of persisted metadata; not an HTTP endpoint."""
+    _configure_production_environment()
+    from tool_management.persistence import get_tool_store
+    from tool_management.api.tools_api import _project_announced_tools_to_graph
+    from tool_management.services.graph_reconciliation import reconcile_persistent_catalog
+
+    async def project(backend_id, tools, backend_url):
+        return await _project_announced_tools_to_graph(
+            backend_id, tools, backend_url, raise_errors=True,
+        )
+
+    return await reconcile_persistent_catalog(get_tool_store(), project)
 
 
 @app.local_entrypoint()

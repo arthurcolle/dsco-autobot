@@ -935,6 +935,45 @@ class NativeMCPBase(ABC):
             version=self.VERSION,
         )
 
+        # ── Unified-auth shadow middleware (AUTH_UNIFIED.md T05/T06) ─────────
+        # Armed only when UNIFIED_SHADOW=1. In shadow mode (enforce=False) all
+        # decisions are unchanged and deny-lines are logged — this is exactly
+        # the rollout protocol: arm per service, review the deny-line feed,
+        # then flip to enforce via UNIFIED_ENFORCE=1. Default OFF means zero
+        # behavior change for existing deployments.
+        if os.getenv("UNIFIED_SHADOW", "") == "1":
+            try:
+                from tool_management.auth.scopes import resolve as resolve_subdomain
+                from tool_management.auth.unified import AuthMiddlewareConfig, make_auth_middleware
+
+                aud = (
+                    os.getenv("UNIFIED_AUDIENCE")
+                    or self.SERVICE_NAME.lower().replace(" ", "_").replace("-mcp", "").replace("_mcp", "")
+                )
+                cfg = resolve_subdomain(aud)  # raises KeyError if unknown -> caught below
+                # Enforce against the CANONICAL audience from the registry, not
+                # the derived string — tokens are minted for the canonical key.
+                canonical_aud = cfg.audience
+                app.add_middleware(
+                    make_auth_middleware(AuthMiddlewareConfig(
+                        audience=canonical_aud,
+                        required_scopes=(cfg.required_scopes if cfg else frozenset({"tools"})),
+                        public_paths=(cfg.public_paths if cfg else frozenset(
+                            {"/health", "/ready", "/healthz", "/readyz", "/docs", "/redoc", "/openapi.json"}
+                        )),
+                        public_prefixes=("/oauth/", "/.well-known/"),
+                        exempt_loopback=os.getenv("UNIFIED_LOOPBACK_TRUST", "") == "1",
+                        enforce=os.getenv("UNIFIED_ENFORCE", "") == "1",  # shadow by default
+                    ))
+                )
+                logger.info(
+                    f"[unified-auth] middleware armed audience={aud} "
+                    f"mode={'enforce' if os.getenv('UNIFIED_ENFORCE') == '1' else 'shadow'}"
+                )
+            except Exception as e:
+                logger.warning(f"[unified-auth] shadow middleware unavailable (continuing unauthed): {e}")
+
+
         @app.on_event("startup")
         async def startup():
             await self.mesh.start()

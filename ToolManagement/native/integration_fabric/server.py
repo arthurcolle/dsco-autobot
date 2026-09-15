@@ -320,6 +320,8 @@ class IntegrationFabricMCP(NativeMCPBase):
             base = OPENAI_COMPAT.get(provider)
             if base and (passed_credential or base[2]):
                 return await self._live_openai_chat(args, provider, api_key=passed_credential)
+        if category == "ai" and op == "image_generate" and provider == "openrouter":
+            return await self._live_openrouter_image(args, api_key=passed_credential)
         if category == "ai" and op == "embed":
             if provider == "openai" and (passed_credential or OPENAI_KEY):
                 return await self._live_openai_embed(args, api_key=passed_credential)
@@ -486,6 +488,60 @@ class IntegrationFabricMCP(NativeMCPBase):
         return self._ok({"category": "ai", "operation": "chat", "model": d.get("model"),
                          "text": d["choices"][0]["message"]["content"],
                          "usage": d.get("usage")}, "live", provider)
+
+    async def _live_openrouter_image(self, args: Dict[str, Any],
+                                     api_key: Optional[str] = None) -> Dict[str, Any]:
+        """Generate actual images through OpenRouter's dedicated Images API.
+
+        Preserve model pins and provider routing. Never report a sandbox object
+        as an image, and return standard MCP image blocks without duplicating
+        the base64 payload inside the metadata text.
+        """
+        key = api_key or OPENROUTER_KEY
+        if not key:
+            return self._err("OPENROUTER_API_KEY is not configured")
+        params = dict(args.get("params") or {})
+        prompt = params.get("prompt") or params.get("input") or args.get("id")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return self._err("image_generate requires a non-empty params.prompt")
+        count = params.get("n", 1)
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 10:
+            return self._err("params.n must be an integer between 1 and 10")
+        payload = {
+            "model": params.get("model", "openai/gpt-image-2"),
+            "prompt": prompt,
+            "n": count,
+        }
+        for name in ("size", "resolution", "aspect_ratio", "quality", "output_format",
+                     "background", "output_compression", "input_references", "provider", "seed"):
+            if name in params:
+                payload[name] = params[name]
+        # Collected MCP response; generation can take 90+ seconds. Never retry
+        # a billable POST here because its completion may be ambiguous.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as c:
+            r = await c.post(
+                "https://openrouter.ai/api/v1/images",
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+            )
+        r.raise_for_status()
+        data = r.json()
+        images = data.get("data")
+        if not isinstance(images, list) or not images:
+            return self._err("OpenRouter returned no generated images")
+        blocks = []
+        for image in images:
+            if not isinstance(image, dict) or not isinstance(image.get("b64_json"), str) or not image["b64_json"]:
+                return self._err("OpenRouter returned an image without base64 data")
+            blocks.append({"type": "image", "data": image["b64_json"],
+                           "mimeType": image.get("media_type") or "image/png"})
+        result = self._ok({
+            "category": "ai", "operation": "image_generate", "model": payload["model"],
+            "created": data.get("created"), "image_count": len(blocks),
+            "usage": data.get("usage"),
+        }, "live", "openrouter")
+        result["content"].extend(blocks)
+        return result
 
     async def _live_anthropic_chat(self, args: Dict[str, Any],
                                    api_key: Optional[str] = None) -> Dict[str, Any]:

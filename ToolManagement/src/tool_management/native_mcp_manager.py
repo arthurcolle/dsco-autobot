@@ -77,7 +77,10 @@ NATIVE_MCPS = {
         name="Distributed Search MCP",
         module="native.distributed_search_mcp.server",
         port=4001,
-        capabilities=["search", "read", "verify", "rerank", "embed", "web_search", "content_extraction"],
+        capabilities=[
+            "retrieve", "answer", "platform_status", "search", "read", "verify", "deepsearch", "rerank", "embed",
+            "multimodal_retrieval", "federated_search", "web_search", "content_extraction",
+        ],
         env_vars={"JINA_API_KEY": os.getenv("JINA_API_KEY", "")},
     ),
     "distributed-research-mcp": NativeMCPConfig(

@@ -61,6 +61,7 @@ class ExecutionStore:
                     execution_id TEXT PRIMARY KEY,
                     tool_name TEXT NOT NULL,
                     client_id TEXT,
+                    tenant_id TEXT,
                     trace_id TEXT,
                     session_id TEXT,
                     parent_execution_id TEXT,
@@ -348,6 +349,7 @@ class ExecutionStore:
             )
 
             # Backfill/migrate older databases that were created before these columns existed.
+            self._ensure_column(conn, "executions", "tenant_id", "TEXT")
             self._ensure_column(conn, "executions", "trace_id", "TEXT")
             self._ensure_column(conn, "executions", "session_id", "TEXT")
             self._ensure_column(conn, "executions", "parent_execution_id", "TEXT")
@@ -365,6 +367,9 @@ class ExecutionStore:
             self._ensure_column(conn, "workflow_steps", "side_effect_key", "TEXT")
             self._ensure_column(conn, "workflow_events", "trace_id", "TEXT")
             self._ensure_column(conn, "workflow_events", "session_id", "TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_executions_tenant ON executions(tenant_id)"
+            )
             self._run_migrations(conn)
 
     def _migration_applied(self, conn: sqlite3.Connection, migration_name: str) -> bool:
@@ -563,6 +568,7 @@ class ExecutionStore:
         error: Optional[str] = None,
         result: Optional[Any] = None,
         control_state: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ):
         now = time.time()
         result_json = json.dumps(result, default=str) if result is not None else None
@@ -573,15 +579,16 @@ class ExecutionStore:
                 conn.execute(
                     """
                     INSERT INTO executions (
-                        execution_id, tool_name, client_id, trace_id, session_id, parent_execution_id, status, progress,
+                        execution_id, tool_name, client_id, tenant_id, trace_id, session_id, parent_execution_id, status, progress,
                         queue_priority, dedupe_key, queued_at, started_at, completed_at,
                         last_message, error, result_json, control_state_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(execution_id) DO UPDATE SET
                         tool_name = excluded.tool_name,
                         client_id = excluded.client_id,
+                        tenant_id = COALESCE(excluded.tenant_id, executions.tenant_id),
                         trace_id = COALESCE(excluded.trace_id, executions.trace_id),
                         session_id = COALESCE(excluded.session_id, executions.session_id),
                         parent_execution_id = COALESCE(excluded.parent_execution_id, executions.parent_execution_id),
@@ -602,6 +609,7 @@ class ExecutionStore:
                         execution_id,
                         tool_name,
                         client_id,
+                        tenant_id,
                         trace_id,
                         session_id,
                         parent_execution_id,
@@ -658,12 +666,22 @@ class ExecutionStore:
                 )
                 return int(cursor.lastrowid or 0)
 
-    def get_execution(self, execution_id: str) -> Optional[Dict[str, Any]]:
+    def get_execution(
+        self,
+        execution_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM executions WHERE execution_id = ?",
-                (execution_id,),
-            ).fetchone()
+            if tenant_id is None:
+                row = conn.execute(
+                    "SELECT * FROM executions WHERE execution_id = ?",
+                    (execution_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM executions WHERE execution_id = ? AND tenant_id = ?",
+                    (execution_id, tenant_id),
+                ).fetchone()
             if not row:
                 return None
             data = dict(row)
@@ -714,12 +732,23 @@ class ExecutionStore:
                 events.append(d)
             return events
 
-    def list_executions(self, status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_executions(
+        self,
+        status: Optional[str] = None,
+        limit: int = 100,
+        tenant_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         query = "SELECT * FROM executions"
         params: List[Any] = []
+        clauses: List[str] = []
         if status:
-            query += " WHERE status = ?"
+            clauses.append("status = ?")
             params.append(status)
+        if tenant_id is not None:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY COALESCE(queued_at, created_at) DESC LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
@@ -735,19 +764,25 @@ class ExecutionStore:
         self,
         dedupe_key: str,
         since_ts: float,
+        tenant_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
+            tenant_clause = "AND tenant_id IS NULL" if tenant_id is None else "AND tenant_id = ?"
+            params: List[Any] = [dedupe_key, since_ts]
+            if tenant_id is not None:
+                params.append(tenant_id)
             row = conn.execute(
-                """
+                f"""
                 SELECT execution_id, status, queued_at
                 FROM executions
                 WHERE dedupe_key = ?
                   AND COALESCE(queued_at, created_at) >= ?
+                  {tenant_clause}
                   AND status IN ('queued', 'running', 'completed')
                 ORDER BY COALESCE(queued_at, created_at) DESC
                 LIMIT 1
                 """,
-                (dedupe_key, since_ts),
+                params,
             ).fetchone()
             return dict(row) if row else None
 

@@ -1754,7 +1754,7 @@ PRESET_CATALOG: List[Dict[str, Any]] = [
     {
         "id": "distributed-search",
         "name": "DSG Search MCP (Jina)",
-        "description": "Jina AI wrapper: embed, rerank, search, read, verify. Neural search and fact-checking.",
+        "description": "Tenant-isolated evidence gateway: Auth identity, Tools discovery/metering, adaptive Jina retrieval, durable lineage, and managed Router synthesis.",
         "category": "dsco",
         "tags": ["jina", "embeddings", "reranking", "search", "verification"],
         "transport": "http",
@@ -1762,7 +1762,7 @@ PRESET_CATALOG: List[Dict[str, Any]] = [
         "install_cmd": "Deployed at tools.distributed.systems",
         "package": "",
         "repo": "https://github.com/dsco/dsco-autobot",
-        "tool_count": 5,
+        "tool_count": 24,
         "required_env": ["JINA_API_KEY"],
         "optional_env": [],
         "tier": "vendor",

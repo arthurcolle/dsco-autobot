@@ -35,11 +35,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 # ── Config ──────────────────────────────────────────────────────────────────
-SERVER_PASSWORD = os.getenv("MCP_PASSWORD", "password2026!")
-# Keep token signatures stable across container restarts when TOKEN_SECRET is not set.
-TOKEN_SECRET = os.getenv("TOKEN_SECRET") or hashlib.sha256(
-    SERVER_PASSWORD.encode("utf-8")
-).hexdigest()
+# T02 (AUTH_UNIFIED.md): fail hard in production when no explicit secret is
+# configured; the sha256(MCP_PASSWORD) derivation remains dev-only.
+_ENV = os.getenv("ENV", "development")
+SERVER_PASSWORD = os.getenv(
+    "MCP_PASSWORD", "" if _ENV == "production" else "password2026!"
+)
+TOKEN_SECRET = os.getenv("TOKEN_SECRET", "")
+if _ENV == "production":
+    if not TOKEN_SECRET:
+        raise RuntimeError(
+            "AUTH CONFIG ERROR: TOKEN_SECRET must be set explicitly in production "
+            "(AUTH_UNIFIED.md T02 — derived-from-password secrets are disabled)."
+        )
+    if SERVER_PASSWORD == "password2026!":
+        raise RuntimeError(
+            "AUTH CONFIG ERROR: MCP_PASSWORD is the published default; refusing to "
+            "boot in production with the default operator password."
+        )
+else:
+    TOKEN_SECRET = TOKEN_SECRET or hashlib.sha256(
+        (SERVER_PASSWORD or "password2026!").encode("utf-8")
+    ).hexdigest()
 TOKEN_TTL = 86400 * 30  # 30 days
 REFRESH_TOKEN_TTL = 86400 * 90
 DEFAULT_BEARER_TOKEN = os.getenv("DEFAULT_BEARER_TOKEN", "")
@@ -79,26 +96,54 @@ def _b64url(data: bytes) -> str:
 
 
 def _make_token(client_id: str, user: Optional[dict] = None, scope: str = "mcp") -> str:
-    """Create a signed access token, optionally bound to a user identity."""
-    claims = {"c": client_id, "t": time.time(), "s": scope}
+    """Create a signed access token, optionally bound to a user identity.
+
+    T03 (AUTH_UNIFIED.md): new issuances carry unified-v2 claims — iss, aud,
+    exp, iat, v:2 — alongside the legacy terse keys, and a full 32-hex HMAC
+    (vs the legacy 16-hex MAC). _decode_token accepts both lengths, so existing
+    client tokens keep verifying until their 30d TTL expires them naturally.
+    """
+    now = time.time()
+    claims = {"c": client_id, "t": now, "s": scope}
     if user:
         claims["sub"] = user["user_id"]
         claims["em"] = user.get("email")
+    claims.update({
+        # This is the retiring ToolManagement issuer, not the canonical
+        # ZITADEL authority at auth.distributed.systems.
+        "iss": os.getenv(
+            "UNIFIED_LEGACY_ISSUER_URL", "https://tools.distributed.systems"
+        ),
+        "aud": os.getenv("UNIFIED_DEFAULT_AUD", "tools"),
+        "iat": int(now),
+        "exp": int(now) + TOKEN_TTL,
+        "v": 2,
+    })
     payload = json.dumps(claims).encode()
-    sig = hmac.new(TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()[:16]
+    sig = hmac.new(TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()[:32]
     return base64.urlsafe_b64encode(payload).decode() + "." + sig
 
 
 def _decode_token(token: str) -> Optional[dict]:
-    """Verify signature + expiry and return the token claims, else None."""
+    """Verify signature + expiry and return the token claims, else None.
+
+    Accepts both the legacy 16-hex MAC and the unified-v2 32-hex MAC, and
+    honours standard `exp` when present (legacy `t + TOKEN_TTL` otherwise).
+    """
     try:
         payload_b64, sig = token.rsplit(".", 1)
+        if len(sig) not in (16, 32):
+            return None
         payload = base64.urlsafe_b64decode(payload_b64)
-        expected_sig = hmac.new(TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()[:16]
+        expected_sig = hmac.new(TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()[: len(sig)]
         if not hmac.compare_digest(sig, expected_sig):
             return None
         data = json.loads(payload)
-        if data.get("t", 0) + TOKEN_TTL <= time.time():
+        exp = data.get("exp")
+        issued = data.get("t", 0)
+        if exp is not None and float(exp) <= time.time():
+            return None
+        if issued + TOKEN_TTL <= time.time():
             return None
         return data
     except Exception:
@@ -115,6 +160,36 @@ def get_token_identity(token: str) -> Optional[dict]:
         return None
     if DEFAULT_BEARER_TOKEN and hmac.compare_digest(token, DEFAULT_BEARER_TOKEN):
         return {"client_id": "operator", "scope": "mcp tools"}
+
+    # Canonical human identity: validate RS256, issuer, expiry and JWKS before
+    # exposing any claim. Customer/account selection is enforced separately by
+    # the request boundary because one principal may belong to many accounts.
+    if token.count(".") == 2:
+        try:
+            from .auth.unified import verify_token as verify_unified_token
+
+            canonical = verify_unified_token(token)
+        except Exception:
+            canonical = None
+        if canonical and canonical.token_format == "zitadel_jwt":
+            account_id = canonical.selected_account_id
+            if not account_id and len(canonical.account_ids) == 1:
+                account_id = next(iter(canonical.account_ids))
+            return {
+                "client_id": canonical.client_id,
+                "user_id": canonical.subject,
+                "principal_id": canonical.subject,
+                "email": canonical.email,
+                "email_verified": canonical.email_verified,
+                "scope": " ".join(sorted(canonical.scopes)),
+                "issuer": canonical.issuer,
+                "token_format": canonical.token_format,
+                "account_id": account_id,
+                "customer_id": account_id,
+                "account_ids": sorted(canonical.account_ids),
+                "roles": sorted(canonical.roles),
+                "is_platform_admin": canonical.is_platform_admin,
+            }
     data = _decode_token(token)
     if not data:
         return None
@@ -132,6 +207,9 @@ def get_token_identity(token: str) -> Optional[dict]:
         "user_id": data.get("sub"),
         "email": data.get("em"),
         "scope": data.get("s", "mcp"),
+        # unified-v2 additive fields (absent on legacy tokens; callers using
+        # only the legacy keys are unaffected).
+        **({k: data[k] for k in ("aud", "iss", "exp") if k in data}),
     }
 
 
@@ -247,7 +325,13 @@ async def openid_configuration(request: Request):
 async def register_client(request: Request):
     body = await request.json()
     client_id = secrets.token_hex(16)
-    client_secret = secrets.token_hex(32)
+    auth_method = str(body.get("token_endpoint_auth_method") or "client_secret_post")
+    if auth_method not in {"none", "client_secret_post"}:
+        return JSONResponse(
+            {"error": "invalid_client_metadata", "error_description": "unsupported token_endpoint_auth_method"},
+            status_code=400,
+        )
+    client_secret = None if auth_method == "none" else secrets.token_hex(32)
     redirect_uris = body.get("redirect_uris", [])
     client_name = body.get("client_name", "MCP Client")
 
@@ -260,18 +344,21 @@ async def register_client(request: Request):
             "logo_uri": body.get("logo_uri"),
             "client_uri": body.get("client_uri"),
             "created_at": time.time(),
+            "token_endpoint_auth_method": auth_method,
         }
     )
     logger.info(f"Registered OAuth client: {client_name} ({client_id})")
 
-    return {
+    registration = {
         "client_id": client_id,
-        "client_secret": client_secret,
         "client_id_issued_at": int(time.time()),
         "redirect_uris": redirect_uris,
         "client_name": client_name,
-        "token_endpoint_auth_method": "client_secret_post",
+        "token_endpoint_auth_method": auth_method,
     }
+    if client_secret:
+        registration["client_secret"] = client_secret
+    return registration
 
 
 # ── Authorization Endpoint ──────────────────────────────────────────────────
@@ -295,10 +382,20 @@ async def authorize_form(
     code_challenge: str = Query(""),
     code_challenge_method: str = Query("S256"),
     scope: str = Query("mcp"),
+    mode: str = Query("login"),
 ):
     """Sign in with Distributed — login + consent in one step."""
     base = _base_url(request)
     client = _oauth_store().get_client(client_id)
+    if not client:
+        raise HTTPException(status_code=400, detail="Unknown OAuth client")
+    if redirect_uri not in set(client.get("redirect_uris") or []):
+        raise HTTPException(status_code=400, detail="redirect_uri is not registered")
+    if response_type != "code":
+        raise HTTPException(status_code=400, detail="Only response_type=code is supported")
+    if client.get("token_endpoint_auth_method") == "none":
+        if not code_challenge or code_challenge_method != "S256":
+            raise HTTPException(status_code=400, detail="Public clients require PKCE S256")
     app_name = html.escape((client or {}).get("name") or client_id[:16])
     scope_items = "".join(
         f"<li>{html.escape(_SCOPE_DESCRIPTIONS.get(s, s))}</li>"
@@ -337,13 +434,25 @@ async def authorize_form(
     <input type="hidden" name="code_challenge" value="{html.escape(code_challenge)}">
     <input type="hidden" name="code_challenge_method" value="{html.escape(code_challenge_method)}">
     <input type="hidden" name="scope" value="{html.escape(scope)}">
+    <input type="hidden" id="mode" name="mode" value="{html.escape(mode)}">
+    <input type="text" id="display_name" name="display_name" placeholder="Display name" style="display:none">
     <input type="email" name="email" placeholder="Email (leave blank for operator password)" autofocus>
     <input type="password" name="password" placeholder="Password" required>
-    <button type="submit">Sign in &amp; approve</button>
+    <button id="submit" type="submit">Sign in &amp; approve</button>
   </form>
-  <div class="foot">No account? <a href="{base}/connect" target="_blank">Sign up</a> ·
+  <div class="foot"><a href="{base}/account" target="_blank">Account</a> ·
+  <a href="#" onclick="setMode('signup');return false">Create account</a> ·
   Your credentials never reach {app_name}.</div>
-</div></body></html>""")
+</div>
+<script>
+function setMode(mode) {{
+  document.getElementById('mode').value = mode;
+  document.getElementById('display_name').style.display = mode === 'signup' ? 'block' : 'none';
+  document.getElementById('submit').textContent = mode === 'signup' ? 'Join Distributed & continue' : 'Sign in & approve';
+}}
+setMode({json.dumps('signup' if mode == 'signup' else 'login')});
+</script>
+</body></html>""")
 
 
 @router.post("/oauth/authorize")
@@ -356,12 +465,29 @@ async def authorize_submit(
     code_challenge: str = Form(""),
     code_challenge_method: str = Form("S256"),
     scope: str = Form("mcp"),
+    mode: str = Form("login"),
+    display_name: str = Form(""),
 ):
     """Authenticate (user account or operator password), record consent, issue code."""
     user: Optional[dict] = None
     email = (email or "").strip()
 
-    if email:
+    client = _oauth_store().get_client(client_id)
+    if not client:
+        raise HTTPException(status_code=400, detail="Unknown OAuth client")
+    if redirect_uri not in set(client.get("redirect_uris") or []):
+        raise HTTPException(status_code=400, detail="redirect_uri is not registered")
+    if client.get("token_endpoint_auth_method") == "none":
+        if not code_challenge or code_challenge_method != "S256":
+            raise HTTPException(status_code=400, detail="Public clients require PKCE S256")
+
+    if mode == "signup":
+        try:
+            user = _user_store().create_user(email, password, display_name=display_name or None)
+            authorized = bool(user)
+        except ValueError:
+            authorized = False
+    elif email:
         user = _user_store().authenticate(email, password)
         if not user:
             authorized = False
@@ -423,6 +549,24 @@ async def _parse_body(request: Request) -> dict:
     return dict(form)
 
 
+def _authenticate_token_client(body: dict) -> tuple[Optional[dict], Optional[JSONResponse]]:
+    client_id = str(body.get("client_id") or "")
+    client = _oauth_store().get_client(client_id) if client_id else None
+    if not client:
+        return None, JSONResponse({"error": "invalid_client"}, status_code=401)
+    method = client.get("token_endpoint_auth_method") or (
+        "client_secret_post" if client.get("client_secret") else "none"
+    )
+    if method == "client_secret_post":
+        supplied = str(body.get("client_secret") or "")
+        expected = str(client.get("client_secret") or "")
+        if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+            return None, JSONResponse({"error": "invalid_client"}, status_code=401)
+    elif method != "none":
+        return None, JSONResponse({"error": "invalid_client"}, status_code=401)
+    return client, None
+
+
 def _token_response(base: str, client_id: str, user: Optional[dict], scope: str) -> dict:
     access_token = _make_token(client_id, user=user, scope=scope)
     out = {
@@ -464,7 +608,12 @@ async def token_exchange(request: Request):
     grant_type = body.get("grant_type")
 
     if grant_type == "refresh_token":
-        record = _oauth_store().consume_refresh_token(body.get("refresh_token", ""))
+        client, client_error = _authenticate_token_client(body)
+        if client_error:
+            return client_error
+        record = _oauth_store().consume_refresh_token(
+            body.get("refresh_token", ""), expected_client_id=client["client_id"]
+        )
         if not record:
             return JSONResponse(
                 {"error": "invalid_grant", "error_description": "Invalid or expired refresh token"},
@@ -490,9 +639,19 @@ async def token_exchange(request: Request):
     if not code or code not in _auth_codes:
         return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired code"}, status_code=400)
 
-    auth_info = _auth_codes.pop(code)
+    auth_info = _auth_codes[code]
+
+    if not client_id or client_id != auth_info.get("client_id"):
+        return JSONResponse({"error": "invalid_grant", "error_description": "Authorization code client mismatch"}, status_code=400)
+    client, client_error = _authenticate_token_client(body)
+    if client_error:
+        return client_error
+    redirect_uri = body.get("redirect_uri")
+    if redirect_uri and redirect_uri != auth_info.get("redirect_uri"):
+        return JSONResponse({"error": "invalid_grant", "error_description": "Authorization code redirect mismatch"}, status_code=400)
 
     if auth_info["expires"] < time.time():
+        _auth_codes.pop(code, None)
         return JSONResponse({"error": "invalid_grant", "error_description": "Code expired"}, status_code=400)
 
     # Verify PKCE
@@ -506,9 +665,11 @@ async def token_exchange(request: Request):
         if not hmac.compare_digest(computed, auth_info["code_challenge"]):
             return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
 
+    _auth_codes.pop(code, None)
+
     return _token_response(
         _base_url(request),
-        client_id or auth_info["client_id"],
+        client["client_id"],
         auth_info.get("user"),
         auth_info.get("scope", "mcp"),
     )
@@ -581,3 +742,40 @@ async def revoke(request: Request):
         except Exception as e:
             logger.warning(f"Revocation store write failed: {e}")
     return JSONResponse({"revoked": True})
+
+
+@router.post("/oauth/introspect")
+async def introspect(request: Request):
+    """RFC 7662-style token introspection (AUTH_UNIFIED.md T04).
+
+    Backed by the durable DuckDB revocation list — no signature check here by
+    design: every subdomain service calls this with an opaque token it already
+    signature-verified locally (see tool_management.auth.unified), and we must
+    not fail an introspection because of local-secret drift.
+
+    Never logs or echoes the presented token.
+    """
+    body = await _parse_body(request)
+    token = body.get("token", "")
+    if not token:
+        return JSONResponse({"active": False})
+    try:
+        revoked = _oauth_store().is_revoked(token)
+    except Exception as e:
+        logger.warning(f"Introspection store read failed: {e}")
+        revoked = False  # fail open, like unified.py's introspection path
+    if revoked:
+        return JSONResponse({"active": False, "revoked": True})
+    identity = _decode_token(token)
+    if not identity:
+        # Signature/expiry validity is the caller's job, but stale/expired
+        # tokens should not be reported as active.
+        return JSONResponse({"active": False, "stale_or_invalid": True})
+    return JSONResponse({
+        "active": True,
+        "revoked": False,
+        "scope": identity.get("s", "mcp"),
+        "client_id": identity.get("c"),
+        **({"sub": identity["sub"]} if identity.get("sub") else {}),
+        **({"aud": identity["aud"]} if identity.get("aud") else {}),
+    })

@@ -836,6 +836,25 @@ class GraphManagementClient:
         }
 
 
+# Registry projection uses GraphSub by default; legacy compatibility is explicit.
+from .graphsub_client import GraphSubClient
+
+
+def get_graph_substrate_client():
+    import os
+
+    substrate = os.getenv("GRAPH_SUBSTRATE", "graphsub")
+    if substrate == "graphsub":
+        url = os.getenv("GRAPHSUB_URL")
+        return GraphSubClient(
+            url, api_key=os.getenv("GRAPHSUB_BEARER_TOKEN") or os.getenv("GRAPHSUB_API_KEY")
+        ) if url else None
+    if substrate == "neo4j_compat":
+        url = os.getenv("NEO4J_URL")
+        return GraphManagementClient(url, api_key=os.getenv("NEO4J_API_KEY")) if url else None
+    raise ValueError("Unsupported GRAPH_SUBSTRATE")
+
+
 # Example usage
 if __name__ == "__main__":
     import asyncio

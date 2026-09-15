@@ -2084,6 +2084,19 @@ PROVIDERS: Dict[str, dict] = {
   }
 }
 
+# Native publication provider. It is intentionally explicit rather than
+# inferred from the generated SaaS catalog above.
+PROVIDERS.setdefault("substack", {
+    "addon_monthly_cents": None,
+    "categories": ["publishing"],
+    "display_name": "Substack",
+    "domain": "substack.com",
+    "key_env": "SUBSTACK_SID",
+    "live_capable": True,
+    "logo_url": "https://www.google.com/s2/favicons?domain=substack.com&sz=128",
+    "oauth": False,
+})
+
 # Longest-match-first so multi-word providers (google_maps) win over prefixes.
 _PROVIDERS_BY_LENGTH = sorted(PROVIDERS, key=len, reverse=True)
 

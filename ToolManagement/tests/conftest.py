@@ -48,6 +48,9 @@ def seed_offline_registry():
 
     catalog = {
         "distributed-search-mcp": [
+            ("retrieve", "adaptive evidence retrieval with deduplication, reranking, source diversity, and page grounding"),
+            ("answer", "retrieve tenant-scoped evidence and synthesize a cited answer through the DSCO Router"),
+            ("platform_status", "inspect Auth, Tools, Search, and Router dependency health"),
             ("search", "search the web and documents; find information, results, links"),
             ("read", "read and fetch a URL or document content, extract text"),
             ("verify", "verify claims against sources; fact-check search results"),
@@ -166,4 +169,3 @@ def _reset_global_singletons():
     # app, whose registered backends live in the process-wide store; tearing
     # it down per-test amputates their state. Tests that need isolation
     # (e.g. test_tool_store_rich_analytics) reset it in their own fixtures.
-
