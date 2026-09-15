@@ -41,7 +41,10 @@ document_volume = modal.Volume.from_name("document-qa-data", create_if_missing=T
     max_containers=10,
     buffer_containers=2,
     scaledown_window=60,
-    secrets=[modal.Secret.from_name("openai-secret")],
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("tool-registry-announce", required_keys=[]),
+    ],
 )
 @modal.concurrent(max_inputs=20, target_inputs=5)
 @modal.asgi_app()

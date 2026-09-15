@@ -20,7 +20,7 @@ image = (
 )
 
 
-@app.function(image=image, timeout=300, min_containers=1, max_containers=5, scaledown_window=120)
+@app.function(image=image, timeout=300, min_containers=1, max_containers=5, scaledown_window=120, secrets=[modal.Secret.from_name("tool-registry-announce", required_keys=[])])
 @modal.concurrent(max_inputs=20, target_inputs=5)
 @modal.asgi_app()
 def web():

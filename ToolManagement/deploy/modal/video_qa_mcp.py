@@ -59,6 +59,7 @@ video_volume = modal.Volume.from_name("video-qa-data", create_if_missing=True)
     secrets=[
         modal.Secret.from_name("openai-secret"),
         modal.Secret.from_name("youtube-cookies-firefox-v2"),
+        modal.Secret.from_name("tool-registry-announce", required_keys=[]),
     ],
 )
 @modal.concurrent(max_inputs=10, target_inputs=2)

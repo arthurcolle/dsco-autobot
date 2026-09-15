@@ -456,10 +456,12 @@ async def _execute_via_backend(
         get_tool_store().resolve_tool(tool_name)
     except Exception:
         return None
-    call_kwargs: Dict[str, Any] = {"tool": tool_name, "arguments": inputs, "tenant_id": tenant_id}
+    call_kwargs: Dict[str, Any] = {"tool": tool_name, "arguments": inputs}
     if timeout:
         call_kwargs["timeout"] = max(1.0, min(float(timeout), 600.0))
-    res = await _exec_backend(ToolCall(**call_kwargs))
+    call = ToolCall(**call_kwargs)
+    call.bind_tenant(tenant_id)
+    res = await _exec_backend(call)
     return ToolExecuteResponse(
         tool_id=tool_name,
         tool_name=tool_name,
