@@ -12,3 +12,6 @@ Completions/
 ToolManagement/.announce_token
 *.db-shm
 *.db-wal
+
+# Video QA worker cache (large wav/frame artifacts; exceeded GitHub 100MB limit)
+ToolManagement/video_data/
