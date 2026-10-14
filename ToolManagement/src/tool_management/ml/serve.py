@@ -15,15 +15,15 @@ from typing import List, Dict, Any, Optional
 
 # FastAPI app for local testing
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ---------- Request / Response schemas ----------
 
 class ScoreToolsRequest(BaseModel):
     task: str
-    candidates: List[Dict[str, str]]  # [{name, description}]
-    top_k: int = 5
+    candidates: List[Dict[str, str]] = Field(..., min_length=1, max_length=200)
+    top_k: int = Field(default=5, ge=1, le=200)
 
 
 class ScoreToolsResponse(BaseModel):
@@ -117,7 +117,8 @@ async def score_tools(request: ScoreToolsRequest):
 
     # Build rankings
     tool_scores = [
-        {"tool": request.candidates[i]["name"], "score": scores[i], "rank": 0}
+        {"tool": request.candidates[i]["name"], "score": scores[i], "rank": 0,
+         "candidate_index": i, "tool_id": request.candidates[i].get("tool_id")}
         for i in range(len(request.candidates))
     ]
     tool_scores.sort(key=lambda x: x["score"], reverse=True)

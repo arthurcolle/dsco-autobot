@@ -13,10 +13,14 @@ One connection buys semantic tool_search + execute over the full catalog
 """
 
 import os
-from fastapi import APIRouter, Request
+import logging
+from typing import List, Optional
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["discovery"])
+logger = logging.getLogger(__name__)
 
 SERVER_NAME = os.getenv("MCP_SERVER_NAME", "systems.distributed/tools")
 PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", "https://tools.distributed.systems")
@@ -29,6 +33,42 @@ DESCRIPTION = (
     "tool_search / execute meta-tools with lazy schema loading. Backed by "
     "Jina and Parallel search, per-tool OAuth, and a free discovery tier."
 )
+
+
+class ToolRetrieveRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000)
+    top_k: int = Field(default=8, ge=1, le=50)
+    recall: int = Field(default=40, ge=1, le=200)
+    backend: Optional[str] = None
+
+
+class ToolHybridRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000)
+    semantic_k: int = Field(default=17, ge=1, le=200)
+    fts_k: int = Field(default=11, ge=1, le=200)
+    top_k: int = Field(default=10, ge=1, le=50)
+    rerank: bool = False
+    backend: Optional[str] = None
+
+
+class ToolMultihopRequest(BaseModel):
+    goal: str = Field(..., min_length=1, max_length=4000)
+    steps: Optional[List[str]] = Field(default=None, max_length=20)
+    per_hop: int = Field(default=3, ge=1, le=20)
+
+
+async def _run_catalog_lookup(operation, *args, **kwargs):
+    """Expose catalog outages as unavailable instead of a successful empty list."""
+    import asyncio
+
+    try:
+        return await asyncio.to_thread(operation, *args, **kwargs)
+    except Exception as exc:
+        logger.exception("Catalog lookup failed")
+        raise HTTPException(status_code=503, detail={
+            "code": "TOOL_CATALOG_UNAVAILABLE",
+            "message": "Tool catalog lookup is temporarily unavailable.",
+        }) from exc
 
 
 def _base(request: Request) -> str:
@@ -186,15 +226,14 @@ async def services_index(refresh: bool = False):
 
 
 @router.post("/api/v1/tool-retrieve")
-async def tool_retrieve(request: Request):
+async def tool_retrieve(request: ToolRetrieveRequest):
     """Hardened retrieval: cosine recall -> Jina cross-encoder rerank -> top_k.
     Body: {"query": str, "top_k": int?, "backend": str?}"""
-    import asyncio
     from ..services import pg_retrieval
 
-    body = await request.json()
-    return await asyncio.to_thread(
-        pg_retrieval.retrieve_rerank, body.get("query", ""), int(body.get("top_k", 8))
+    return await _run_catalog_lookup(
+        pg_retrieval.retrieve_rerank, request.query, request.top_k,
+        recall=request.recall, backend_filter=request.backend,
     )
 
 
@@ -218,19 +257,17 @@ async def catalog_clean(request: Request):
 
 
 @router.post("/api/v1/tool-hybrid")
-async def tool_hybrid(request: Request):
+async def tool_hybrid(request: ToolHybridRequest):
     """Hybrid retrieval: fuse semantic (top-N) + FTS/BM25 (top-M) via RRF, boost
     by learned preferences, optionally rerank. Returns fused + both source
     rankings for cross-comparison.
     Body: {"query": str, "semantic_k": 17?, "fts_k": 11?, "top_k": 10?, "rerank": bool?}"""
-    import asyncio
     from ..services import pg_retrieval
 
-    body = await request.json()
-    return await asyncio.to_thread(
-        pg_retrieval.hybrid_search, body.get("query", ""),
-        int(body.get("semantic_k", 17)), int(body.get("fts_k", 11)),
-        int(body.get("top_k", 10)), bool(body.get("rerank", False)),
+    return await _run_catalog_lookup(
+        pg_retrieval.hybrid_search, request.query,
+        request.semantic_k, request.fts_k, request.top_k, request.rerank,
+        backend_filter=request.backend,
     )
 
 
@@ -252,16 +289,14 @@ async def tool_feedback(request: Request):
 
 
 @router.post("/api/v1/tool-multihop")
-async def tool_multihop(request: Request):
+async def tool_multihop(request: ToolMultihopRequest):
     """Multi-hop retrieval: assemble a cross-backend tool chain for a goal.
     Body: {"goal": str, "steps": [str]?, "per_hop": int?}"""
-    import asyncio
     from ..services import pg_retrieval
 
-    body = await request.json()
-    return await asyncio.to_thread(
-        pg_retrieval.multi_hop_retrieve, body.get("goal", ""),
-        body.get("steps"), int(body.get("per_hop", 3)),
+    return await _run_catalog_lookup(
+        pg_retrieval.multi_hop_retrieve, request.goal,
+        request.steps, request.per_hop,
     )
 
 

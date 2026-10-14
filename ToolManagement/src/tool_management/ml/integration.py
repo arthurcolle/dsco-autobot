@@ -14,11 +14,25 @@ Usage in tools_api.py:
 """
 
 import logging
+import math
 import os
+import time
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _validated_intent(label, confidence) -> Optional[Tuple[str, float]]:
+    """Accept only known intents with finite probability confidences."""
+    from .intent_labels import INTENT_LABELS
+
+    if not isinstance(label, str) or label.strip().lower() not in INTENT_LABELS:
+        return None
+    if (type(confidence) not in (int, float) or not math.isfinite(confidence)
+            or not 0.0 <= confidence <= 1.0):
+        return None
+    return label.strip().lower(), float(confidence)
 
 
 @dataclass
@@ -32,6 +46,7 @@ class ScoredTool:
     intent_match: bool = False
     historical_success_rate: Optional[float] = None
     observation_count: int = 0
+    tool_id: Optional[str] = None
 
 
 class SmartRecommender:
@@ -49,19 +64,22 @@ class SmartRecommender:
         jina_fallback: bool = True,
         feedback_blend_threshold: int = 20,
         model_timeout_ms: int = 2000,
+        model_health_ttl_seconds: float = 30.0,
     ):
         self.model_endpoint = model_endpoint or os.getenv(
             "TOOL_POLICY_ENDPOINT", "http://localhost:8100"
         )
         self.jina_fallback = jina_fallback
-        self.feedback_blend_threshold = feedback_blend_threshold
+        self.feedback_blend_threshold = max(1, feedback_blend_threshold)
         self.model_timeout_ms = model_timeout_ms
+        self.model_health_ttl_seconds = max(1.0, model_health_ttl_seconds)
+        self._model_health_checked_at = 0.0
 
         self._model_available = None  # None = unknown, True/False = tested
         self._http_client = None
 
     async def _get_client(self):
-        if self._http_client is None:
+        if self._http_client is None or self._http_client.is_closed:
             import httpx
             self._http_client = httpx.AsyncClient(timeout=self.model_timeout_ms / 1000)
         return self._http_client
@@ -74,7 +92,15 @@ class SmartRecommender:
             self._model_available = resp.status_code == 200
         except Exception:
             self._model_available = False
+        self._model_health_checked_at = time.monotonic()
         return self._model_available
+
+    async def _ensure_model_health(self) -> bool:
+        """Refresh failed probes so a restarted model can rejoin service."""
+        if (self._model_available is None or
+                time.monotonic() - self._model_health_checked_at >= self.model_health_ttl_seconds):
+            await self._check_model_health()
+        return bool(self._model_available)
 
     async def _score_with_model(
         self,
@@ -97,19 +123,49 @@ class SmartRecommender:
             data = resp.json()
 
             results = []
+            by_name = {}
+            for candidate in candidates:
+                by_name.setdefault(candidate["name"], []).append(candidate)
+            seen = set()
             for r in data.get("rankings", []):
+                if not isinstance(r, dict):
+                    continue
+                idx = r.get("candidate_index")
+                if type(idx) is int and 0 <= idx < len(candidates):
+                    candidate = candidates[idx]
+                elif "candidate_index" in r:
+                    continue
+                else:
+                    matches = by_name.get(r.get("tool"), [])
+                    # Legacy servers return names only. Duplicate names across
+                    # providers cannot be assigned safely; use indexed rerank.
+                    if len(matches) != 1:
+                        continue
+                    candidate = matches[0]
+                    idx = candidates.index(candidate)
+                score = r.get("score")
+                if (idx in seen or type(score) not in (int, float)
+                        or not math.isfinite(score)):
+                    continue
+                seen.add(idx)
+                confidence = data.get("confidence", 0.5)
+                if type(confidence) not in (int, float) or not math.isfinite(confidence):
+                    confidence = 0.5
                 results.append(ScoredTool(
-                    name=r["tool"],
-                    description="",  # not returned by model
-                    score=r["score"],
-                    confidence=data.get("confidence", 0.5),
+                    name=candidate["name"],
+                    description=candidate.get("description", ""),
+                    backend=candidate.get("backend"),
+                    tool_id=candidate.get("tool_id"),
+                    score=float(score),
+                    confidence=confidence,
                     source="model",
                 ))
 
-            return results
+            return results or None
         except Exception as e:
             logger.warning(f"Model scoring failed: {e}")
             self._model_available = False
+            self._model_health_checked_at = time.monotonic()
             return None
 
     async def _score_with_jina(
@@ -134,14 +190,22 @@ class SmartRecommender:
         )
 
         results = []
+        seen = set()
         for r in reranked:
-            idx = r.get("index", 0)
-            if idx < len(candidates):
+            if not isinstance(r, dict):
+                continue
+            idx = r.get("index")
+            score = r.get("relevance_score")
+            if (type(idx) is int and 0 <= idx < len(candidates) and idx not in seen
+                    and type(score) in (int, float) and math.isfinite(score)):
+                seen.add(idx)
                 results.append(ScoredTool(
                     name=candidates[idx]["name"],
                     description=candidates[idx].get("description", ""),
-                    score=r.get("relevance_score", 0.0),
-                    confidence=r.get("relevance_score", 0.0),
+                    backend=candidates[idx].get("backend"),
+                    tool_id=candidates[idx].get("tool_id"),
+                    score=float(score),
+                    confidence=float(score),
                     source="jina",
                 ))
 
@@ -220,9 +284,9 @@ class SmartRecommender:
         4. Add exploration bonus
         5. Return top-K sorted by blended score
         """
-        # Check model availability (cached after first check)
-        if self._model_available is None:
-            await self._check_model_health()
+        if not candidates or top_k <= 0:
+            return []
+        await self._ensure_model_health()
 
         # Score tools
         scored: Optional[List[ScoredTool]] = None
@@ -232,9 +296,12 @@ class SmartRecommender:
 
         if scored is None and self.jina_fallback:
             logger.info("Using Jina fallback for tool scoring")
-            scored = await self._score_with_jina(task, candidates, top_k=len(candidates))
+            try:
+                scored = await self._score_with_jina(task, candidates, top_k=len(candidates))
+            except Exception as exc:
+                logger.warning("Jina scoring failed, using heuristic fallback: %s", exc)
 
-        if scored is None:
+        if not scored:
             # Last resort: return candidates in order with uniform scores
             scored = [
                 ScoredTool(
@@ -243,12 +310,15 @@ class SmartRecommender:
                     score=1.0 / (i + 1),
                     confidence=0.1,
                     source="heuristic",
+                    backend=c.get("backend"),
+                    tool_id=c.get("tool_id"),
                 )
                 for i, c in enumerate(candidates)
             ]
 
         # Tag intent matches
         if intent:
+            intent = intent.lower()
             for tool in scored:
                 tool.intent_match = intent in tool.name.lower() or intent in tool.description.lower()
 
@@ -269,6 +339,7 @@ class SmartRecommender:
 
     async def classify_intent(self, task: str) -> Tuple[str, float]:
         """Classify task intent via model or Jina fallback."""
+        await self._ensure_model_health()
         if self._model_available:
             try:
                 client = await self._get_client()
@@ -278,20 +349,27 @@ class SmartRecommender:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                return data["intent"], data["confidence"]
-            except Exception:
-                pass
+                prediction = _validated_intent(data.get("intent"), data.get("confidence"))
+                if prediction is not None:
+                    return prediction
+                logger.warning("Model intent classification returned an invalid prediction")
+            except Exception as exc:
+                logger.warning("Model intent classification failed: %s", exc)
+                self._model_available = False
+                self._model_health_checked_at = time.monotonic()
 
         # Jina fallback
         try:
             from ..integrations.jina_provider import get_jina
-            from .model import INTENT_LABELS
+            from .intent_labels import INTENT_LABELS
 
             jina = get_jina()
             results = await jina.classify(task, INTENT_LABELS)
             if results and results[0].get("predictions"):
                 top = results[0]["predictions"][0]
-                return top["label"], top["score"]
+                prediction = _validated_intent(top.get("label"), top.get("score"))
+                if prediction is not None:
+                    return prediction
         except Exception:
             pass
 
@@ -299,6 +377,7 @@ class SmartRecommender:
 
     async def evaluate_output(self, task: str, output: str) -> float:
         """Evaluate output quality via model."""
+        await self._ensure_model_health()
         if self._model_available:
             try:
                 client = await self._get_client()

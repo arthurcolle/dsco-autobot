@@ -22,11 +22,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from .tools_api import ToolCall, ToolResult, execute_tool as execute_single_tool
+from .tools_api import (
+    ToolCall, ToolResult, execute_tool as execute_single_tool,
+    assert_safe_tool_arguments, resolve_execution_identity,
+)
+from ..core.delegated_execution import validated_identity_snapshot
 from ..core import PolicyConstraints, choose_execution_mode
 from ..core.streaming import EventType, get_streaming_executor
 from ..persistence import get_execution_store, get_tool_store
@@ -65,7 +69,27 @@ class PolicyConstraintsConfig(BaseModel):
     allow_job: bool = True
 
 
-class ExecuteRequest(BaseModel):
+class _AuthenticatedExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    _execution_identity: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    def bind_identity(self, identity: Dict[str, Any]) -> None:
+        self._execution_identity = validated_identity_snapshot(identity)
+
+
+def _bind_execution_request_identity(
+    request: _AuthenticatedExecutionRequest,
+    http_request: Optional[Request],
+    tool_names: List[str],
+) -> Dict[str, Any]:
+    if not request._execution_identity:
+        if http_request is None:
+            raise HTTPException(status_code=401, detail={"error": "execution_auth_required"})
+        request.bind_identity(resolve_execution_identity(http_request, tool_names))
+    return validated_identity_snapshot(request._execution_identity)
+
+
+class ExecuteRequest(_AuthenticatedExecutionRequest):
     tool_name: Optional[str] = Field(default=None, description="Tool name or backend:tool")
     tool: Optional[str] = Field(default=None, description="Alias of tool_name")
     arguments: Dict[str, Any] = Field(default_factory=dict)
@@ -178,7 +202,7 @@ class BatchCall(BaseModel):
     parent_execution_id: Optional[str] = None
 
 
-class BatchExecuteRequest(BaseModel):
+class BatchExecuteRequest(_AuthenticatedExecutionRequest):
     calls: List[BatchCall]
     execution: BatchExecutionMode = "parallel"
     max_parallel: Optional[int] = Field(
@@ -553,6 +577,20 @@ def _structured_error(
     if backend is not None:
         payload["backend"] = backend
     return payload
+
+
+def _terminal_execution_error(event: Any, fallback_code: str) -> Dict[str, Any]:
+    """Preserve explicit backend/tool failure details across sync and SSE."""
+    details = getattr(event, "data", None)
+    if isinstance(details, dict) and details.get("code") and details.get("message"):
+        return dict(details)
+    return _structured_error(
+        fallback_code,
+        getattr(event, "error", None)
+        or getattr(event, "message", None)
+        or "Tool execution failed",
+        retryable=False,
+    )
 
 
 def _default_use_case_catalog() -> Dict[str, Any]:
@@ -1554,6 +1592,7 @@ async def _submit_job(
     parent_execution_id: Optional[str] = None,
     callback_url: Optional[str] = None,
     callback_events: Optional[List[str]] = None,
+    execution_identity: Optional[Dict[str, Any]] = None,
 ):
     try:
         executor = get_streaming_executor()
@@ -1575,6 +1614,8 @@ async def _submit_job(
                 "_group_reducer_config": group_reducer_config or {},
             },
             client_id=client_id,
+            tenant_id=(execution_identity or {}).get("tenant_id"),
+            execution_identity=execution_identity,
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
@@ -1639,18 +1680,19 @@ async def _execute_sync(
     trace_id: Optional[str] = None,
     session_id: Optional[str] = None,
     parent_execution_id: Optional[str] = None,
+    execution_identity: Optional[Dict[str, Any]] = None,
 ) -> ToolResult:
-    return await execute_single_tool(
-        ToolCall(
-            tool=tool_name,
-            arguments=arguments,
-            timeout=timeout_ms / 1000.0,
-            idempotency_key=idempotency_key,
-            trace_id=trace_id,
-            session_id=session_id,
-            parent_execution_id=parent_execution_id,
-        )
+    call = ToolCall(
+        tool=tool_name,
+        arguments=arguments,
+        timeout=timeout_ms / 1000.0,
+        idempotency_key=idempotency_key,
+        trace_id=trace_id,
+        session_id=session_id,
+        parent_execution_id=parent_execution_id,
     )
+    call.bind_identity(execution_identity or {})
+    return await execute_single_tool(call)
 
 
 def _to_collected_response(
@@ -1786,6 +1828,13 @@ def _collected_response_from_execution(
     policy_decision: Optional[Dict[str, Any]],
     estimated_cost_cents: Optional[int],
 ) -> ExecuteResponse:
+    if terminal_event is None:
+        events = getattr(execution, "events", None)
+        if isinstance(events, list):
+            terminal_event = next(
+                (event for event in reversed(events) if getattr(event, "type", None) in _TERMINAL_EVENT_TYPES),
+                None,
+            )
     execution_id = getattr(execution, "execution_id", None)
     execution_trace_id = getattr(execution, "trace_id", None) or trace_id
     execution_session_id = getattr(execution, "session_id", None) or session_id
@@ -1846,13 +1895,7 @@ def _collected_response_from_execution(
         execution_mode="sync",
         estimated_cost_cents=estimated_cost_cents,
         call_id=execution_id,
-        error=_structured_error(
-            "TOOL_EXECUTION_FAILED",
-            getattr(terminal_event, "error", None)
-            or getattr(terminal_event, "message", None)
-            or "Tool execution failed",
-            retryable=True,
-        ),
+        error=_terminal_execution_error(terminal_event, "TOOL_EXECUTION_FAILED"),
         latency_ms=latency_ms,
         **flags,
         trace_id=execution_trace_id,
@@ -2024,11 +2067,7 @@ async def _stream_execution(
             yield _sse(
                 "error",
                 {
-                    "error": _structured_error(
-                        "BACKEND_ERROR",
-                        event.error or event.message or "Execution failed",
-                        retryable=True,
-                    ),
+                    "error": _terminal_execution_error(event, "BACKEND_ERROR"),
                     "event_id": event.event_id,
                     "replayed": event.replayed,
                 },
@@ -2055,8 +2094,10 @@ async def _stream_execution(
 
 
 @router.post("/execute")
-async def execute(request: ExecuteRequest):
+async def execute(request: ExecuteRequest, http_request: Request = None):
     tool_name = _resolve_tool_name(request.tool_name, request.tool)
+    identity = _bind_execution_request_identity(request, http_request, [tool_name])
+    assert_safe_tool_arguments(request.arguments)
     trace_id = _resolve_trace_id(request.trace_id)
     session_id = request.session_id
     parent_execution_id = request.parent_execution_id
@@ -2151,6 +2192,7 @@ async def execute(request: ExecuteRequest):
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
+            execution_identity=identity,
         )
         _update_policy_decision(
             decision_payload=policy_decision,
@@ -2187,6 +2229,7 @@ async def execute(request: ExecuteRequest):
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
+            execution_identity=identity,
         )
         _update_policy_decision(
             decision_payload=policy_decision,
@@ -2267,6 +2310,7 @@ async def execute(request: ExecuteRequest):
             trace_id=trace_id,
             session_id=session_id,
             parent_execution_id=parent_execution_id,
+            execution_identity=identity,
         )
         _update_policy_decision(
             decision_payload=policy_decision,
@@ -2336,6 +2380,7 @@ async def execute(request: ExecuteRequest):
                     trace_id=trace_id,
                     session_id=session_id,
                     parent_execution_id=parent_execution_id,
+                    execution_identity=identity,
                 ),
                 timeout=request.sync_timeout_ms / 1000.0,
             )
@@ -2392,6 +2437,7 @@ async def execute(request: ExecuteRequest):
         trace_id=trace_id,
         session_id=session_id,
         parent_execution_id=parent_execution_id,
+        execution_identity=identity,
     )
     return _to_collected_response(
         tool_name,
@@ -2478,13 +2524,16 @@ async def execution_admission_check(request: ExecutionAdmissionRequest):
 
 
 @router.post("/calls/{call_id}/control")
-async def control_call(call_id: str, request: ControlRequest):
+async def control_call(call_id: str, request: ControlRequest, http_request: Request = None):
+    if http_request is None:
+        raise HTTPException(status_code=401, detail={"error": "execution_auth_required"})
+    identity = resolve_execution_identity(http_request)
     try:
         executor = get_streaming_executor()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    execution = executor.get_execution(call_id)
+    execution = executor.get_execution(call_id, tenant_id=identity.get("tenant_id"))
     if not execution:
         raise HTTPException(status_code=404, detail=f"Call not found: {call_id}")
 
@@ -2903,13 +2952,15 @@ async def plan_real_world_use_case(use_case_id: str, request: UseCasePlanRequest
 
 
 @router.post("/use-cases/{use_case_id}/execute", response_model=UseCaseExecuteResponse)
-async def execute_real_world_use_case(use_case_id: str, request: UseCaseExecuteRequest):
+async def execute_real_world_use_case(
+    use_case_id: str, request: UseCaseExecuteRequest, http_request: Request = None,
+):
     catalog_version, use_case, _catalog = _resolve_use_case_or_404(use_case_id)
     batch_request, rendered_batch, unresolved, template_name = _build_use_case_batch_request(
         use_case=use_case,
         request=request,
     )
-    execution = await execute_batch(batch_request)
+    execution = await execute_batch(batch_request, http_request)
     return UseCaseExecuteResponse(
         use_case_id=use_case_id,
         catalog_version=catalog_version,
@@ -3059,7 +3110,12 @@ async def plan_execute_batch(request: BatchExecuteRequest):
 
 
 @router.post("/execute/batch", response_model=BatchExecuteResponse)
-async def execute_batch(request: BatchExecuteRequest):
+async def execute_batch(request: BatchExecuteRequest, http_request: Request = None):
+    identity = _bind_execution_request_identity(
+        request, http_request, [_resolve_tool_name(call.tool_name, call.tool) for call in request.calls],
+    )
+    for call in request.calls:
+        assert_safe_tool_arguments(call.arguments)
     if request.execution not in ("parallel", "sequential"):
         raise HTTPException(status_code=400, detail="execution must be parallel or sequential")
     max_calls = max(1, int(os.getenv("EXECUTE_BATCH_MAX_CALLS", "256")))
@@ -3310,8 +3366,7 @@ async def execute_batch(request: BatchExecuteRequest):
         ]
 
     async def _run_call(call: BatchCall):
-        return await execute(
-            ExecuteRequest(
+        single_request = ExecuteRequest(
                 tool_name=call.tool_name,
                 tool=call.tool,
                 arguments=call.arguments,
@@ -3335,8 +3390,9 @@ async def execute_batch(request: BatchExecuteRequest):
                 trace_id=call.trace_id or batch_trace_id,
                 session_id=call.session_id or batch_session_id,
                 parent_execution_id=call.parent_execution_id,
-            )
         )
+        single_request.bind_identity(identity)
+        return await execute(single_request)
 
     def _normalize_batch_result(call: BatchCall, raw: Any) -> ExecuteResponse:
         tool_name = _resolve_tool_name(call.tool_name, call.tool)

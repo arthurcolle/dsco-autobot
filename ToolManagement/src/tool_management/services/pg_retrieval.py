@@ -11,6 +11,7 @@ HTTP calls are blocking and would otherwise stall the event loop.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -62,36 +63,43 @@ def _tool_obj(name, desc, schema):
             "inputSchema": schema if isinstance(schema, dict) else {}}
 
 
-def semantic_search(query: str, k: int, qvec: Optional[List[float]] = None) -> List[Dict]:
+def semantic_search(query: str, k: int, qvec: Optional[List[float]] = None,
+                    backend_filter: Optional[str] = None) -> List[Dict]:
     qvec = qvec if qvec is not None else _embed_query(query)
     if not qvec:
         return []
-    cur = _pg().cursor()
-    cur.execute(
-        "SELECT f.tool_id, f.backend, t.name, t.description, t.input_schema, "
-        "1 - (f.purpose_embedding <=> %s::vector) AS score "
-        "FROM registry.tool_facets f JOIN registry.tools t ON f.tool_id = t.tool_id "
-        "WHERE f.purpose_embedding IS NOT NULL "
-        "ORDER BY f.purpose_embedding <=> %s::vector LIMIT %s",
-        (_vec(qvec), _vec(qvec), k),
-    )
+    with _pg().cursor() as cur:
+        cur.execute(
+            "SELECT f.tool_id, f.backend, t.name, t.description, t.input_schema, "
+            "1 - (f.purpose_embedding <=> %s::vector) AS score "
+            "FROM registry.tool_facets f JOIN registry.tools t ON f.tool_id = t.tool_id "
+            "WHERE f.purpose_embedding IS NOT NULL "
+            + ("AND f.backend = %s " if backend_filter else "")
+            + "ORDER BY f.purpose_embedding <=> %s::vector LIMIT %s",
+            (_vec(qvec), *((backend_filter,) if backend_filter else ()), _vec(qvec), k),
+        )
+        rows = cur.fetchall()
     out = []
-    for tid, backend, name, desc, sch, score in cur.fetchall():
+    for tid, backend, name, desc, sch, score in rows:
         out.append({"tool_id": tid, "backend": backend, "name": name,
                     "tool": _tool_obj(name, desc, sch), "semantic_score": float(score)})
     return out
 
 
-def fts_search(query: str, k: int) -> List[Dict]:
-    cur = _pg().cursor()
-    cur.execute(
-        "SELECT tool_id, backend_id, name, ts_rank(fts, websearch_to_tsquery('english', %s)) AS r "
-        "FROM registry.tools WHERE fts @@ websearch_to_tsquery('english', %s) "
-        "ORDER BY r DESC LIMIT %s",
-        (query, query, k),
-    )
-    return [{"tool_id": tid, "backend": backend, "name": name, "fts_score": float(r)}
-            for tid, backend, name, r in cur.fetchall()]
+def fts_search(query: str, k: int, backend_filter: Optional[str] = None) -> List[Dict]:
+    with _pg().cursor() as cur:
+        cur.execute(
+            "SELECT tool_id, backend_id, name, description, input_schema, "
+            "ts_rank(fts, websearch_to_tsquery('english', %s)) AS r "
+            "FROM registry.tools WHERE fts @@ websearch_to_tsquery('english', %s) "
+            + ("AND backend_id = %s " if backend_filter else "")
+            + "ORDER BY r DESC, tool_id LIMIT %s",
+            (query, query, *((backend_filter,) if backend_filter else ()), k),
+        )
+        rows = cur.fetchall()
+    return [{"tool_id": tid, "backend": backend, "name": name,
+             "tool": _tool_obj(name, desc, schema), "fts_score": float(r)}
+            for tid, backend, name, desc, schema, r in rows]
 
 
 def _rerank(query: str, docs: List[str], top_k: int) -> Optional[List[Dict]]:
@@ -113,37 +121,69 @@ def _rerank(query: str, docs: List[str], top_k: int) -> Optional[List[Dict]]:
 
 
 def _doc(t: Dict) -> str:
-    tool = t.get("tool", {})
+    tool = t.get("tool") or t
     props = ", ".join(list((tool.get("inputSchema") or {}).get("properties", {}).keys())[:10])
     return f"{tool.get('name','')} [{t.get('backend','')}]: {tool.get('description','')}" + (f" (params: {props})" if props else "")
 
 
-def retrieve_rerank(query: str, top_k: int = 8, recall: int = 40) -> Dict[str, Any]:
-    cands = semantic_search(query, recall)
+def _apply_rerank(candidates: List[Dict], rankings, top_k: int):
+    """Validate provider indices against the submitted corpus and keep recall."""
+    out, seen = [], set()
+    for item in rankings if isinstance(rankings, list) else []:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        if type(idx) is not int or not 0 <= idx < len(candidates) or idx in seen:
+            continue
+        score = item.get("relevance_score")
+        if type(score) not in (int, float) or not math.isfinite(score):
+            continue
+        seen.add(idx)
+        candidate = dict(candidates[idx])
+        candidate["rerank_score"] = float(score)
+        out.append(candidate)
+    applied = bool(out)
+    out.extend(candidate for idx, candidate in enumerate(candidates) if idx not in seen)
+    return out[:top_k], applied
+
+
+def retrieve_rerank(query: str, top_k: int = 8, recall: int = 40,
+                    backend_filter: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        cands = semantic_search(query, max(recall, top_k), backend_filter=backend_filter)
+    except Exception as exc:
+        logger.warning("semantic recall failed, trying lexical recall: %s", exc)
+        cands = []
+    if not cands:
+        cands = fts_search(query, max(recall, top_k), backend_filter=backend_filter)
     if not cands:
         return {"query": query, "reranked": False, "tools": []}
     rr = _rerank(query, [_doc(c) for c in cands], top_k)
-    if rr is not None:
-        out = []
-        for item in rr:
-            i = item.get("index")
-            if i is not None and i < len(cands):
-                c = dict(cands[i]); c["rerank_score"] = item.get("relevance_score"); out.append(c)
-        return {"query": query, "reranked": True, "candidates_considered": len(cands), "tools": out}
-    return {"query": query, "reranked": False, "candidates_considered": len(cands), "tools": cands[:top_k]}
+    out, applied = _apply_rerank(cands, rr, top_k)
+    return {"query": query, "reranked": applied, "candidates_considered": len(cands), "tools": out}
 
 
 def hybrid_search(query: str, semantic_k: int = 17, fts_k: int = 11, top_k: int = 10,
-                  rerank: bool = False) -> Dict[str, Any]:
+                  rerank: bool = False, backend_filter: Optional[str] = None) -> Dict[str, Any]:
     qvec = _embed_query(query)
-    sem = semantic_search(query, semantic_k, qvec=qvec)
-    fts = fts_search(query, fts_k)
+    try:
+        sem = semantic_search(query, semantic_k, qvec=qvec, backend_filter=backend_filter) if qvec else []
+    except Exception as exc:
+        logger.warning("hybrid semantic recall failed: %s", exc)
+        sem = []
+    try:
+        fts = fts_search(query, fts_k, backend_filter=backend_filter)
+    except Exception as exc:
+        if not sem:
+            raise
+        logger.warning("hybrid lexical recall failed, using semantic candidates: %s", exc)
+        fts = []
     RRF = 60
     fused: Dict[str, Dict] = {}
     for rank, s in enumerate(sem):
         fused[s["tool_id"]] = {**s, "sem_rank": rank}
     for rank, f in enumerate(fts):
-        e = fused.setdefault(f["tool_id"], {"tool_id": f["tool_id"], "backend": f.get("backend"), "name": f.get("name")})
+        e = fused.setdefault(f["tool_id"], dict(f))
         e["fts_rank"] = rank
     for e in fused.values():
         score = 0.0
@@ -154,16 +194,13 @@ def hybrid_search(query: str, semantic_k: int = 17, fts_k: int = 11, top_k: int 
         e["fused_score"] = round(score, 6)
         e["signals"] = {"semantic": "sem_rank" in e, "lexical": "fts_rank" in e}
     ranked = sorted(fused.values(), key=lambda x: x["fused_score"], reverse=True)
+    applied = False
     if rerank and ranked:
-        rr = _rerank(query, [_doc(r) for r in ranked[:max(top_k * 3, 20)]], top_k)
-        if rr is not None:
-            reordered = []
-            for item in rr:
-                i = item.get("index")
-                if i is not None and i < len(ranked):
-                    x = dict(ranked[i]); x["rerank_score"] = item.get("relevance_score"); reordered.append(x)
-            ranked = reordered or ranked
-    return {"query": query, "method": "neon-pgvector+fts+rrf" + ("+rerank" if rerank else ""),
+        rerank_candidates = ranked[:max(top_k * 3, 20)]
+        rr = _rerank(query, [_doc(r) for r in rerank_candidates], top_k)
+        ranked, applied = _apply_rerank(rerank_candidates, rr, top_k)
+    return {"query": query, "method": "neon-pgvector+fts+rrf" + ("+rerank" if applied else ""),
+            "reranked": applied,
             "hybrid": ranked[:top_k],
             "semantic_only": [{"tool_id": s["tool_id"], "backend": s.get("backend")} for s in sem[:top_k]],
             "lexical_only": [{"tool_id": f["tool_id"], "backend": f.get("backend")} for f in fts[:top_k]]}

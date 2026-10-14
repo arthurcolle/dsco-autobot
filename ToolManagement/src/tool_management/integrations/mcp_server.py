@@ -24,6 +24,14 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 import httpx
 
+from native.runtime_guidance import (
+    InvalidGuidanceParams,
+    get_prompt,
+    list_prompts,
+    list_skill_resources,
+    read_skill_resource,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -284,12 +292,9 @@ class MCPError(BaseModel):
 @dataclass
 class ServerCapabilities:
     """Server capabilities for MCP"""
-    tools: Dict[str, Any] = field(default_factory=lambda: {"listChanged": True})
-    resources: Dict[str, Any] = field(default_factory=lambda: {
-        "subscribe": True,
-        "listChanged": True
-    })
-    prompts: Dict[str, Any] = field(default_factory=lambda: {"listChanged": True})
+    tools: Dict[str, Any] = field(default_factory=dict)
+    resources: Dict[str, Any] = field(default_factory=dict)
+    prompts: Dict[str, Any] = field(default_factory=dict)
     logging: Dict[str, Any] = field(default_factory=dict)
     completions: Dict[str, Any] = field(default_factory=dict)
     experimental: Dict[str, Any] = field(default_factory=dict)
@@ -456,6 +461,8 @@ class MCPServer:
 
             return MCPResponse(id=request.id, result=result)
 
+        except InvalidGuidanceParams as e:
+            return self._error_response(request.id, ErrorCode.INVALID_PARAMS.value, str(e))
         except Exception as e:
             logger.error(f"Error handling request {request.method}: {e}")
             return self._error_response(
@@ -505,11 +512,9 @@ class MCPServer:
             },
             "protocolVersion": self.server_info["protocolVersion"],
             "capabilities": {
-                "tools": {"listChanged": True},
-                "resources": {"subscribe": True, "listChanged": True},
-                "prompts": {"listChanged": True},
-                "logging": {},
-                "completions": {}
+                "tools": {},
+                "resources": {},
+                "prompts": {}
             }
         }
 
@@ -3040,10 +3045,17 @@ class MCPServer:
             "isError": True
         }
 
+    async def _handle_prompts_list(self, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+        """List the static operational prompts shared with native workers."""
+        return list_prompts()
+
+    async def _handle_prompts_get(self, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+        return get_prompt(params)
+
     async def _handle_resources_list(self, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
         """Handle resources/list request"""
         # Create resources from tools that have UI effects or data outputs
-        resources = []
+        resources = list_skill_resources()["resources"]
 
         for tool in self.tool_storage.values():
             if tool.get("has_ui_effects"):
@@ -3071,8 +3083,10 @@ class MCPServer:
     async def _handle_resources_read(self, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
         """Handle resources/read request"""
         uri = params.get("uri")
+        if isinstance(uri, str) and uri.startswith("dsco://skills/"):
+            return read_skill_resource(uri)
 
-        if not uri or not uri.startswith("tool://"):
+        if not uri or not isinstance(uri, str) or not uri.startswith("tool://"):
             raise ValueError(f"Invalid resource URI: {uri}")
 
         # Parse URI to get tool ID and resource type

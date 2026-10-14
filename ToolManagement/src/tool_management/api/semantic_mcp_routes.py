@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
+
+from ..oauth import require_bearer, make_401_response
 import httpx
 
 from ..registry import get_registry
@@ -89,6 +91,9 @@ async def semantic_mcp_sse_get(request: Request):
 
     Like regular MCP but with semantic tool discovery.
     """
+    if require_bearer(request) is None:
+        return make_401_response(request)
+
     session_id = str(uuid4())
 
     async def event_generator():
@@ -143,8 +148,10 @@ async def semantic_mcp_jsonrpc(request: Request):
 
     Supports standard MCP protocol + semantic search extensions.
     """
+    if require_bearer(request) is None:
+        return make_401_response(request)
+
     session_id = request.headers.get("X-Session-ID", str(uuid4()))
-    tool_store = get_tool_store()
 
     body = {}
     try:
@@ -162,23 +169,24 @@ async def semantic_mcp_jsonrpc(request: Request):
                 response = await _handle_tools_search(mcp_request, session_id)
             elif mcp_request.method == "tools/call":
                 # Execute tool with access tracking
-                response = await _handle_tool_call_tracked(mcp_request, session_id)
+                return await _handle_tool_call_tracked(mcp_request, session_id, request)
             elif mcp_request.method == "initialize":
                 response = await _handle_initialize(mcp_request, session_id)
             else:
-                # Delegate to standard MCP handler
-                response = MCPResponse(
-                    id=mcp_request.id,
-                    error={
-                        "code": -32601,
-                        "message": f"Method not found: {mcp_request.method}"
-                    }
-                )
+                # Preserve the original request and its tenant/authentication
+                # context for standard MCP methods. The canonical handler
+                # owns resources, prompts and future protocol extensions.
+                from .mcp_routes import mcp_jsonrpc
+
+                return await mcp_jsonrpc(request)
 
             return response.model_dump(exclude_none=True)
         else:
-            # Notification
-            return {"status": "ok"}
+            # The canonical endpoint accepts notifications with HTTP 202;
+            # a JSON success body breaks strict Streamable HTTP clients.
+            from .mcp_routes import mcp_jsonrpc
+
+            return await mcp_jsonrpc(request)
 
     except Exception as e:
         logger.error(f"Error handling semantic MCP request: {e}")
@@ -205,11 +213,10 @@ async def _handle_initialize(mcp_request: MCPRequest, session_id: str) -> MCPRes
             "protocolVersion": "2024-11-05",
             "capabilities": {
                 "tools": {
-                    "listChanged": True,
                     "semanticSearch": True  # Extension capability
                 },
-                "resources": {"subscribe": True, "listChanged": True},
-                "prompts": {"listChanged": True}
+                "prompts": {},
+                "resources": {}
             }
         }
     )
@@ -300,63 +307,26 @@ async def _handle_tools_search(mcp_request: MCPRequest, session_id: str) -> MCPR
     )
 
 
-async def _handle_tool_call_tracked(mcp_request: MCPRequest, session_id: str) -> MCPResponse:
-    """Handle tool call with access tracking"""
-    tool_store = get_tool_store()
+async def _handle_tool_call_tracked(
+    mcp_request: MCPRequest, session_id: str, http_request: Request
+):
+    """Track access and execute through the canonical, tenant-aware MCP route.
+
+    An unauthenticated localhost composition call loses the caller's identity
+    and bypasses the credential/billing policy used by the normal MCP surface.
+    Access telemetry must also never make a valid execution fail.
+    """
     params = mcp_request.params or {}
-
     tool_name = params.get("name")
-    tool_args = params.get("arguments", {})
-
-    # Mark tool as accessed
     if tool_name:
-        tool_store.mark_accessed(tool_name)
+        try:
+            get_tool_store().mark_accessed(tool_name)
+        except Exception:
+            logger.warning("Could not track semantic tool access", exc_info=True)
 
-    # Execute tool via composition API
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "http://localhost:2016/compose/seq",
-                json={
-                    "tools": [tool_name],
-                    "arguments": [tool_args],
-                    "inputs": {}
-                },
-                timeout=60.0
-            )
+    from .mcp_routes import mcp_jsonrpc
 
-            if response.status_code == 200:
-                result = response.json()
-
-                return MCPResponse(
-                    id=mcp_request.id,
-                    result={
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(result.get("result"), indent=2)
-                            }
-                        ],
-                        "isError": result.get("status") == "failed"
-                    }
-                )
-            else:
-                raise Exception(f"Tool execution failed: {response.text}")
-
-    except Exception as e:
-        logger.error(f"Error executing tool {tool_name}: {e}")
-        return MCPResponse(
-            id=mcp_request.id,
-            result={
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Error executing tool: {str(e)}"
-                    }
-                ],
-                "isError": True
-            }
-        )
+    return await mcp_jsonrpc(http_request)
 
 
 @router.get("/health")

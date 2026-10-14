@@ -809,9 +809,9 @@ async def mcp_capabilities():
             "version": "1.0.0"
         },
         "capabilities": {
-            "tools": {"listChanged": True},
-            "resources": {"subscribe": True, "listChanged": True},
-            "prompts": {"listChanged": True},
+            "tools": {},
+            "resources": {},
+            "prompts": {},
             "analytics": {
                 "usage": True,
                 "toolMetrics": True,

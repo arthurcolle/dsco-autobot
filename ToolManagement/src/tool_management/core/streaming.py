@@ -20,6 +20,8 @@ import uuid
 import time
 import json
 import logging
+import math
+import inspect
 from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,6 +29,43 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+
+class BackendExecutionError(RuntimeError):
+    """A terminal backend failure that must not replay an accepted call."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        backend: str,
+        code: str = "TOOL_EXECUTION_FAILED",
+        category: str = "provider",
+        cause: Any = None,
+    ):
+        super().__init__(message)
+        self.error = {
+            "code": code,
+            "message": message,
+            "category": category,
+            "retryable": False,
+            "backend": backend,
+        }
+        if cause is not None:
+            self.error["cause"] = cause
+
+
+def _require_successful_tool_result(result: Any, backend: str) -> Any:
+    """MCP isError is a definitive tool failure, not transport uncertainty."""
+    if isinstance(result, dict) and result.get("isError") is True:
+        message = "Backend returned a tool error"
+        content = result.get("content")
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                message = block["text"]
+                break
+        raise BackendExecutionError(message, backend=backend, cause=result)
+    return result
 
 
 def validate_callback_url(url: str) -> str:
@@ -185,6 +224,7 @@ class StreamingExecution:
     detached: bool = False
     dedupe_key: Optional[str] = None
     control_state: Dict[str, Any] = field(default_factory=dict)
+    _execution_identity: Dict[str, Any] = field(default_factory=dict, repr=False)
     _event_persistor: Optional[Callable[["StreamingExecution", ToolEvent], None]] = None
     _backend_canceller: Optional[Callable[[], Awaitable[None]]] = None
 
@@ -342,6 +382,7 @@ class StreamingExecutor:
         group_reducer_config: Optional[Dict[str, Any]] = None,
         callback_url: Optional[str] = None,
         callback_events: Optional[List[str]] = None,
+        execution_identity: Optional[Dict[str, Any]] = None,
     ) -> StreamingExecution:
         """
         Start a streaming execution.
@@ -355,6 +396,15 @@ class StreamingExecutor:
             StreamingExecution that can be subscribed to
         """
         normalized_priority = self._normalize_priority(priority)
+        identity_snapshot: Dict[str, Any] = {}
+        if execution_identity is not None:
+            from .delegated_execution import validated_identity_snapshot
+
+            identity_snapshot = validated_identity_snapshot(execution_identity)
+            identity_tenant = identity_snapshot.get("tenant_id")
+            if tenant_id is not None and tenant_id != identity_tenant:
+                raise ValueError("Execution tenant does not match its authenticated identity")
+            tenant_id = identity_tenant
         now = time.time()
         resolved_trace_id = trace_id or (inputs.get("_trace_id") if isinstance(inputs, dict) else None)
         resolved_session_id = session_id or (inputs.get("_session_id") if isinstance(inputs, dict) else None)
@@ -479,6 +529,7 @@ class StreamingExecutor:
             queued_at=now,
             queue_priority=normalized_priority,
             dedupe_key=effective_dedupe_key,
+            _execution_identity=identity_snapshot,
         )
         execution.control_state["submit_count"] = 1
         if execution.trace_id:
@@ -624,24 +675,37 @@ class StreamingExecutor:
 
         try:
             # Execute with progress callback
+            executor_kwargs = {
+                "progress_callback": progress_callback,
+                "cancel_event": execution._cancel_event,
+                "execution_id": execution.execution_id,
+                "tenant_id": execution.tenant_id,
+                "execution_identity": execution._execution_identity,
+            }
+            # Negotiate legacy callable signatures before invocation. Catching
+            # a body TypeError and invoking again can duplicate external writes.
             try:
-                result = await self.tool_executor(
-                    execution.tool_name,
-                    inputs,
-                    progress_callback=progress_callback,
-                    cancel_event=execution._cancel_event,
-                    execution_id=execution.execution_id,
-                    tenant_id=execution.tenant_id,
-                )
-            except TypeError as exc:
-                # Backward compatibility for legacy executors that don't accept new kwargs.
-                if "unexpected keyword argument" not in str(exc):
-                    raise
-                result = await self.tool_executor(
-                    execution.tool_name,
-                    inputs,
-                    progress_callback=progress_callback,
-                )
+                parameters = inspect.signature(self.tool_executor).parameters
+            except (TypeError, ValueError):
+                parameters = None
+            if parameters is not None and not any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            ):
+                identity_parameter = parameters.get("execution_identity")
+                if execution._execution_identity and (
+                    identity_parameter is None or identity_parameter.kind not in {
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+                    }
+                ):
+                    raise RuntimeError("Executor does not support authenticated execution identity")
+                executor_kwargs = {
+                    key: value for key, value in executor_kwargs.items()
+                    if key in parameters and parameters[key].kind in {
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+                    }
+                }
+            result = await self.tool_executor(execution.tool_name, inputs, **executor_kwargs)
 
             execution.status = "completed"
             execution.completed_at = time.time()
@@ -680,6 +744,7 @@ class StreamingExecutor:
                 execution_id=execution.execution_id,
                 error=str(e),
                 message=f"Error: {e}",
+                data=getattr(e, "error", None),
             ))
 
         finally:
@@ -808,6 +873,8 @@ class StreamingExecutor:
         return True
 
     def update_control_state(self, execution_id: str, values: Dict[str, Any]) -> bool:
+        if "_execution_identity" in values:
+            raise ValueError("Execution identity cannot be modified through control state")
         """Attach control metadata to an execution (priority, filters, etc.)."""
         execution = self._executions.get(execution_id)
         if not execution:
@@ -1130,7 +1197,7 @@ class StreamingExecutor:
             last_message=last_message,
             error=error,
             result=result,
-            control_state=execution.control_state,
+            control_state={**execution.control_state, "_execution_identity": execution._execution_identity},
         )
 
     def _hydrate_execution(
@@ -1164,7 +1231,14 @@ class StreamingExecutor:
         execution.queued_at = row.get("queued_at")
         execution.started_at = row.get("started_at")
         execution.completed_at = row.get("completed_at")
-        execution.control_state = row.get("control_state", {}) or {}
+        execution.control_state = dict(row.get("control_state", {}) or {})
+        persisted_identity = execution.control_state.pop("_execution_identity", None)
+        if persisted_identity:
+            from .delegated_execution import validated_identity_snapshot
+
+            execution._execution_identity = validated_identity_snapshot(persisted_identity)
+            if execution._execution_identity.get("tenant_id") != execution.tenant_id:
+                raise ValueError("Persisted execution tenant does not match its authenticated identity")
         execution._event_persistor = self._persist_event
 
         try:
@@ -1518,8 +1592,11 @@ def create_tool_executor_for_jobs():
     from uuid import uuid4 as _uuid4
     from ..api.tools_api import _backend_headers
 
+    _execution_timeout_seconds = float(os.getenv("BACKEND_EXECUTION_TIMEOUT_SECONDS", "300"))
+    if not math.isfinite(_execution_timeout_seconds) or _execution_timeout_seconds <= 0:
+        raise ValueError("BACKEND_EXECUTION_TIMEOUT_SECONDS must be finite and positive")
     _shared_client = _httpx.AsyncClient(
-        timeout=_httpx.Timeout(None, connect=15.0),
+        timeout=_httpx.Timeout(_execution_timeout_seconds, connect=min(15.0, _execution_timeout_seconds)),
         limits=_httpx.Limits(max_keepalive_connections=50, max_connections=200),
     )
 
@@ -1530,7 +1607,8 @@ def create_tool_executor_for_jobs():
     _health_probe_timeout = float(os.getenv("BACKEND_HEALTH_PROBE_TIMEOUT_SECONDS", "2.5"))
     _stream_backend_default = os.getenv("ENABLE_BACKEND_STREAMING_PATH", "1") == "1"
     # Max seconds to wait between two SSE frames from a backend stream before
-    # we treat the stream as stalled and fail over to the non-streaming path.
+    # we treat the stream as stalled. An accepted stream must not be replayed
+    # through the non-streaming path, since tools can perform external writes.
     # Must exceed a backend's worst-case time-to-first-chunk (search backends
     # run the full handler before streaming, ~20s), so default generously.
     _stream_idle_timeout = float(os.getenv("BACKEND_STREAM_IDLE_TIMEOUT_SECONDS", "45"))
@@ -1653,6 +1731,7 @@ def create_tool_executor_for_jobs():
         progress_callback: Optional[Callable[..., Awaitable[None]]],
         cancel_event: Optional[asyncio.Event],
         execution_id: Optional[str],
+        timeout_seconds: float,
     ) -> Optional[Any]:
         stream_url = f"{base_url.rstrip('/')}/execute/stream"
         headers = {
@@ -1668,16 +1747,24 @@ def create_tool_executor_for_jobs():
             stream_url,
             json={"name": resolved_name, "arguments": inputs},
             headers=headers,
-            timeout=None,
+            timeout=_httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds)),
         ) as response:
             content_type = str(response.headers.get("content-type", "")).lower()
-            if response.status_code == 404:
+            if response.status_code in {404, 405}:
                 return None
             if response.status_code >= 400:
                 text = (await response.aread()).decode(errors="ignore")
                 raise RuntimeError(f"Streaming endpoint failed ({response.status_code}): {text[:300]}")
             if "text/event-stream" not in content_type:
-                return None
+                # HTTP 200 can mean that the tool already ran. A malformed
+                # stream response is not proof that replay is safe.
+                raise BackendExecutionError(
+                    "Backend accepted a stream request but returned a non-SSE response",
+                    backend=backend_id,
+                    code="BACKEND_STREAM_UNCERTAIN",
+                    category="transport",
+                    cause={"reason": "unexpected_content_type", "content_type": content_type},
+                )
 
             await _emit_stage(
                 progress_callback,
@@ -1694,9 +1781,9 @@ def create_tool_executor_for_jobs():
             # Bound the wait between SSE frames. A backend that emits `meta`
             # then stalls (or a proxy that drops the long-lived connection
             # without a terminal `done`/`error` frame) must NOT wedge the job
-            # forever at `stream_meta_received`. On idle-timeout we abandon the
-            # stream and return None so the caller fails over to the
-            # non-streaming /mcp path.
+            # forever at `stream_meta_received`. Without a terminal frame the
+            # outcome is unknown; cancellation is best-effort and does not make
+            # replay safe.
             _line_iter = response.aiter_lines().__aiter__()
             while True:
                 try:
@@ -1706,10 +1793,18 @@ def create_tool_executor_for_jobs():
                     )
                 except StopAsyncIteration:
                     break
+                except _httpx.TransportError as exc:
+                    raise BackendExecutionError(
+                        "Backend stream connection failed before a terminal result",
+                        backend=backend_id,
+                        code="BACKEND_STREAM_UNCERTAIN",
+                        category="transport",
+                        cause={"reason": type(exc).__name__, "backend_call_id": call_id},
+                    ) from exc
                 except asyncio.TimeoutError:
                     logger.warning(
                         "Backend stream idle >%.1fs (tool=%s call_id=%s); "
-                        "falling back to non-streaming path",
+                        "execution outcome is uncertain",
                         _stream_idle_timeout,
                         resolved_name,
                         call_id,
@@ -1724,7 +1819,13 @@ def create_tool_executor_for_jobs():
                             )
                         except Exception:
                             pass
-                    return None
+                    raise BackendExecutionError(
+                        "Backend stream stalled before a terminal result",
+                        backend=backend_id,
+                        code="BACKEND_STREAM_UNCERTAIN",
+                        category="transport",
+                        cause={"reason": "idle_timeout", "backend_call_id": call_id},
+                    )
 
                 if cancel_event and cancel_event.is_set():
                     if call_id:
@@ -1806,18 +1907,24 @@ def create_tool_executor_for_jobs():
                 elif current_event == "error":
                     if isinstance(payload, dict):
                         err = payload.get("error", payload)
-                        raise RuntimeError(str(err))
-                    raise RuntimeError(str(payload))
+                    else:
+                        err = payload
+                    message = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    raise BackendExecutionError(message, backend=backend_id, cause=err)
                 elif current_event == "done":
                     done_payload = payload if isinstance(payload, dict) else {"result": payload}
                     break
 
                 current_event = "message"
 
-        if done_payload is None and not chunks:
-            return None
         if done_payload is None:
-            return {"chunks": chunks, "count": len(chunks), "success": True}
+            raise BackendExecutionError(
+                "Backend stream ended before a terminal result",
+                backend=backend_id,
+                code="BACKEND_STREAM_UNCERTAIN",
+                category="transport",
+                cause={"reason": "missing_terminal_frame", "backend_call_id": call_id},
+            )
         if done_payload.get("data") is not None:
             return done_payload.get("data")
         if done_payload.get("result") is not None:
@@ -1855,20 +1962,22 @@ def create_tool_executor_for_jobs():
                 metadata={"synthetic": True, "chunk_index": idx},
             )
 
-    async def _tool_executor(
+    async def _execute_tool(
         tool_name: str,
         inputs: Dict[str, Any],
         progress_callback: Callable = None,
         cancel_event: Optional[asyncio.Event] = None,
         execution_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        *,
+        timeout_seconds: float,
+        execution_context: Dict[str, Any],
+        execution_identity: Dict[str, Any],
     ) -> Any:
         from ..persistence import get_tool_store
         from .circuit_breaker import get_backend_circuit_breaker
 
-        # Pop internal meta-keys (timeout currently handled at outer layer)
-        timeout_hint = inputs.pop("_timeout", None)
-        _ = timeout_hint
+        # The public wrapper applies _timeout to the entire execution.
         inputs.pop("_max_output_chars", None)
         inputs.pop("_max_links", None)
 
@@ -1881,6 +1990,41 @@ def create_tool_executor_for_jobs():
             eta_seconds=20,
         )
 
+        from .delegated_execution import validated_identity_snapshot
+
+        identity = validated_identity_snapshot(execution_identity)
+        if str(identity["kind"]).startswith("customer"):
+            # Customer jobs use the canonical tenant policy path, including
+            # private-backend access, BYOK envelopes and pooled add-on gates.
+            # Native direct SSE remains an operator/service execution path.
+            from ..api.tools_api import ToolCall, assert_safe_tool_arguments, execute_tool
+
+            internal_keys = {
+                "_trace_id", "_session_id", "_parent_execution_id", "_convergence_key",
+                "_fanout_budget", "_group_reducer", "_group_reducer_config",
+            }
+            public_inputs = {key: value for key, value in inputs.items() if key not in internal_keys}
+            assert_safe_tool_arguments(public_inputs)
+            call = ToolCall(
+                tool=tool_name,
+                arguments=public_inputs,
+                timeout=timeout_seconds,
+                trace_id=inputs.get("_trace_id"),
+                session_id=inputs.get("_session_id"),
+                parent_execution_id=inputs.get("_parent_execution_id"),
+            )
+            call.bind_identity(identity)
+            canonical_result = await execute_tool(call)
+            execution_context["call_recorded"] = True
+            execution_context["backend_id"] = canonical_result.backend or "unknown"
+            if not canonical_result.success:
+                raise BackendExecutionError(
+                    canonical_result.error or "Customer tool execution failed",
+                    backend=canonical_result.backend or "unknown",
+                    cause={"error": canonical_result.error},
+                )
+            return _require_successful_tool_result(canonical_result.result, canonical_result.backend or "unknown")
+
         # In-process registry tools (built-ins) are not in the backend tool
         # store; execute them directly instead of routing to a backend.
         if ":" not in tool_name:
@@ -1888,6 +2032,7 @@ def create_tool_executor_for_jobs():
 
             local_registry = get_local_registry()
             if local_registry.get_by_name(tool_name):
+                execution_context["backend_id"] = "local-registry"
                 await _emit_stage(
                     progress_callback,
                     progress=50.0,
@@ -1914,12 +2059,23 @@ def create_tool_executor_for_jobs():
 
         store = get_tool_store()
         backend_id, backend_url, resolved_name = store.resolve_tool(tool_name)
+        tool_id = f"{backend_id}:{resolved_name}"
+        execution_context.update({"backend_id": backend_id, "tool_id": tool_id, "store": store})
+        from .delegated_execution import prepare_delegated_arguments
+
+        outbound_inputs = prepare_delegated_arguments(
+            backend_id,
+            inputs,
+            execution_identity,
+            trace_id=inputs.get("_trace_id"),
+            session_id=inputs.get("_session_id"),
+        )
         ranked_urls = await _rank_backend_urls(backend_id, backend_url, tenant_id)
         if not ranked_urls:
             ranked_urls = [backend_url.rstrip("/")]
         selected_backend_url = ranked_urls[0]
-        tool_id = f"{backend_id}:{resolved_name}"
         breaker = get_backend_circuit_breaker()
+        execution_context["breaker"] = breaker
         allowed, state = breaker.allow_request(backend_id)
         if not allowed:
             retry_after = state.get("retry_after_seconds")
@@ -1971,13 +2127,14 @@ def create_tool_executor_for_jobs():
                         backend_id=backend_id,
                         tenant_id=tenant_id,
                         resolved_name=resolved_name,
-                        inputs=inputs,
+                        inputs=outbound_inputs,
                         progress_callback=progress_callback,
                         cancel_event=cancel_event,
                         execution_id=execution_id,
+                        timeout_seconds=timeout_seconds,
                     )
                     if streamed is not None:
-                        result = streamed
+                        result = _require_successful_tool_result(streamed, backend_id)
                         break
 
                 if cancel_event and cancel_event.is_set():
@@ -1991,10 +2148,10 @@ def create_tool_executor_for_jobs():
                         "method": "tools/call",
                         "params": {
                             "name": resolved_name,
-                            "arguments": inputs,
+                            "arguments": outbound_inputs,
                         },
                     },
-                    timeout=None,
+                    timeout=_httpx.Timeout(timeout_seconds, connect=min(15.0, timeout_seconds)),
                     headers=_backend_headers(backend_id, tenant_id),
                 )
 
@@ -2015,17 +2172,60 @@ def create_tool_executor_for_jobs():
 
                 data = response.json()
                 if "error" in data and data["error"]:
-                    raise RuntimeError(f"MCP error from {backend_id}: {data['error']}")
-                result = data.get("result")
+                    error = data["error"]
+                    message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+                    raise BackendExecutionError(
+                        message,
+                        backend=backend_id,
+                        code="MCP_PROTOCOL_ERROR",
+                        category="protocol",
+                        cause=error,
+                    )
+                result = _require_successful_tool_result(data.get("result"), backend_id)
                 await _emit_synthetic_chunks(result, progress_callback)
                 break
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except BackendExecutionError as exc:
+                # A returned provider error proves that transport worked. It
+                # must not open the backend circuit or be retried on a replica.
+                # Missing stream completion proves neither success nor failure,
+                # so that case must not replay the accepted call either.
+                latency_ms = (time.time() - started) * 1000
+                if exc.error["category"] == "transport":
+                    breaker.record_failure(backend_id, error=str(exc))
+                else:
+                    breaker.record_success(backend_id)
+                store.record_call(
+                    tool_id,
+                    latency_ms,
+                    False,
+                    execution_mode="job",
+                    trace_id=inputs.get("_trace_id"),
+                    session_id=inputs.get("_session_id"),
+                    error_code=exc.error["code"],
+                    error_message=str(exc),
+                )
+                execution_context["call_recorded"] = True
+                raise
+            except (_httpx.ConnectError, _httpx.ConnectTimeout) as exc:
                 _backend_failures[selected_backend_url] = int(_backend_failures.get(selected_backend_url, 0)) + 1
                 last_error = exc
+                result = None
                 if idx == len(ranked_urls) - 1:
                     break
+            except Exception as exc:
+                # Once a request may have been submitted, neither HTTP failure
+                # nor parsing failure proves that replay on a replica is safe.
+                result = None
+                last_error = BackendExecutionError(
+                    f"Backend execution outcome is uncertain: {exc}",
+                    backend=backend_id,
+                    code="BACKEND_EXECUTION_UNCERTAIN",
+                    category="transport",
+                    cause={"reason": type(exc).__name__},
+                )
+                break
 
         latency_ms = (time.time() - started) * 1000
         if result is None:
@@ -2037,9 +2237,12 @@ def create_tool_executor_for_jobs():
                 execution_mode="job",
                 trace_id=inputs.get("_trace_id"),
                 session_id=inputs.get("_session_id"),
-                error_code="TRANSPORT_ERROR",
+                error_code=(last_error.error["code"] if isinstance(last_error, BackendExecutionError) else "TRANSPORT_ERROR"),
                 error_message=str(last_error or "backend execution failed"),
             )
+            execution_context["call_recorded"] = True
+            if isinstance(last_error, BackendExecutionError):
+                raise last_error
             raise RuntimeError(str(last_error or "backend execution failed"))
 
         breaker.record_success(backend_id)
@@ -2051,6 +2254,7 @@ def create_tool_executor_for_jobs():
             trace_id=inputs.get("_trace_id"),
             session_id=inputs.get("_session_id"),
         )
+        execution_context["call_recorded"] = True
 
         # Apply output guard if available
         try:
@@ -2078,5 +2282,61 @@ def create_tool_executor_for_jobs():
             metadata={"backend_id": backend_id, "backend_url": selected_backend_url},
         )
         return result
+
+    async def _tool_executor(
+        tool_name: str,
+        inputs: Dict[str, Any],
+        progress_callback: Callable = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        execution_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        execution_identity: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        execution_inputs = dict(inputs)
+        timeout_hint = execution_inputs.pop("_timeout", None)
+        timeout_seconds = _execution_timeout_seconds if timeout_hint is None else float(timeout_hint)
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("_timeout must be finite and positive")
+        context: Dict[str, Any] = {}
+        started = time.monotonic()
+        deadline = asyncio.timeout(timeout_seconds)
+        try:
+            async with deadline:
+                return await _execute_tool(
+                    tool_name,
+                    execution_inputs,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                    execution_id=execution_id,
+                    tenant_id=tenant_id,
+                    timeout_seconds=timeout_seconds,
+                    execution_context=context,
+                    execution_identity=execution_identity or {},
+                )
+        except TimeoutError as exc:
+            if not deadline.expired():
+                raise
+            error = BackendExecutionError(
+                f"Tool execution exceeded its {timeout_seconds:g}s deadline; outcome may be unknown",
+                backend=context.get("backend_id", "unknown"),
+                code="BACKEND_TIMEOUT",
+                category="transport",
+                cause={"reason": "execution_deadline", "timeout_seconds": timeout_seconds},
+            )
+            if not context.get("call_recorded"):
+                if context.get("breaker"):
+                    context["breaker"].record_failure(context["backend_id"], error=str(error))
+                if context.get("store"):
+                    context["store"].record_call(
+                        context["tool_id"],
+                        (time.monotonic() - started) * 1000,
+                        False,
+                        execution_mode="job",
+                        trace_id=execution_inputs.get("_trace_id"),
+                        session_id=execution_inputs.get("_session_id"),
+                        error_code="BACKEND_TIMEOUT",
+                        error_message=str(error),
+                    )
+            raise error from exc
 
     return _tool_executor
