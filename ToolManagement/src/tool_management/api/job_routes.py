@@ -331,6 +331,7 @@ async def submit_job(request: JobSubmitRequest, http_request: Request):
             },
             client_id=tenant_id or request.client_id,
             tenant_id=tenant_id,
+            execution_identity=identity,
             trace_id=trace_id,
             session_id=request.session_id,
             parent_execution_id=request.parent_execution_id,

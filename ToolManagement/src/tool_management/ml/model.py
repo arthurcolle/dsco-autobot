@@ -27,10 +27,7 @@ SUPPORTED_MODELS = {
     "phi-3.5-mini": "microsoft/Phi-3.5-mini-instruct",
 }
 
-INTENT_LABELS = [
-    "research", "remember", "notify", "analyze",
-    "publish", "transform", "query", "manage"
-]
+from .intent_labels import INTENT_LABELS
 
 DEFAULT_MODEL = "qwen2.5-1.5b"
 

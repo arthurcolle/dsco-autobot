@@ -692,6 +692,15 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                         if addon_active:
                             outbound_arguments.setdefault("_pooled_ok", True)
         except Exception as e:
+            if call.tenant_id:
+                logger.warning("Customer credential resolution failed for %s", tool_name, exc_info=True)
+                return ToolResult(
+                    tool=call.tool,
+                    backend=backend_id,
+                    success=False,
+                    error="CREDENTIAL_RESOLUTION_FAILED: customer credentials could not be resolved safely",
+                    latency_ms=(time.time() - start) * 1000,
+                )
             logger.debug(f"Credential injection skipped for {tool_name}: {e}")
 
         response_status, data = await _mcp_tools_call(
@@ -707,6 +716,28 @@ async def execute_tool(call: ToolCall) -> ToolResult:
 
         if response_status == 200:
 
+            if isinstance(data.get("result"), dict) and data["result"].get("isError") is True:
+                result_error = data["result"]
+                error_content = result_error.get("content")
+                if not isinstance(error_content, list):
+                    error_content = []
+                message = next(
+                    (block["text"] for block in error_content
+                     if isinstance(block, dict) and isinstance(block.get("text"), str)),
+                    "Backend returned a tool error",
+                )
+                store.record_call(
+                    f"{backend_id}:{tool_name}", latency_ms, False,
+                    execution_mode="sync", trace_id=call.trace_id, session_id=call.session_id,
+                    error_code="TOOL_EXECUTION_FAILED", error_message=message,
+                )
+                # An explicit provider failure proves that transport worked.
+                breaker.record_success(backend_id)
+                return ToolResult(
+                    tool=call.tool, backend=backend_id, success=False,
+                    error=message, latency_ms=latency_ms,
+                )
+
             if "error" in data:
                 err_obj = data.get("error")
                 err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
@@ -721,7 +752,7 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                     error_code=err_code,
                     error_message=err_message,
                 )
-                breaker.record_failure(backend_id, error=str(data.get("error")))
+                breaker.record_success(backend_id)
                 return ToolResult(
                     tool=call.tool,
                     backend=backend_id,
@@ -847,7 +878,21 @@ async def execute_tool(call: ToolCall) -> ToolResult:
                 latency_ms=latency_ms
             )
 
-    except ValueError:
+    except ValueError as exc:
+        if backend_id is not None:
+            # A decoding/processing error after backend selection cannot prove
+            # that no side effect occurred. Never replay through a local tool.
+            if resolved_tool_id:
+                store.record_call(
+                    resolved_tool_id, (time.time() - start) * 1000, False,
+                    execution_mode="sync", trace_id=call.trace_id, session_id=call.session_id,
+                    error_code="BACKEND_RESULT_INVALID", error_message=str(exc),
+                )
+            return ToolResult(
+                tool=call.tool, backend=backend_id, success=False,
+                error="BACKEND_RESULT_INVALID: backend response could not be processed; outcome may be unknown",
+                latency_ms=(time.time() - start) * 1000,
+            )
         # Tool/backend not found in MCP store — try the DuckDB registry
         try:
             from ..registry import get_registry
@@ -1611,7 +1656,8 @@ async def recommend_tools(request: ToolRecommendationRequest):
             try:
                 execution_store = get_execution_store()
                 ml_candidates = [
-                    {"name": r["name"], "description": r.get("description", "")}
+                    {"name": r["name"], "description": r.get("description", ""),
+                     "tool_id": r["tool_id"], "backend": r.get("backend_id") or ""}
                     for r in scored_rows
                 ]
                 ml_results = await recommender.recommend(
@@ -1622,9 +1668,9 @@ async def recommend_tools(request: ToolRecommendationRequest):
                     execution_store=execution_store,
                 )
                 # Build score lookup from ML results
-                ml_score_map = {r.name: r for r in ml_results}
+                ml_score_map = {r.tool_id or r.name: r for r in ml_results}
                 for row in scored_rows:
-                    ml_tool = ml_score_map.get(row["name"])
+                    ml_tool = ml_score_map.get(row["tool_id"]) or ml_score_map.get(row["name"])
                     if ml_tool:
                         row["score"] = ml_tool.score
                         row["confidence"] = ml_tool.confidence

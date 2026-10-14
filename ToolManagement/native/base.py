@@ -33,8 +33,16 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Gen
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import uvicorn
+
+from .runtime_guidance import (
+    InvalidGuidanceParams,
+    get_prompt,
+    list_prompts,
+    list_skill_resources,
+    read_skill_resource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1075,11 +1083,18 @@ class NativeMCPBase(ABC):
 
         return app
 
-    async def _handle_mcp_request(self, body: Dict[str, Any]) -> JSONResponse:
+    async def _handle_mcp_request(self, body: Dict[str, Any]) -> Response:
         """Handle MCP JSON-RPC requests."""
         method = body.get("method", "")
-        params = body.get("params", {})
+        params = body.get("params") or {}
         request_id = body.get("id")
+        if "id" not in body and method.startswith("notifications/"):
+            return Response(status_code=202)
+        if not isinstance(params, dict):
+            return JSONResponse({
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32602, "message": "params must be an object"},
+            })
 
         try:
             if method == "initialize":
@@ -1090,9 +1105,19 @@ class NativeMCPBase(ABC):
                         "version": self.VERSION,
                     },
                     "capabilities": {
-                        "tools": {"listChanged": True},
+                        "tools": {},
+                        "prompts": {},
+                        "resources": {},
                     },
                 }
+            elif method == "prompts/list":
+                result = list_prompts()
+            elif method == "prompts/get":
+                result = get_prompt(params)
+            elif method == "resources/list":
+                result = list_skill_resources()
+            elif method == "resources/read":
+                result = read_skill_resource(params.get("uri"))
             elif method == "tools/list":
                 result = {"tools": self.TOOLS}
             elif method == "tools/call":
@@ -1112,6 +1137,11 @@ class NativeMCPBase(ABC):
                 "result": result,
             })
 
+        except InvalidGuidanceParams as e:
+            return JSONResponse({
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32602, "message": str(e)},
+            })
         except Exception as e:
             logger.error(f"MCP error: {e}")
             return JSONResponse({
